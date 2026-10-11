@@ -37,6 +37,10 @@ export const AgentTaskPayloadSchema = z.object({
   requestedVerification: z.string().optional(),
   maxSteps: z.number().int().positive().max(50).optional().default(30),
   maxRecoveryAttempts: z.number().int().nonnegative().max(5).optional().default(3),
+  // Model configuration (optional - can be set via env vars or passed directly)
+  nvidiaApiKey: z.string().optional(),
+  nvidiaBaseUrl: z.string().optional(),
+  nvidiaModel: z.string().optional(),
 }).refine((data) => data.workspaceId || data.workspaceRoot || data.gitUrl, {
   message: "Either workspaceId, workspaceRoot, or gitUrl must be provided",
 });
@@ -158,11 +162,21 @@ export const codingAgentTask = task({
     const originalWorkspaceRoot = process.env.WORKSPACE_ROOT;
     const originalSessionId = process.env.SESSION_ID;
     const originalAchuSessionId = process.env.ACHU_SESSION_ID;
+    const originalNvidiaApiKey = process.env.NVIDIA_API_KEY;
+    const originalNvidiaBaseUrl = process.env.NVIDIA_BASE_URL;
+    const originalNvidiaModel = process.env.NVIDIA_MODEL;
 
     // Set up environment for the agent
     process.env.WORKSPACE_ROOT = getWorkspaceRoot(workspace);
     process.env.SESSION_ID = payload.sessionId || `trigger-${Date.now()}`;
     process.env.ACHU_SESSION_ID = payload.sessionId || `trigger-${Date.now()}`;
+    // Ensure model configuration is available to the agent (priority: payload > env vars)
+    if (payload.nvidiaApiKey) process.env.NVIDIA_API_KEY = payload.nvidiaApiKey;
+    else if (originalNvidiaApiKey) process.env.NVIDIA_API_KEY = originalNvidiaApiKey;
+    if (payload.nvidiaBaseUrl) process.env.NVIDIA_BASE_URL = payload.nvidiaBaseUrl;
+    else if (originalNvidiaBaseUrl) process.env.NVIDIA_BASE_URL = originalNvidiaBaseUrl;
+    if (payload.nvidiaModel) process.env.NVIDIA_MODEL = payload.nvidiaModel;
+    else if (originalNvidiaModel) process.env.NVIDIA_MODEL = originalNvidiaModel;
 
     try {
       // Import and run the agent
@@ -259,6 +273,21 @@ export const codingAgentTask = task({
         process.env.ACHU_SESSION_ID = originalAchuSessionId;
       } else {
         delete process.env.ACHU_SESSION_ID;
+      }
+      if (originalNvidiaApiKey !== undefined) {
+        process.env.NVIDIA_API_KEY = originalNvidiaApiKey;
+      } else {
+        delete process.env.NVIDIA_API_KEY;
+      }
+      if (originalNvidiaBaseUrl !== undefined) {
+        process.env.NVIDIA_BASE_URL = originalNvidiaBaseUrl;
+      } else {
+        delete process.env.NVIDIA_BASE_URL;
+      }
+      if (originalNvidiaModel !== undefined) {
+        process.env.NVIDIA_MODEL = originalNvidiaModel;
+      } else {
+        delete process.env.NVIDIA_MODEL;
       }
     }
   },
