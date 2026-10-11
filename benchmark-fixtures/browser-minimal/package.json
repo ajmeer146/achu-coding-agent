@@ -1,0 +1,13 @@
+{
+  "name": "browser-minimal",
+  "version": "1.0.0",
+  "description": "Minimal static site for browser testing",
+  "scripts": {
+    "start": "npx serve .",
+    "dev": "npx serve .",
+    "build": "echo 'static site - no build needed'"
+  },
+  "devDependencies": {
+    "serve": "^14.2.0"
+  }
+}

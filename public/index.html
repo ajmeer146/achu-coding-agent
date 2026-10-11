@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Achu Coding Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="bg-glow" aria-hidden="true"></div>
+
+  <div class="app-container">
+    <!-- COMPACT TOP HEADER -->
+    <header class="app-header">
+      <div class="header-left">
+        <button id="sidebar-toggle" class="btn-icon mobile-only" aria-label="Toggle sidebar" title="Toggle Navigation">☰</button>
+        <div class="header-brand">
+          <span class="brand-mark">◆</span>
+          <span class="brand-name">Achu Coding Agent</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="header-status ready" id="connection-status" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="connection-status-text">Ready</span>
+        </div>
+        <div class="header-avatar" title="Achu User Profile">
+          <span>A</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- MAIN BODY LAYOUT -->
+    <div class="app-body">
+      <!-- LEFT SIDEBAR -->
+      <aside class="left-sidebar" id="sidebar" aria-label="Projects navigation">
+        <div class="sidebar-top-action">
+          <button id="new-project-btn" class="btn-new-project" type="button">
+            <span class="plus-icon" aria-hidden="true">＋</span>
+            <span>New Project</span>
+          </button>
+        </div>
+
+        <div class="sidebar-search-wrap">
+          <span class="search-icon" aria-hidden="true">🔍</span>
+          <input type="text" id="project-search" class="sidebar-search-input" placeholder="Search Projects…" aria-label="Search Projects">
+        </div>
+
+        <!-- Custom Workspace Path Input (collapsible / compact) -->
+        <div class="sidebar-custom-workspace" id="custom-workspace-box">
+          <div class="workspace-field">
+            <input type="text" id="project-path" class="workspace-input" placeholder="C:\path\to\project..." aria-label="Project path">
+            <button id="browse-workspace" class="btn-select-project btn-browse" type="button" title="Browse for a folder">Browse…</button>
+            <button id="select-project" class="btn-select-project" type="button" title="Open Workspace">Open</button>
+          </div>
+          <div id="current-project" class="active-workspace-badge hidden">
+            <span class="ws-label">Active:</span>
+            <span id="project-display" class="ws-path" title=""></span>
+            <button id="clear-project" class="ws-clear" type="button" title="Clear">✕</button>
+          </div>
+        </div>
+
+        <div class="sidebar-section-title">PROJECTS</div>
+
+        <ul class="projects-list" id="projects-list" role="list">
+          <li class="project-item" data-project="saas-landing" tabindex="0" role="button" title="Open a project folder">
+            <div class="project-item-icon">⚡</div>
+            <div class="project-item-info">
+              <span class="project-item-name">SaaS Landing Page</span>
+              <span class="project-item-meta">Full-stack Web App</span>
+            </div>
+          </li>
+          <li class="project-item" data-project="portfolio-website" tabindex="0" role="button" title="Open a project folder">
+            <div class="project-item-icon">🎨</div>
+            <div class="project-item-info">
+              <span class="project-item-name">Portfolio Website</span>
+              <span class="project-item-meta">Static Portfolio</span>
+            </div>
+          </li>
+          <li class="project-item" data-project="ecommerce-app" tabindex="0" role="button" title="Open a project folder">
+            <div class="project-item-icon">🛒</div>
+            <div class="project-item-info">
+              <span class="project-item-name">E-commerce App</span>
+              <span class="project-item-meta">Online Store</span>
+            </div>
+          </li>
+          <li class="project-item" data-project="dashboard-ui" tabindex="0" role="button" title="Open a project folder">
+            <div class="project-item-icon">📊</div>
+            <div class="project-item-info">
+              <span class="project-item-name">Dashboard UI</span>
+              <span class="project-item-meta">Analytics Platform</span>
+            </div>
+          </li>
+        </ul>
+
+        <!-- WORKSPACE FILE TREE -->
+        <div class="sidebar-section-title file-tree-section-title">
+          <span>WORKSPACE FILES</span>
+          <button id="refresh-file-tree" class="btn-tree-refresh" type="button" title="Refresh file tree" aria-label="Refresh file tree">↻</button>
+        </div>
+        <div id="file-tree" class="file-tree" role="tree" aria-label="Workspace file tree">
+          <div class="file-tree-empty" id="file-tree-empty">No workspace selected. Use Browse… or Open to load a project folder.</div>
+        </div>
+
+        <!-- Hidden sessions history list container for backend session tracking -->
+        <ul id="task-history" class="hidden-sessions-list" style="display:none;" aria-hidden="true"></ul>
+        <span id="sessions-count" style="display:none;" aria-hidden="true">0</span>
+        <div id="sessions-empty" style="display:none;" aria-hidden="true"></div>
+      </aside>
+
+      <!-- MAIN CONTENT SCROLLABLE WRAPPER -->
+      <main class="main-content" role="main">
+        <!-- TOP SECTION: HERO + STATUS GRID -->
+        <div class="top-grid">
+          <!-- MAIN HERO CARD -->
+          <section class="card hero-card" aria-label="Task Prompt Composer">
+            <div class="hero-header">
+              <h1 class="hero-heading">Build something amazing with Achu</h1>
+              <p class="hero-subtitle">Ask Achu to build, edit, or refactor anything. It will write code, run checks, test the app in browser and show you the live result.</p>
+            </div>
+
+            <div class="composer-box">
+              <textarea id="task-input" class="composer-textarea" placeholder="Describe your project…" rows="4" aria-label="Project prompt"></textarea>
+              
+              <div class="composer-actions-bar">
+                <div class="composer-actions-left">
+                  <button id="attach-btn" class="btn-attach" type="button" title="Attach files">
+                    <span class="attach-icon" aria-hidden="true">📎</span>
+                    <span>Attach files</span>
+                  </button>
+                  <input type="file" id="attach-input" class="hidden-file-input" multiple style="display:none;">
+                  <span id="attach-note" class="attach-note"></span>
+
+                  <div class="app-type-pill">
+                    <span class="app-type-icon" aria-hidden="true">🌐</span>
+                    <select id="app-type-select" class="app-type-select" aria-label="Application Type">
+                      <option value="webapp">Web App</option>
+                      <option value="landing">Landing Page</option>
+                      <option value="fullstack">Full-Stack App</option>
+                      <option value="api">Backend API</option>
+                    </select>
+                  </div>
+                  <!-- Hidden model selector for server backend compatibility -->
+                  <select id="model-selector" style="display:none;" aria-hidden="true">
+                    <option value="auto" selected>Auto</option>
+                  </select>
+                </div>
+
+                <div class="composer-actions-right">
+                  <button id="stop-task" class="btn-stop-task hidden" type="button" title="Stop current task">
+                    <span aria-hidden="true">■</span>
+                    <span>Stop</span>
+                  </button>
+                  <button id="run-task" class="btn-build-achu" type="button">
+                    <span class="btn-build-icon" aria-hidden="true">▶</span>
+                    <span id="run-task-text">Build with Achu</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- RIGHT STATUS PANEL -->
+          <section class="card status-card" aria-label="Project Status Tracker">
+            <div class="status-card-header">
+              <h2 class="status-card-title">Project Status</h2>
+              <span class="status-pill-indicator idle" id="task-status">Ready</span>
+            </div>
+
+            <!-- Current Step Callout -->
+            <div class="current-step-callout">
+              <div class="current-step-label">CURRENT STEP</div>
+              <div class="current-step-title" id="current-step-name">Ready to build</div>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="progress-bar-container">
+              <div class="progress-bar-fill" id="project-progress-fill" style="width: 0%;"></div>
+            </div>
+
+            <!-- Ordered 6-step Tracker -->
+            <div class="status-steps-list" id="status-steps-list">
+              <div class="status-step-item" id="step-item-1" data-step="1">
+                <div class="step-num-circle"><span class="step-num">1</span></div>
+                <div class="step-text">Understanding your idea</div>
+              </div>
+              <div class="status-step-item" id="step-item-2" data-step="2">
+                <div class="step-num-circle"><span class="step-num">2</span></div>
+                <div class="step-text">Planning the project</div>
+              </div>
+              <div class="status-step-item" id="step-item-3" data-step="3">
+                <div class="step-num-circle"><span class="step-num">3</span></div>
+                <div class="step-text">Writing the code</div>
+              </div>
+              <div class="status-step-item" id="step-item-4" data-step="4">
+                <div class="step-num-circle"><span class="step-num">4</span></div>
+                <div class="step-text">Running checks</div>
+              </div>
+              <div class="status-step-item" id="step-item-5" data-step="5">
+                <div class="step-num-circle"><span class="step-num">5</span></div>
+                <div class="step-text">Testing in browser</div>
+              </div>
+              <div class="status-step-item" id="step-item-6" data-step="6">
+                <div class="step-num-circle"><span class="step-num">6</span></div>
+                <div class="step-text">Preparing preview</div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- BOTTOM WORKSPACE SECTION: EXACTLY 4 TABS -->
+        <section class="card workspace-card" aria-label="Development Workspace">
+          <!-- WORKSPACE TABS HEADER -->
+          <div class="workspace-tabs-bar" role="tablist" aria-label="Workspace tabs">
+            <button class="ws-tab-btn active" id="tab-preview" data-tab="preview" role="tab" aria-selected="true" aria-controls="pane-preview" type="button">
+              <span class="ws-tab-icon" aria-hidden="true">🌐</span>
+              <span>Live Preview</span>
+            </button>
+            <button class="ws-tab-btn" id="tab-terminal" data-tab="terminal" role="tab" aria-selected="false" aria-controls="pane-terminal" type="button">
+              <span class="ws-tab-icon" aria-hidden="true">💻</span>
+              <span>Terminal</span>
+            </button>
+          </div>
+
+          <!-- WORKSPACE PANES -->
+          <div class="workspace-panes-body">
+            <!-- PANE 1: LIVE PREVIEW (DEFAULT ACTIVE) -->
+            <div class="ws-pane active" id="pane-preview" role="tabpanel" aria-labelledby="tab-preview">
+              <div class="preview-chrome-bar">
+                <div class="traffic-lights" aria-hidden="true">
+                  <span class="traffic-dot red"></span>
+                  <span class="traffic-dot yellow"></span>
+                  <span class="traffic-dot green"></span>
+                </div>
+                <div class="browser-url-bar">
+                  <span class="url-lock" aria-hidden="true">🔒</span>
+                  <span class="url-text" id="preview-url-bar">No app running</span>
+                  <span class="live-sync-pill hidden" id="preview-live-dot">
+                    <span class="sync-pulse"></span>Live Sync
+                  </span>
+                </div>
+                <div class="browser-actions">
+                  <button id="preview-refresh" class="btn-chrome-icon" title="Reload preview" aria-label="Reload preview">↻</button>
+                  <button id="open-preview" class="btn-chrome-link" type="button" aria-label="Open preview in new window">Open ↗</button>
+                  <button id="preview-fullscreen" class="btn-chrome-icon" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+                </div>
+              </div>
+
+              <div class="preview-viewport" id="live-preview">
+                <div class="preview-empty-state" id="live-preview-empty">
+                  <div class="empty-icon" aria-hidden="true">🌐</div>
+                  <h3 class="empty-title">Live Preview</h3>
+                  <p class="empty-desc">Describe your project above and click <b>Build with Achu</b>. When your app server starts, you will see the interactive live result here.</p>
+                </div>
+                <iframe id="live-preview-iframe" class="preview-iframe hidden" sandbox="allow-scripts allow-same-origin allow-forms" title="Live Preview Application"></iframe>
+              </div>
+            </div>
+
+            <!-- PANE 2: TERMINAL -->
+            <div class="ws-pane" id="pane-terminal" role="tabpanel" aria-labelledby="tab-terminal">
+              <div class="terminal-layout">
+                <div class="terminal-sub-header">
+                  <div class="terminal-sub-tabs">
+                    <button class="term-sub-tab active" data-subtab="terminal-out" id="subtab-terminal" type="button">Terminal Output</button>
+                    <button class="term-sub-tab" data-subtab="activity-out" id="subtab-activity" type="button">Agent Activity</button>
+                    <button class="term-sub-tab" data-subtab="result-out" id="subtab-result" type="button">Task Summary</button>
+                  </div>
+                  <button id="clear-terminal" class="btn-clear-term" type="button" title="Clear terminal">🗑 Clear</button>
+                </div>
+
+                <div class="terminal-pane-container">
+                  <pre id="terminal-output" class="terminal-pre active" aria-label="Terminal output stream"></pre>
+                  <div id="activity-log" class="activity-log-pre" aria-label="Agent activity events" style="display:none;"></div>
+                  <div id="final-result" class="final-result-pre" style="display:none;">
+                    <div class="result-summary-card">
+                      <div class="res-title">Task Result</div>
+                      <div class="res-content">No task completed yet. Run a prompt to see full results.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- FOLDER BROWSER (server-backed, read-only directory picker) -->
+  <div class="folder-browser-overlay hidden" id="folder-browser" role="dialog" aria-modal="true" aria-label="Select project folder">
+    <div class="folder-browser-dialog">
+      <div class="folder-browser-header">
+        <span class="folder-browser-title">Select Project Folder</span>
+        <button id="folder-browser-close" class="folder-browser-close" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="folder-browser-pathbar">
+        <button id="folder-browser-up" class="btn-folder-up" type="button" title="Go up one level" aria-label="Go up one level">↑</button>
+        <span id="folder-browser-path" class="folder-browser-path">This PC</span>
+      </div>
+      <div id="folder-browser-error" class="folder-browser-error hidden" role="alert"></div>
+      <ul id="folder-browser-list" class="folder-browser-list" role="list"></ul>
+      <div class="folder-browser-footer">
+        <span id="folder-browser-selected" class="folder-browser-selected">No folder selected</span>
+        <button id="folder-browser-select" class="btn-folder-select" type="button" disabled>Open This Folder</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

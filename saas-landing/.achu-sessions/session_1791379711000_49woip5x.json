@@ -1,0 +1,41 @@
+{
+  "metadata": {
+    "sessionId": "session_1791379711000_49woip5x",
+    "taskId": "task-1791379711000",
+    "workspaceRoot": "saas-landing",
+    "task": "Build a simple modern landing page for a coffee shop called Brew House with a hero section, menu section, about section, and contact section.",
+    "status": "COMPLETED",
+    "phase": "execute",
+    "createdAt": 1791379711000,
+    "updatedAt": 1791380697094,
+    "startedAt": 1791379711078,
+    "completedAt": 1791380697092,
+    "planProgress": {
+      "total": 0,
+      "completed": 0,
+      "failed": 0,
+      "pending": 0,
+      "running": 0
+    },
+    "verificationState": {
+      "requestedVerification": null,
+      "verificationPassed": false,
+      "buildStatus": "NOT_RUN",
+      "browserStatus": "NOT_RUN"
+    },
+    "reviewState": "NOT_REQUIRED",
+    "changedFiles": [],
+    "lastError": null,
+    "recoveryAttempts": 0,
+    "currentPlan": []
+  },
+  "agentStateSnapshot": null,
+  "activityLog": [
+    {
+      "timestamp": 1791380697097,
+      "type": "success",
+      "message": "Session completed successfully"
+    }
+  ],
+  "terminalOutput": ""
+}

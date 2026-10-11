@@ -1,0 +1,10 @@
+{
+  "name": "e2e-acceptance-test",
+  "version": "1.0.0",
+  "description": "End-to-End Acceptance Test web app",
+  "scripts": {
+    "start": "npx serve -p 3000 .",
+    "build": "echo 'Static site - no build needed'",
+    "dev": "npx serve . -l 3000"
+  }
+}

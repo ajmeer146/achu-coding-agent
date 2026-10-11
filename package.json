@@ -1,0 +1,44 @@
+{
+  "name": "achu-coding-agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "tsx --test tests/phase3.test.ts",
+    "test:phase3": "tsx --test tests/phase3.test.ts",
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "workspace": "tsx src/server.ts",
+    "workspace:build": "node dist/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@trigger.dev/build": "4.7.3",
+    "@trigger.dev/sdk": "4.7.3",
+    "@types/better-sqlite3": "^9.6.0",
+    "better-sqlite3": "^13.0.3",
+    "chalk": "^6.0.1",
+    "commander": "^15.0.0",
+    "express": "^5.1.0",
+    "openai": "^7.25.0",
+    "ora": "^9.4.1",
+    "playwright": "^1.63.0",
+    "ws": "^8.18.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^26.6.3",
+    "@types/ws": "^8.5.13",
+    "px": "^0.1.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "bin": {
+    "achu-agent": "./dist/cli.js"
+  }
+}

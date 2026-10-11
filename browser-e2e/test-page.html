@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Achu E2E Test Page</title>
+</head>
+<body>
+  <h1 id="heading">Achu Browser E2E</h1>
+  <input type="text" id="nameInput" placeholder="Enter name">
+  <button id="submitBtn">Submit</button>
+  <div id="result" aria-live="polite"></div>
+  <script>
+    document.getElementById("submitBtn").addEventListener("click", function () {
+      var v = document.getElementById("nameInput").value;
+      document.getElementById("result").textContent = "Hello, " + v + "!";
+    });
+  </script>
+</body>
+</html>

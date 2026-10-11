@@ -1,0 +1,13 @@
+{
+  "name": "calculator-broken",
+  "version": "1.0.0",
+  "description": "Calculator with broken subtraction",
+  "main": "calculator.ts",
+  "scripts": {
+    "test": "npx tsx test.ts",
+    "build": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

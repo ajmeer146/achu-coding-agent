@@ -1,0 +1,13 @@
+{
+  "name": "read-only-fixture",
+  "version": "1.0.0",
+  "description": "Simple module for read-only analysis",
+  "main": "utils.ts",
+  "scripts": {
+    "test": "echo 'no tests'",
+    "build": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

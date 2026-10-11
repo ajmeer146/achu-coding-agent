@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Minimal Browser Test</title>
+</head>
+<body>
+  <header>
+    <h1>Welcome</h1>
+  </header>
+  <main>
+    <p id="description">This is a minimal page for browser testing</p>
+    <button id="test-button">Click me</button>
+    <input id="test-input" type="text" placeholder="Type here" />
+    <a id="test-link" href="#about">About</a>
+  </main>
+  <footer>
+    <p>Footer</p>
+  </footer>
+  <script>
+    document.getElementById('test-button').addEventListener('click', () => {
+      alert('Button clicked!');
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "metadata": {
+    "sessionId": "session_1791613138816_n6yesc2o",
+    "taskId": "task-1791613138816",
+    "workspaceRoot": "C:\\Users\\Achu146\\achu-coding-agent\\test-workspace-e2e",
+    "task": "Create a simple web app here.\n1. Create a package.json with a 'start' script: \"npx serve -p 3000 .\"\n2. Create an index.html that shows the text \"End-to-End Acceptance Test\". It must also contain a script tag that throws a console error: console.error('Intentional Bug');\n3. Start the application and verify it in the browser.\n4. IMPORTANT: If you detect a console error during verification, you MUST edit index.html to remove the error, and then run browser verification again until it passes with no errors.\nDo not finish the task until browser verification is completely clean.",
+    "status": "FAILED",
+    "phase": "execute",
+    "createdAt": 1791613138816,
+    "updatedAt": 1791613227810,
+    "startedAt": 1791613138875,
+    "completedAt": 1791613227809,
+    "planProgress": {
+      "total": 0,
+      "completed": 0,
+      "failed": 0,
+      "pending": 0,
+      "running": 0
+    },
+    "verificationState": {
+      "requestedVerification": null,
+      "verificationPassed": false,
+      "buildStatus": "NOT_RUN",
+      "browserStatus": "NOT_RUN"
+    },
+    "reviewState": "NOT_REQUIRED",
+    "changedFiles": [],
+    "lastError": null,
+    "recoveryAttempts": 0,
+    "currentPlan": []
+  },
+  "agentStateSnapshot": null,
+  "activityLog": [
+    {
+      "timestamp": 1791613227813,
+      "type": "error",
+      "message": "Session failed"
+    }
+  ],
+  "terminalOutput": ""
+}

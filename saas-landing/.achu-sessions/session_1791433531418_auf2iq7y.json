@@ -1,0 +1,41 @@
+{
+  "metadata": {
+    "sessionId": "session_1791433531418_auf2iq7y",
+    "taskId": "task-1791433531418",
+    "workspaceRoot": "saas-landing",
+    "task": "build simple loging page",
+    "status": "FAILED",
+    "phase": "execute",
+    "createdAt": 1791433531418,
+    "updatedAt": 1791434719475,
+    "startedAt": 1791433531590,
+    "completedAt": 1791434719473,
+    "planProgress": {
+      "total": 0,
+      "completed": 0,
+      "failed": 0,
+      "pending": 0,
+      "running": 0
+    },
+    "verificationState": {
+      "requestedVerification": null,
+      "verificationPassed": false,
+      "buildStatus": "NOT_RUN",
+      "browserStatus": "NOT_RUN"
+    },
+    "reviewState": "NOT_REQUIRED",
+    "changedFiles": [],
+    "lastError": null,
+    "recoveryAttempts": 0,
+    "currentPlan": []
+  },
+  "agentStateSnapshot": null,
+  "activityLog": [
+    {
+      "timestamp": 1791434719477,
+      "type": "error",
+      "message": "Session failed"
+    }
+  ],
+  "terminalOutput": ""
+}
