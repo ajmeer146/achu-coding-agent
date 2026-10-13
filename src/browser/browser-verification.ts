@@ -320,11 +320,29 @@ export async function runVerificationSuite(
   const pageInfoResult = await session.inspectPage();
   const pageInfo = pageInfoResult.success ? pageInfoResult.info : undefined;
 
+  // Check if page rendered as a directory listing instead of the application
+  const isDirectoryListing = Boolean(
+    pageInfo &&
+    (pageInfo.title.includes("Files within ") ||
+     pageInfo.title.includes("Directory listing") ||
+     pageInfo.title.startsWith("Index of /") ||
+     pageInfo.visibleText.includes("Files within "))
+  );
+
+  if (isDirectoryListing) {
+    results.push({
+      passed: false,
+      target: { type: "text", text: "Application rendering" },
+      error: `Server served a directory listing ("${pageInfo?.title}") instead of a rendered web application. Ensure an index.html file exists and the dev server is properly configured.`,
+    });
+  }
+
   // If no specific targets were provided, verify page actually inspected and loaded cleanly
   if (targets.length === 0) {
     const loadedCleanly = Boolean(
       pageInfoResult.success &&
       pageInfo &&
+      !isDirectoryListing &&
       (pageInfo.title.trim().length > 0 || pageInfo.visibleText.trim().length > 0)
     );
     results.push({
@@ -332,7 +350,16 @@ export async function runVerificationSuite(
       target: { type: "text", text: "Page content" },
       actual: loadedCleanly
         ? `Page loaded cleanly: "${pageInfo?.title || 'Untitled'}"`
-        : (pageInfoResult.success ? "Page appears blank or failed to render" : pageInfoResult.error),
+        : (isDirectoryListing ? "Page served as a directory listing" : pageInfoResult.success ? "Page appears blank or failed to render" : pageInfoResult.error),
+    });
+  }
+
+  // Check for fatal console errors
+  if (pageInfo && pageInfo.consoleErrors && pageInfo.consoleErrors.length > 0) {
+    results.push({
+      passed: false,
+      target: { type: "text", text: "Console clean check" },
+      error: `Page loaded with browser console error(s): ${pageInfo.consoleErrors.slice(0, 3).join("; ")}`,
     });
   }
 

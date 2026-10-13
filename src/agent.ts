@@ -23,6 +23,7 @@ import { SessionState } from "./session/session-types.js";
 import { z } from "zod";
 import { SnapshotManager } from "./tools/snapshot.js";
 import { parseArchitecture, formatArchitectureSummary, ProjectArchitecture } from "./tools/architecture-parser.js";
+import { scaffoldReactViteProject, scaffoldStaticProject, validateProjectStructure, autoRepairProjectStructure } from "./tools/scaffold.js";
 
 export type ToolCall = {
   id: string;
@@ -659,17 +660,29 @@ if (isAppOrGenericTask) {
         if (!hasSimilarStep("read_file", "script") && existingFiles.includes("script.js")) addStep("Read script.js to understand current behavior", "read_file", "script.js");
       }
       
+      const isReactIntent = /\b(react|vite|component|jsx|tsx|spa)\b/i.test(lowerTask) ||
+        (/\b(portfolio|dashboard|saas|landing page|store|ecommerce|e-commerce|devshowcase)\b/i.test(lowerTask) && !/\b(plain|pure|vanilla)\s+html\b/i.test(lowerTask));
+
       if (hasAppBuild || hasAppCreate) {
         if (!isExistingProject) {
           // Only create files for brand new projects
           if (!hasSimilarStep("list_directory", "empty")) addStep("Check if workspace is empty or has existing project", "list_directory");
-          if (!hasTestCreation) {
-            if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
-            if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
-            if (!hasSimilarStep("create_file", "script.js")) addStep("Create script.js", "create_file", "script.js");
-          }
-          if (!hasSimilarStep("create_file", "package.json")) {
-            addStep("Create package.json with development scripts", "create_file", "package.json");
+          if (isReactIntent) {
+            if (!hasSimilarStep("scaffold_project", "scaffold")) {
+              addStep("Scaffold React application with Vite", "scaffold_project");
+            }
+            if (!hasSimilarStep("edit_file", "app")) {
+              addStep("Implement application components in src/App.jsx", "edit_file", "src/App.jsx");
+            }
+          } else {
+            if (!hasTestCreation) {
+              if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
+              if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
+              if (!hasSimilarStep("create_file", "script.js")) addStep("Create script.js", "create_file", "script.js");
+            }
+            if (!hasSimilarStep("create_file", "package.json")) {
+              addStep("Create package.json with development scripts", "create_file", "package.json");
+            }
           }
         } else if (isFollowUpTask) {
           // For follow-up on existing project, plan edits instead of creation
@@ -685,22 +698,33 @@ if (isAppOrGenericTask) {
           }
         } else {
           // New project task in existing directory: create files for the new project
-          if (!hasTestCreation) {
-            if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
-            if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
-            if (!hasSimilarStep("create_file", "script.js")) addStep("Create script.js", "create_file", "script.js");
-          }
-          if (!hasSimilarStep("create_file", "package.json")) {
-            addStep("Create package.json with development scripts", "create_file", "package.json");
+          if (isReactIntent) {
+            if (!hasSimilarStep("scaffold_project", "scaffold")) {
+              addStep("Scaffold React application with Vite", "scaffold_project");
+            }
+            if (!hasSimilarStep("edit_file", "app")) {
+              addStep("Implement application components in src/App.jsx", "edit_file", "src/App.jsx");
+            }
+          } else {
+            if (!hasTestCreation) {
+              if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
+              if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
+              if (!hasSimilarStep("create_file", "script.js")) addStep("Create script.js", "create_file", "script.js");
+            }
+            if (!hasSimilarStep("create_file", "package.json")) {
+              addStep("Create package.json with development scripts", "create_file", "package.json");
+            }
           }
         }
       }
-      if ((hasVerification || /build|compile/.test(lowerTask)) && !hasVerificationStep) {
+      if ((hasVerification || /build|compile/.test(lowerTask) || isReactIntent) && !hasVerificationStep) {
         // run_verification only accepts an exact user-requested command; for tasks
         // without one, run_command executes the build step instead.
         const reqVer = extractRequestedVerification(task);
         if (reqVer) {
           if (!hasSimilarStep("run_verification", "build")) { addStep("Run the project build command", "run_verification"); hasVerificationStep = true; }
+        } else if (isReactIntent && !isExistingProject) {
+          if (!hasSimilarStep("run_command", "build")) { addStep("Run the project build command", "run_command"); hasVerificationStep = true; }
         }
       }
       
@@ -1267,7 +1291,7 @@ export function generateRecoveryHint(state: AgentState): string | null {
     repeatedHint += `\n\nIMPORTANT: The development server is running at ${appUrl}. Use this exact URL for browser verification. Do NOT use localhost:3000 or any other port.`;
   }
   // Windows-specific recovery guidance
-  repeatedHint += `\n\nRECOVERY COMMANDS (Windows PowerShell):\n- Check if app is running: Get-Process | Where-Object {$_.ProcessName -like \"*node*\"}\n- Check listening ports: Get-NetTCPConnection -State Listen | Where-Object {$_.LocalPort -eq <port>}\n- Test HTTP: Invoke-WebRequest -Uri ${appUrl || "http://localhost:<port>"} -UseBasicParsing\n- Restart app: use the 'start_app' tool (not shell commands)`;
+  repeatedHint += `\n\nRECOVERY COMMANDS (Windows PowerShell):\n- Check if app is running: Get-Process | Where-Object {$_.ProcessName -like \"*node*\"}\n- Check listening ports: Get-NetTCPConnection -State Listen | Where-Object {$_.LocalPort -eq <port>}\n- Test HTTP: Invoke-WebRequest -Uri ${appUrl || "http://localhost:<port>"} -UseBasicParsing\n- Restart app: use the 'start_app' tool (not shell commands)\n- Note: NEVER attempt to kill processes or run Stop-Process. The 'start_app' tool automatically allocates an alternative port if needed.`;
   // CRITICAL: If the failure was using run_command for server startup, explicitly block it
   if (err.command === "run_command" && /\b(npx\s+(serve|http-server)|npm\s+run\s+(dev|start|serve|preview))\b/i.test(err.errorMessage ?? "")) {
     repeatedHint += `\n\nCRITICAL: run_command CANNOT be used to start development servers. You MUST use the 'start_app' tool. The 'start_app' tool detects the correct command from package.json, waits for readiness, and returns the actual URL.`;
@@ -1683,14 +1707,19 @@ EARLY COMPLETION / CLARIFICATION:
 - If the entire user goal is already satisfied by existing evidence, STOP. Do not invent extra work.
 - If a task is ambiguous (missing URL, ambiguous file), ask for clarification BEFORE exploring.
 
-PACKAGE.JSON CREATION FOR STATIC SITES:
-- When creating a package.json for a static HTML/CSS/JS project, include these scripts:
-  "dev": "npx serve . -l 3000",  "build": "echo 'Static site - no build needed'", "start": "npx serve . -l 3000"
-- Use 'npx serve' which requires no installation and works immediately.
-- Do NOT use 'live-server' as it requires installation and may not be available.
-- The start_app tool will detect the 'dev' or 'start' script and run it.
-- Create package.json ONLY with the 'create_file' tool (never with run_command / New-Item / npm init).
-- package.json is write-protected for 'edit_file'. If it already exists, change scripts with 'run_command', e.g.: npm pkg set scripts.dev="npx serve . -l 3000"
+APPLICATION SCAFFOLDING & PROJECT TYPES:
+- FOR REACT APPLICATIONS:
+  - Use the 'scaffold_project' tool (template: 'react-vite') or create a complete, consistent Vite + React structure.
+  - Required files: package.json (scripts: "dev": "vite", "build": "vite build", "preview": "vite preview"), vite.config.js, index.html (linking to /src/main.jsx), src/main.jsx, src/App.jsx, src/index.css.
+  - NEVER use 'npx serve' for React projects. React requires a bundler dev server (Vite).
+  - Valid JSX: Ensure JSX comments are properly closed with braces ({/* comment */}), CSS styles use valid values and closed quotes/parentheses.
+- FOR STATIC HTML SITES:
+  - Create index.html at the workspace root! A root index.html is MANDATORY so the server renders the page rather than a directory listing.
+  - Scripts: "dev": "npx serve . -l 3000", "build": "echo 'Static site - no build needed'", "start": "npx serve . -l 3000".
+- PROCESS MANAGEMENT SAFETY:
+  - NEVER run commands to kill processes (Stop-Process, taskkill, kill-port). Direct process killing is BLOCKED.
+  - The start_app tool automatically allocates a clean, free port if a port conflict occurs.
+  - The stop_app tool stops only the process owned by this workspace.
 
 SELF-INVOCATION PROTECTION:
 - Recursive agent invocation (node dist/cli.js ...) is blocked.
@@ -1760,6 +1789,7 @@ async function callModelWithRetry(
     { type: "function", function: { name: "run_verification", description: "Run the exact verification command requested by the user.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
     { type: "function", function: { name: "list_directory", description: "List the contents of a directory in the workspace.", parameters: { type: "object", properties: { directoryPath: { type: "string", description: "Path of directory to list (relative to workspace root)." } }, required: [], additionalProperties: false } } },
     { type: "function", function: { name: "create_file", description: "Create a new file in the workspace with the given content.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"], additionalProperties: false } } },
+    { type: "function", function: { name: "scaffold_project", description: "Scaffold a complete, runnable modern application structure with valid files and configurations. Templates: 'react-vite' (React 18 + Vite), 'static' (HTML5/CSS3/JS).", parameters: { type: "object", properties: { template: { type: "string", enum: ["react-vite", "static"], description: "Template to scaffold: 'react-vite' or 'static'." }, name: { type: "string", description: "Project name (optional)." } }, required: ["template"], additionalProperties: false } } },
     { type: "function", function: { name: "navigate", description: "Navigate to a URL in the browser.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
     { type: "function", function: { name: "start_app", description: "Start the development server for the current project. Detects the start command from package.json and waits for the application to be ready.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
     { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
@@ -1840,6 +1870,7 @@ async function callModelWithRetry(
           { type: "function", function: { name: "run_verification", description: "Run the exact verification command requested by the user.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
           { type: "function", function: { name: "list_directory", description: "List the contents of a directory in the workspace.", parameters: { type: "object", properties: { directoryPath: { type: "string", description: "Path of directory to list (relative to workspace root)." } }, required: [], additionalProperties: false } } },
           { type: "function", function: { name: "create_file", description: "Create a new file in the workspace with the given content.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"], additionalProperties: false } } },
+          { type: "function", function: { name: "scaffold_project", description: "Scaffold a complete, runnable modern application structure with valid files and configurations. Templates: 'react-vite' (React 18 + Vite), 'static' (HTML5/CSS3/JS).", parameters: { type: "object", properties: { template: { type: "string", enum: ["react-vite", "static"], description: "Template to scaffold: 'react-vite' or 'static'." }, name: { type: "string", description: "Project name (optional)." } }, required: ["template"], additionalProperties: false } } },
           { type: "function", function: { name: "navigate", description: "Navigate to a URL in the browser.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
           { type: "function", function: { name: "start_app", description: "Start the development server for the current project. Detects the start command from package.json and waits for the application to be ready.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
           { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
@@ -1909,6 +1940,10 @@ const schemas = {
   run_verification: z.object({ command: z.string() }),
   list_directory: z.object({ directoryPath: z.string().default(".") }),
   create_file: z.object({ path: z.string(), content: z.string() }),
+  scaffold_project: z.object({
+    template: z.enum(["react-vite", "static"]),
+    name: z.string().optional(),
+  }),
   navigate: z.object({ url: z.string() }),
   browser_verify: z.object({
     baseUrl: z.string().optional(),
@@ -2020,6 +2055,26 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         } 
       }
       case "navigate": { const url = args.url; if (!state.browserSession) return "Browser session not initialized. Use open_browser first."; console.log(chalk.gray(`Navigating: ${url}`)); const navResult = await navigate(state.browserSession, url); return truncate(navResult.success ? `Navigated to ${url}` : `Navigation failed: ${navResult.error}`); }
+      case "scaffold_project": {
+        const template = args.template || "react-vite";
+        const name = args.name || "app";
+        console.log(chalk.cyan(`Scaffolding project template '${template}' (${name})...`));
+        let scaffoldRes;
+        if (template === "react-vite") {
+          scaffoldRes = await scaffoldReactViteProject(workspace, name);
+        } else {
+          scaffoldRes = await scaffoldStaticProject(workspace, name);
+        }
+        if (!scaffoldRes.success) {
+          return `Scaffold failed: ${scaffoldRes.error}`;
+        }
+        for (const file of scaffoldRes.files) {
+          state.completedTasks.add(`create_file:${file}`);
+          await state.snapshotManager.captureBefore(file, "create");
+          await state.snapshotManager.captureAfter(file);
+        }
+        return `Successfully scaffolded '${template}' project with files: ${scaffoldRes.files.join(", ")}`;
+      }
       case "start_app": {
         // Idempotent WITHIN a task: if the process we spawned is still healthy,
         // reuse it.
@@ -2040,6 +2095,24 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         if (!startInfo.command) return "No start command found in package.json scripts (dev, start, serve, preview).";
 
         const workingDir = startInfo.cwd || workspace.root;
+
+        // Pre-startup validation and auto-repair
+        const validation = validateProjectStructure(workingDir);
+        if (!validation.valid) {
+          console.log(chalk.yellow(`Pre-startup validation notice: ${validation.error}. Attempting auto-repair...`));
+          const subWs = new Workspace(workingDir);
+          const rep = await autoRepairProjectStructure(subWs);
+          if (rep.repaired) {
+            console.log(chalk.green(`Auto-repaired project structure: ${rep.changes.join(", ")}`));
+            const refreshedStartInfo = await detectStartCommand(workspace);
+            if (refreshedStartInfo.command) {
+              startInfo.command = refreshedStartInfo.command;
+              startInfo.port = refreshedStartInfo.port;
+            }
+          } else {
+            return `Project structure validation error before server launch: ${validation.error}`;
+          }
+        }
 
         // Check if dependencies are declared but node_modules missing in working directory
         let hasDependencies = false;
@@ -2724,14 +2797,13 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
 
       if (state.phase === "recover") {
         state.currentPlan = rePlanFailedSteps(state.currentPlan, state.completedTasks, task);
-        // Allow ONE bounded retry of failed lifecycle steps: reset them to
-        // pending so they can be re-attempted after the model investigates the
-        // actual error. The recoveryAttempts counter (max 3, reset only on real
-        // progress) plus the repeated-action loop guard bound this retry loop.
-        for (const step of state.currentPlan) {
-          if (step.status === "failed" && step.toolType && LIFECYCLE_TOOL_TYPES.includes(step.toolType)) {
-            step.status = "pending";
-            console.log(chalk.gray(`Recovery: retrying failed step "${step.description}"`));
+        // Allow ONE bounded retry of failed lifecycle steps ONLY if recovery attempts not exhausted:
+        if (state.recoveryAttempts < maxRecoveryAttempts) {
+          for (const step of state.currentPlan) {
+            if (step.status === "failed" && step.toolType && LIFECYCLE_TOOL_TYPES.includes(step.toolType)) {
+              step.status = "pending";
+              console.log(chalk.gray(`Recovery: retrying failed step "${step.description}"`));
+            }
           }
         }
         const currentCompletedCount = state.currentPlan.filter(s => s.status === "completed").length;
@@ -2743,7 +2815,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
         const recoveryExhausted = state.recoveryAttempts >= maxRecoveryAttempts;
         const noProgress = !madeProgress;
         const hasRunnableSteps = runnableSteps.length > 0;
-        const terminalFailure = (recoveryExhausted && noProgress && !hasRunnableSteps) || repeatedSameFailure;
+        const terminalFailure = recoveryExhausted || repeatedSameFailure || (!hasRunnableSteps && noProgress);
 
         const isBrowserOrInfraFailure = Boolean(
           state.lastError?.command === "browser_verify" ||
@@ -2844,17 +2916,19 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
     .map(t => t.split(":")[1] || t);
 
   const browserVerificationIncomplete = isWebAppLifecycle && state.browserVerificationRequested && !state.browserVerificationPassed;
+  const appNotStarted = isWebAppLifecycle && !state.appUrl;
   const hasFailedSteps = state.currentPlan?.some(s => s.status === "failed") ?? false;
   const allRequiredStepsComplete = state.currentPlan ? state.currentPlan.every(s => s.status === "completed" || (s.toolType === "stop_app" && isWebAppLifecycle)) : true;
 
   const success = !state.stopReason &&
     !browserVerificationIncomplete &&
+    !appNotStarted &&
     !hasFailedSteps &&
     allRequiredStepsComplete &&
     (state.requestedVerification ? state.verificationPassed : true);
 
   const error = !success
-    ? state.stopReason || (browserVerificationIncomplete ? "Browser verification did not pass" : "Task could not be completed successfully")
+    ? state.stopReason || (browserVerificationIncomplete ? "Browser verification did not pass" : appNotStarted ? "Application server could not be started for Live Preview" : hasFailedSteps ? "One or more plan steps failed" : !allRequiredStepsComplete ? "Task steps were incomplete" : "Task could not be completed successfully")
     : undefined;
 
   return {

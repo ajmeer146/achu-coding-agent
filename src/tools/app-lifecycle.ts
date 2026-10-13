@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as net from "node:net";
 import { Workspace } from "./workspace.js";
+import { validateProjectStructure, autoRepairProjectStructure } from "./scaffold.js";
 
 export type AppProcessInfo = {
   process: ChildProcess;
@@ -47,6 +48,11 @@ export function isServerStartupCommand(command: string): boolean {
 export async function detectStartCommand(workspace: Workspace): Promise<StartCommandResult> {
   const scriptPriority = ["dev", "start", "serve", "preview"];
 
+  // Auto-repair known project inconsistencies (e.g. React configured with static npx serve)
+  try {
+    await autoRepairProjectStructure(workspace);
+  } catch {}
+
   // 1. Check workspace root package.json
   try {
     if (await workspace.exists("package.json")) {
@@ -73,6 +79,10 @@ export async function detectStartCommand(workspace: Workspace): Promise<StartCom
     for (const entry of entries) {
       if (entry.isDirectory() && entry.name !== "node_modules" && !entry.name.startsWith(".")) {
         const subDirPath = path.join(workspace.root, entry.name);
+        const subWorkspace = new Workspace(subDirPath);
+        try {
+          await autoRepairProjectStructure(subWorkspace);
+        } catch {}
         const subPkgPath = path.join(subDirPath, "package.json");
         if (fs.existsSync(subPkgPath)) {
           try {
@@ -81,7 +91,6 @@ export async function detectStartCommand(workspace: Workspace): Promise<StartCom
             const scripts = parsed.scripts || {};
             for (const script of scriptPriority) {
               if (scripts[script]) {
-                const subWorkspace = new Workspace(subDirPath);
                 const pm = await detectPackageManager(subWorkspace);
                 const prefix = pm === "npm" ? "npm run" : `${pm} run`;
                 const command = `${prefix} ${script}`;
@@ -166,7 +175,11 @@ export async function allocateAvailablePort(preferredPort = 3000, maxAttempts = 
  */
 export function replacePortInCommand(command: string, newPort: number): string {
   let replaced = command;
-  if (/(?:-l|-p|--port)\s+\d+/i.test(replaced)) {
+  if (/--\s+--port\s+\d+/i.test(replaced)) {
+    replaced = replaced.replace(/(--\s+--port\s+)\d+/i, `$1${newPort}`);
+  } else if (/--\s+-p\s+\d+/i.test(replaced)) {
+    replaced = replaced.replace(/(--\s+-p\s+)\d+/i, `$1${newPort}`);
+  } else if (/(?:-l|-p|--port)\s+\d+/i.test(replaced)) {
     replaced = replaced.replace(/((?:-l|-p|--port)\s+)\d+/i, `$1${newPort}`);
   } else if (/--port=\d+/i.test(replaced)) {
     replaced = replaced.replace(/(--port=)\d+/i, `$1${newPort}`);
@@ -174,6 +187,12 @@ export function replacePortInCommand(command: string, newPort: number): string {
     replaced = replaced.replace(/(PORT=)\d+/i, `$1${newPort}`);
   } else if (/\b(serve|http-server)\b/i.test(replaced) && !/--port|-p|-l/.test(replaced)) {
     replaced = `${replaced} -l ${newPort}`;
+  } else if (/\bvite\b/i.test(replaced) && !/--port/.test(replaced)) {
+    replaced = `${replaced} --port ${newPort}`;
+  } else if (/^(?:npm|pnpm)\s+run\s+\w+/i.test(replaced)) {
+    replaced = `${replaced} -- --port ${newPort}`;
+  } else if (/^yarn\s+(?:run\s+)?\w+/i.test(replaced)) {
+    replaced = `${replaced} --port ${newPort}`;
   }
   return replaced;
 }
@@ -492,8 +511,32 @@ export async function waitForReadiness(
       clearTimeout(timeoutId);
       lastStatus = response.status;
 
-      // 2xx, 3xx redirects (e.g. 301/302 from serve), or even 404 on a static server means HTTP is ready
-      if (response.ok || (response.status >= 300 && response.status < 400)) {
+      // 2xx, 3xx redirects (e.g. 301/302 from serve)
+      if (response.ok) {
+        let isDirectoryListing = false;
+        try {
+          const bodyText = await response.text();
+          isDirectoryListing = bodyText.includes("Files within ") ||
+            bodyText.includes("Directory listing") ||
+            bodyText.includes("<title>Index of");
+        } catch {
+          // Ignore body read errors
+        }
+
+        if (isDirectoryListing) {
+          lastStatus = response.status;
+          if (attempt >= maxAttempts) {
+            return {
+              ready: false,
+              url,
+              error: `Application server at ${url} returned a directory listing instead of a rendered web application (missing index.html or invalid server config)`,
+            };
+          }
+          // Do not treat directory listing as a ready web app; keep waiting
+        } else {
+          return { ready: true, url };
+        }
+      } else if (response.status >= 300 && response.status < 400) {
         return { ready: true, url };
       }
     } catch {

@@ -48,6 +48,18 @@ const BLOCKED_COMMAND_PATTERNS = [
   /^\s*px(?:\.cmd|\.exe)?(?:\s|$)/i,
 ];
 
+const PROCESS_TERMINATION_PATTERNS = [
+  /\bStop-Process\b/i,
+  /\btaskkill\b/i,
+  /\bkill\s+-\d+/i,
+  /\bkill\s+\d+/i,
+  /\bkillall\b/i,
+  /\bpkill\b/i,
+  /\bkill-port\b/i,
+  /\bnpx\s+kill-port\b/i,
+  /\bGet-Process\b.*\|\s*Stop-Process\b/i,
+];
+
 const UNIX_COMMAND_PATTERNS = [
   { pattern: /^ls\s+-la\b/i, replacement: "Get-ChildItem -Force" },
   { pattern: /^ls\b/i, replacement: "Get-ChildItem" },
@@ -66,6 +78,8 @@ const UNIX_COMMAND_PATTERNS = [
   { pattern: /^which\s+/i, replacement: "Get-Command " },
   { pattern: /^pwd\b/i, replacement: "Get-Location" },
   { pattern: /^echo\s+/i, replacement: "Write-Output " },
+  { pattern: /^curl\s+/i, replacement: "curl.exe " },
+  { pattern: /^ps\s+(?:aux|-ef|-a)\b/i, replacement: "Get-Process" },
 ];
 
 /**
@@ -110,6 +124,65 @@ export function replaceLogicalAndForPowerShell(command: string): string {
 }
 
 /**
+ * Convert Unix '||' statement separators to PowerShell '; if (-not $?) { ... }' syntax.
+ * Respects single and double quotes so '||' inside strings is never touched.
+ */
+export function replaceLogicalOrForPowerShell(command: string): string {
+  if (!command.includes("||")) return command;
+
+  const parts: string[] = [];
+  let current = "";
+  let inDoubleQuote = false;
+  let inSingleQuote = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    const prev = i > 0 ? command[i - 1] : "";
+
+    if (ch === '"' && !inSingleQuote && prev !== "\\") {
+      inDoubleQuote = !inDoubleQuote;
+      current += ch;
+    } else if (ch === "'" && !inDoubleQuote && prev !== "\\") {
+      inSingleQuote = !inSingleQuote;
+      current += ch;
+    } else if (ch === "|" && command[i + 1] === "|" && !inDoubleQuote && !inSingleQuote) {
+      parts.push(current.trim());
+      current = "";
+      i++; // skip next |
+    } else {
+      current += ch;
+    }
+  }
+  parts.push(current.trim());
+
+  if (parts.length <= 1) return command;
+
+  let result = parts[0];
+  for (let i = 1; i < parts.length; i++) {
+    result += `; if (-not $?) { ${parts[i]} }`;
+  }
+  return result;
+}
+
+/**
+ * Ensures unmatched double or single quotes are balanced to avoid PowerShell parse errors.
+ */
+export function balanceQuotes(command: string): string {
+  let doubleQuotes = 0;
+  let singleQuotes = 0;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    const prev = i > 0 ? command[i - 1] : "";
+    if (ch === '"' && prev !== "\\" && singleQuotes % 2 === 0) doubleQuotes++;
+    if (ch === "'" && prev !== "\\" && doubleQuotes % 2 === 0) singleQuotes++;
+  }
+  let balanced = command;
+  if (doubleQuotes % 2 !== 0) balanced += '"';
+  if (singleQuotes % 2 !== 0) balanced += "'";
+  return balanced;
+}
+
+/**
  * Normalize Unix pipeline utilities (head, tail, grep) to PowerShell equivalents.
  */
 export function normalizePipelinesForPowerShell(command: string): string {
@@ -136,7 +209,27 @@ export function normalizeUnixCommand(command: string): { normalized: string; was
   let wasChanged = false;
   const warnings: string[] = [];
 
-  // 1. If command uses DOS dir with switches (e.g. dir /a /s /b), wrap in cmd /c so PowerShell doesn't misinterpret / switches as parameters
+  // 1. Balance unclosed quotes if present to prevent PowerShell syntax crashes
+  const balanced = balanceQuotes(normalized);
+  if (balanced !== normalized) {
+    normalized = balanced;
+    wasChanged = true;
+    warnings.push("Balanced unclosed quotes for safe shell parsing");
+  }
+
+  // 2. Normalize null redirection (2>/dev/null, >/dev/null) to PowerShell equivalents
+  if (/2>\/dev\/null/i.test(normalized)) {
+    normalized = normalized.replace(/2>\/dev\/null/gi, "2>$null");
+    wasChanged = true;
+    warnings.push("Normalized '2>/dev/null' to '2>$null'");
+  }
+  if (/>\/dev\/null/i.test(normalized)) {
+    normalized = normalized.replace(/>\/dev\/null/gi, ">$null");
+    wasChanged = true;
+    warnings.push("Normalized '>/dev/null' to '>$null'");
+  }
+
+  // 3. If command uses DOS dir with switches (e.g. dir /a /s /b), wrap in cmd /c so PowerShell doesn't misinterpret / switches as parameters
   if (/^dir\s+\/[a-zA-Z]/i.test(normalized)) {
     normalized = `cmd.exe /c ${normalized}`;
     return {
@@ -146,7 +239,7 @@ export function normalizeUnixCommand(command: string): { normalized: string; was
     };
   }
 
-  // 2. Chained commands with &&
+  // 4. Chained commands with && and ||
   const afterAnd = replaceLogicalAndForPowerShell(normalized);
   if (afterAnd !== normalized) {
     normalized = afterAnd;
@@ -154,7 +247,21 @@ export function normalizeUnixCommand(command: string): { normalized: string; was
     warnings.push("Normalized '&&' to PowerShell conditional chaining");
   }
 
-  // 3. Pipeline utilities
+  const afterOr = replaceLogicalOrForPowerShell(normalized);
+  if (afterOr !== normalized) {
+    normalized = afterOr;
+    wasChanged = true;
+    warnings.push("Normalized '||' to PowerShell conditional chaining");
+  }
+
+  // 5. Wrap subcommands that use DOS dir switches in cmd.exe /c
+  if (/(?:^|[\s;&|])dir\s+\/[a-zA-Z]/i.test(normalized)) {
+    normalized = normalized.replace(/(^|[\s;&|])(dir\s+\/[a-zA-Z][^;&|\n]*)/gi, '$1cmd.exe /c "$2"');
+    wasChanged = true;
+    warnings.push("Wrapped DOS dir switches in cmd.exe /c");
+  }
+
+  // 6. Pipeline utilities
   const afterPipelines = normalizePipelinesForPowerShell(normalized);
   if (afterPipelines !== normalized) {
     normalized = afterPipelines;
@@ -162,7 +269,7 @@ export function normalizeUnixCommand(command: string): { normalized: string; was
     warnings.push("Normalized pipeline utilities (head/tail/grep) to PowerShell cmdlets");
   }
 
-  // 4. Prefix commands (ls, cat, rm, etc.)
+  // 7. Prefix commands (ls, cat, rm, curl, ps, etc.)
   for (const { pattern, replacement } of UNIX_COMMAND_PATTERNS) {
     if (pattern.test(normalized)) {
       if (typeof replacement === "function") {
@@ -256,6 +363,16 @@ export function validateCommand(
     }
   }
 
+  for (const pattern of PROCESS_TERMINATION_PATTERNS) {
+    if (pattern.test(normalized)) {
+      return {
+        allowed: false,
+        reason:
+          "Direct process termination is blocked. Use the 'stop_app' tool to manage application processes, or let the agent allocate an available port.",
+      };
+    }
+  }
+
   // Phase 7: Structured validation for risky operations
   // Split command into sub-commands by PowerShell pipeline/statement separators
   const subCommands = normalized.split(/(?:;|\||&&|\|\||\n)/);
@@ -300,9 +417,19 @@ export function validateCommand(
       };
     }
 
+    // Block process termination
+    const killCommands = ['stop-process', 'taskkill', 'kill', 'pkill', 'killall'];
+    if (killCommands.includes(exe)) {
+      return {
+        allowed: false,
+        reason: `Direct process termination command '${exe}' is blocked. Use the 'stop_app' tool to manage application processes, or let the agent allocate an available port.`
+      };
+    }
+
     // Block commands trying to escape workspace (cd .., etc)
     if (exe === 'cd' || exe === 'set-location' || exe === 'pushd') {
-      if (tokens.some(t => t.includes('..') || t.startsWith('/') || t.startsWith('\\') || /^[a-z]:/i.test(t))) {
+      const args = tokens.slice(1);
+      if (args.some(t => t.includes('..') || t === '/' || t === '\\' || /^[a-z]:\\?$/i.test(t))) {
         return {
           allowed: false,
           reason: `Changing directory outside the current workspace is blocked.`
