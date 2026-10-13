@@ -7,6 +7,7 @@ export type ProjectTemplate = "react-vite" | "static";
 export type ScaffoldResult = {
   success: boolean;
   files: string[];
+  projectRoot?: string;
   error?: string;
 };
 
@@ -245,6 +246,19 @@ export async function scaffoldReactViteProject(
   const title = projectName.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   const filesCreated: string[] = [];
 
+  // If workspace already contains files and is not named after this project, scaffold into child folder
+  const currentDirName = path.basename(workspace.root).toLowerCase();
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(workspace.root).filter((e) => !e.startsWith(".") && e !== "node_modules");
+  } catch {}
+
+  if (entries.length > 0 && currentDirName !== slug.toLowerCase()) {
+    const childPath = path.join(workspace.root, projectName);
+    fs.mkdirSync(childPath, { recursive: true });
+    workspace.setRoot(childPath);
+  }
+
   try {
     // 1. package.json
     const packageJson = {
@@ -375,7 +389,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     await workspace.write("src/main.jsx", mainJsx);
     filesCreated.push("src/main.jsx");
 
-    return { success: true, files: filesCreated };
+    return { success: true, files: filesCreated, projectRoot: workspace.root };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     return { success: false, files: filesCreated, error };
@@ -392,6 +406,19 @@ export async function scaffoldStaticProject(
   const slug = projectName.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "static-website";
   const title = projectName.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   const filesCreated: string[] = [];
+
+  // If workspace already contains files and is not named after this project, scaffold into child folder
+  const currentDirName = path.basename(workspace.root).toLowerCase();
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(workspace.root).filter((e) => !e.startsWith(".") && e !== "node_modules");
+  } catch {}
+
+  if (entries.length > 0 && currentDirName !== slug.toLowerCase()) {
+    const childPath = path.join(workspace.root, projectName);
+    fs.mkdirSync(childPath, { recursive: true });
+    workspace.setRoot(childPath);
+  }
 
   try {
     // 1. package.json
@@ -466,7 +493,7 @@ main {
     await workspace.write("script.js", scriptJs);
     filesCreated.push("script.js");
 
-    return { success: true, files: filesCreated };
+    return { success: true, files: filesCreated, projectRoot: workspace.root };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     return { success: false, files: filesCreated, error };

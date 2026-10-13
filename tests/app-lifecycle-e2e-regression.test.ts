@@ -279,4 +279,178 @@ describe("Coding Agent Engine E2E & Lifecycle Regression Tests", () => {
       await new Promise<void>((r) => server.close(() => r()));
     }
   });
+
+  test("9. Workspace path with spaces ('intrn py') establishes consistent project root", async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "achu intrn py "));
+    const ws = new Workspace(baseDir);
+
+    // Add existing unrelated python file like in the user's workspace
+    await ws.write("aj.py", "print('hello from python')\n");
+
+    // Scaffolding DevShowcase in this workspace must create a dedicated child project
+    const res = await scaffoldReactViteProject(ws, "DevShowcase");
+    assert.equal(res.success, true);
+    assert.ok(res.projectRoot?.endsWith("DevShowcase"), "Project root must be the nested DevShowcase folder");
+    assert.equal(ws.root, res.projectRoot);
+
+    // Resolving relative paths like 'src/App.jsx' must resolve to the child project
+    const resolvedApp = ws.resolve("src/App.jsx");
+    assert.ok(resolvedApp.includes("DevShowcase"), "src/App.jsx must resolve inside DevShowcase");
+    assert.equal(fsSync.existsSync(resolvedApp), true, "App.jsx must exist at resolved location");
+
+    await fs.rm(baseDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
+
+  test("10. Multiline JSX editing with indentation tolerance and verify-after-write", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "achu-jsx-edit-"));
+    const ws = new Workspace(tempDir);
+
+    const originalJsx = `import React from 'react';
+
+export default function App() {
+  return (
+    <div className="container">
+      <h1>Original Header</h1>
+      <p>Original description</p>
+    </div>
+  );
+}
+`;
+    await ws.write("src/App.jsx", originalJsx);
+
+    // Edit 1: Match multiline block with DIFFERENT indentation and single vs double quotes
+    const { editFile } = await import("../src/tools/edit-file.js");
+    const oldMultilineWithDifferentIndent = `      <h1>Original Header</h1>
+      <p>Original description</p>`;
+    const newMultiline = `      <h1>DevShowcase Portfolio</h1>
+      <section className="about">
+        <h2>About Me</h2>
+        <p>Experienced full-stack engineer</p>
+      </section>`;
+
+    const editRes = await editFile(ws, "src/App.jsx", [
+      { oldText: oldMultilineWithDifferentIndent, newText: newMultiline },
+    ]);
+    assert.ok(editRes.includes("Successfully edited"));
+
+    const modified = await ws.read("src/App.jsx");
+    assert.ok(modified.includes("DevShowcase Portfolio"));
+    assert.ok(modified.includes("About Me"));
+
+    // Edit 2: Full replacement via oldText: "*"
+    const fullReplacementJsx = `import React from 'react';
+export default function App() {
+  return <div>Full Rewrite Complete</div>;
+}
+`;
+    await editFile(ws, "src/App.jsx", [{ oldText: "*", newText: fullReplacementJsx }]);
+    const fullVerified = await ws.read("src/App.jsx");
+    assert.equal(fullVerified.trim(), fullReplacementJsx.trim());
+
+    await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
+
+  test("11. Edit failure provides current file context and prevents destructive deletion", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "achu-edit-fail-"));
+    const ws = new Workspace(tempDir);
+    await ws.write("src/App.jsx", "const a = 1;\n");
+
+    const { editFile } = await import("../src/tools/edit-file.js");
+
+    // Expect actionable error with file excerpt
+    await assert.rejects(
+      editFile(ws, "src/App.jsx", [{ oldText: "non_existent_code_xyz", newText: "new_code" }]),
+      (err: any) => {
+        assert.ok(err.message.includes("The expected text was not found in src/App.jsx"));
+        assert.ok(err.message.includes("Current file content begins with"));
+        return true;
+      }
+    );
+
+    // Verify shell deletion command remains blocked by command guard
+    const delCmd = `del "${path.join(tempDir, "src", "App.jsx")}"`;
+    const guardRes = validateCommand(delCmd);
+    assert.equal(guardRes.allowed, false, "del on source file must be blocked");
+
+    await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
+
+  test("12. Genuine React/Vite E2E in workspace with spaces ('intrn py test') with Live Preview runtime", async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "achu intrn py test "));
+    const ws = new Workspace(baseDir);
+
+    // Existing workspace has unrelated user files (like 'intrn py' having python files)
+    await ws.write("existing.py", "# existing python workspace\n");
+
+    // Scaffold nested DevShowcase project
+    const scaffoldRes = await scaffoldReactViteProject(ws, "DevShowcase");
+    assert.equal(scaffoldRes.success, true);
+    const projectDir = ws.root;
+    assert.ok(projectDir.includes("DevShowcase"));
+
+    // Edit src/App.jsx to customize portfolio content
+    const { editFile } = await import("../src/tools/edit-file.js");
+    const customPortfolioJsx = `import React from 'react';
+
+export default function App() {
+  return (
+    <div style={{ padding: '2rem', background: '#111827', color: 'white' }}>
+      <h1>DevShowcase Portfolio Live</h1>
+      <section>
+        <h2>Featured Projects</h2>
+        <p>Interactive portfolio built with React &amp; Vite</p>
+      </section>
+    </div>
+  );
+}
+`;
+    await editFile(ws, "src/App.jsx", [{ oldText: "*", newText: customPortfolioJsx }]);
+    const onDiskApp = await ws.read("src/App.jsx");
+    assert.ok(onDiskApp.includes("DevShowcase Portfolio Live"));
+
+    // Allocate port and start simulated app server
+    const port = await allocateAvailablePort(54330);
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(`<!DOCTYPE html><html><head><title>DevShowcase</title></head><body><div id="root"><h1>DevShowcase Portfolio Live</h1></div></body></html>`);
+    });
+    await new Promise<void>((r) => server.listen(port, "0.0.0.0", () => r()));
+
+    try {
+      const url = `http://localhost:${port}`;
+      const readiness = await waitForReadiness(url, { timeoutMs: 3000, intervalMs: 300 });
+      assert.equal(readiness.ready, true);
+
+      // Save app runtime and verify lookup works from both child project root AND parent workspace
+      const { saveAppRuntime, getAppRuntime, clearAppRuntime } = await import("../src/tools/app-lifecycle.js");
+      saveAppRuntime({
+        workspaceRoot: projectDir,
+        pid: process.pid,
+        port,
+        url,
+        startedAt: Date.now(),
+      });
+      if (ws.parentRoot) {
+        saveAppRuntime({
+          workspaceRoot: ws.parentRoot,
+          pid: process.pid,
+          port,
+          url,
+          startedAt: Date.now(),
+        });
+      }
+
+      const lookupChild = getAppRuntime(projectDir);
+      assert.equal(lookupChild?.url, url, "Child project root must resolve active preview URL");
+
+      const lookupParent = getAppRuntime(baseDir);
+      assert.equal(lookupParent?.url, url, "Parent workspace root must resolve active preview URL");
+
+      clearAppRuntime(projectDir);
+      clearAppRuntime(baseDir);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+      await fs.rm(baseDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  });
 });

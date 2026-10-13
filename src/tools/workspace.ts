@@ -137,19 +137,40 @@ export async function shouldIsolateNewProject(task: string, currentWorkspaceRoot
   if (!isNewWebsiteTask(task)) return false;
 
   try {
+    const slug = deriveProjectSlug(task);
+    const currentDirName = path.basename(currentWorkspaceRoot).toLowerCase();
+    const isMatchingDirectory = currentDirName === slug.toLowerCase();
+
+    // Explicit user requirement for isolated workspace
+    if (/isolated workspace|new workspace|new directory|fresh workspace/i.test(task)) {
+      if (!isMatchingDirectory) return true;
+    }
+
     const ws = new Workspace(currentWorkspaceRoot);
     const hasPkg = await ws.exists("package.json");
     const hasIndex = await ws.exists("index.html");
-    if (!hasPkg && !hasIndex) {
-      // Empty or clean workspace is safe to use
+
+    // Check if directory has existing user files
+    let entries: string[] = [];
+    try {
+      entries = await fs.readdir(currentWorkspaceRoot);
+    } catch {
+      return true;
+    }
+
+    const nonMetaEntries = entries.filter((e) => !e.startsWith(".") && e !== "node_modules");
+
+    // Truly empty workspace is safe to reuse
+    if (nonMetaEntries.length === 0) {
       return false;
     }
-    const slug = deriveProjectSlug(task);
-    const currentDirName = path.basename(currentWorkspaceRoot).toLowerCase();
-    if (currentDirName === slug.toLowerCase()) {
+
+    // Matching directory name means user selected this specific project directory
+    if (isMatchingDirectory) {
       return false;
     }
-    // Existing project is unrelated; isolate into dedicated project folder
+
+    // Directory contains files and does NOT match the requested project: isolate
     return true;
   } catch {
     return true;
@@ -157,11 +178,45 @@ export async function shouldIsolateNewProject(task: string, currentWorkspaceRoot
 }
 
 export class Workspace {
-  constructor(public readonly root = process.cwd()) {
+  public root: string;
+  public parentRoot?: string;
+
+  constructor(root = process.cwd()) {
     this.root = path.resolve(root);
   }
 
   getRoot(): string {
+    return this.root;
+  }
+
+  setRoot(newRoot: string): void {
+    const resolved = path.resolve(newRoot);
+    if (!this.parentRoot && resolved !== this.root && isInsideRoot(this.root, resolved)) {
+      this.parentRoot = this.root;
+    }
+    this.root = resolved;
+  }
+
+  /**
+   * Discovers if there is an authoritative app project root in a child directory
+   * (e.g. if a subfolder contains package.json while root does not, or after scaffolding).
+   */
+  async getAuthoritativeProjectRoot(): Promise<string> {
+    if (await this.exists("package.json")) {
+      return this.root;
+    }
+    // Check immediate subdirectories for package.json
+    try {
+      const entries = await fs.readdir(this.root, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && entry.name !== "node_modules" && !entry.name.startsWith(".")) {
+          const subPath = path.join(this.root, entry.name);
+          if (fsSync.existsSync(path.join(subPath, "package.json"))) {
+            return subPath;
+          }
+        }
+      }
+    } catch {}
     return this.root;
   }
 
@@ -172,9 +227,29 @@ export class Workspace {
    * workspace root so a symlinked directory cannot be used to break out.
    */
   resolve(relativePath: string): string {
-    const target = path.resolve(this.root, relativePath);
+    let target = path.resolve(this.root, relativePath);
 
-    if (!isInsideRoot(this.root, target)) {
+    // If target does not exist at current root, check if it exists in an immediate child project directory
+    // (e.g., if project was scaffolded into a subdirectory like 'DevShowcase/src/App.jsx')
+    if (!fsSync.existsSync(target)) {
+      try {
+        const entries = fsSync.readdirSync(this.root, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && entry.name !== "node_modules" && !entry.name.startsWith(".")) {
+            const candidate = path.resolve(this.root, entry.name, relativePath);
+            if (fsSync.existsSync(candidate)) {
+              // Found target inside child project: update authoritative root
+              this.setRoot(path.join(this.root, entry.name));
+              target = candidate;
+              break;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    const isAllowed = isInsideRoot(this.root, target) || (this.parentRoot ? isInsideRoot(this.parentRoot, target) : false);
+    if (!isAllowed) {
       throw new Error(`Path outside workspace is not allowed: ${relativePath}`);
     }
 
@@ -213,7 +288,16 @@ export class Workspace {
       realRoot = this.root;
     }
 
-    if (!isInsideRoot(realRoot, realExisting)) {
+    let realParentRoot = realRoot;
+    if (this.parentRoot) {
+      try {
+        realParentRoot = fsSync.realpathSync.native(this.parentRoot);
+      } catch {
+        realParentRoot = this.parentRoot;
+      }
+    }
+
+    if (!isInsideRoot(realRoot, realExisting) && !isInsideRoot(realParentRoot, realExisting)) {
       throw new Error(`Path outside workspace is not allowed: ${original}`);
     }
   }

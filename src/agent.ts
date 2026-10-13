@@ -472,6 +472,20 @@ export async function detectExistingProject(workspace: Workspace): Promise<{
   }
 
   if (existingFiles.length === 0) {
+    // Check if an immediate child directory contains an existing project
+    try {
+      const entries = fs.readdirSync(workspace.root, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && entry.name !== "node_modules" && !entry.name.startsWith(".")) {
+          const subPath = path.join(workspace.root, entry.name);
+          if (fs.existsSync(path.join(subPath, "package.json"))) {
+            workspace.setRoot(subPath);
+            console.log(chalk.cyan(`Established authoritative project root at subdirectory: ${subPath}`));
+            return detectExistingProject(workspace);
+          }
+        }
+      }
+    } catch {}
     return { hasProject: false, projectType: "none", existingFiles: [], framework: null };
   }
 
@@ -1292,6 +1306,9 @@ export function generateRecoveryHint(state: AgentState): string | null {
   }
   // Windows-specific recovery guidance
   repeatedHint += `\n\nRECOVERY COMMANDS (Windows PowerShell):\n- Check if app is running: Get-Process | Where-Object {$_.ProcessName -like \"*node*\"}\n- Check listening ports: Get-NetTCPConnection -State Listen | Where-Object {$_.LocalPort -eq <port>}\n- Test HTTP: Invoke-WebRequest -Uri ${appUrl || "http://localhost:<port>"} -UseBasicParsing\n- Restart app: use the 'start_app' tool (not shell commands)\n- Note: NEVER attempt to kill processes or run Stop-Process. The 'start_app' tool automatically allocates an alternative port if needed.`;
+  if (err.command === "edit_file") {
+    repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- To update the file, either read the latest content with 'read_file' first to get exact matching context, or specify 'oldText: "*"' with your new content in 'edit_file' to update the file directly.`;
+  }
   // CRITICAL: If the failure was using run_command for server startup, explicitly block it
   if (err.command === "run_command" && /\b(npx\s+(serve|http-server)|npm\s+run\s+(dev|start|serve|preview))\b/i.test(err.errorMessage ?? "")) {
     repeatedHint += `\n\nCRITICAL: run_command CANNOT be used to start development servers. You MUST use the 'start_app' tool. The 'start_app' tool detects the correct command from package.json, waits for readiness, and returns the actual URL.`;
@@ -1865,7 +1882,7 @@ async function callModelWithRetry(
         tools: [
           { type: "function", function: { name: "read_file", description: "Read a file from the workspace.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } } },
           { type: "function", function: { name: "search_code", description: "Search source files in the workspace.", parameters: { type: "object", properties: { query: { type: "string" }, type: { type: "string", enum: ["text", "symbol", "path", "imports"], description: "Type of search: 'text' (default) for substring, 'symbol' for functions/classes, 'path' for file path, 'imports' to find what imports a module." } }, required: ["query"], additionalProperties: false } } },
-          { type: "function", function: { name: "edit_file", description: "Edit one or more occurrences in a source file. Use 'edits' array for multiple replacements, or oldText/newText for a single replacement. Be sure to provide enough context in oldText to match exactly one location.", parameters: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" }, edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } }, required: ["oldText", "newText"] } } }, required: ["path"], additionalProperties: false } } },
+    { type: "function", function: { name: "edit_file", description: "Edit a source file. Use oldText and newText for targeted replacement, or set oldText: '*' (or omit oldText) to replace the entire file content. Use 'edits' array for multiple replacements.", parameters: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" }, edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } }, required: ["newText"] } } }, required: ["path"], additionalProperties: false } } },
           { type: "function", function: { name: "run_command", description: "Run a safe non-verification terminal command.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
           { type: "function", function: { name: "run_verification", description: "Run the exact verification command requested by the user.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
           { type: "function", function: { name: "list_directory", description: "List the contents of a directory in the workspace.", parameters: { type: "object", properties: { directoryPath: { type: "string", description: "Path of directory to list (relative to workspace root)." } }, required: [], additionalProperties: false } } },
@@ -1930,11 +1947,11 @@ const schemas = {
     oldText: z.string().optional(),
     newText: z.string().optional(),
     edits: z.array(z.object({
-      oldText: z.string(),
+      oldText: z.string().optional(),
       newText: z.string()
     })).optional()
-  }).refine(data => data.edits?.length || (data.oldText !== undefined && data.newText !== undefined), {
-    message: "Must provide either 'edits' array or both 'oldText' and 'newText'"
+  }).refine(data => data.edits?.length || data.newText !== undefined || (data.oldText !== undefined && data.newText !== undefined), {
+    message: "Must provide either 'edits' array, 'newText', or both 'oldText' and 'newText'"
   }),
   run_command: z.object({ command: z.string() }),
   run_verification: z.object({ command: z.string() }),
@@ -1975,7 +1992,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
       case "search_code": { const query = args.query; const searchType = args.type || "text"; console.log(chalk.gray(`Searching (${searchType}): ${query}`)); const results = await searchCode(workspace, query, searchType); return truncateToolResult(results); }
       case "edit_file": {
         const filePath = args.path; 
-        const edits = args.edits || [{ oldText: args.oldText, newText: args.newText }];
+        const edits = args.edits || [{ oldText: args.oldText !== undefined ? args.oldText : "*", newText: args.newText || "" }];
         const protectedFiles = ["tsconfig.json", "package.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"]; 
         const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase(); 
         if (protectedFiles.includes(normalizedPath)) return `BLOCKED: ${filePath} is a protected configuration file and cannot be modified automatically.`; 
@@ -2068,6 +2085,10 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         if (!scaffoldRes.success) {
           return `Scaffold failed: ${scaffoldRes.error}`;
         }
+        if (scaffoldRes.projectRoot && scaffoldRes.projectRoot !== workspace.root) {
+          workspace.setRoot(scaffoldRes.projectRoot);
+          console.log(chalk.cyan(`Authoritative project root updated to: ${scaffoldRes.projectRoot}`));
+        }
         for (const file of scaffoldRes.files) {
           state.completedTasks.add(`create_file:${file}`);
           await state.snapshotManager.captureBefore(file, "create");
@@ -2095,6 +2116,10 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         if (!startInfo.command) return "No start command found in package.json scripts (dev, start, serve, preview).";
 
         const workingDir = startInfo.cwd || workspace.root;
+        if (workingDir !== workspace.root) {
+          workspace.setRoot(workingDir);
+          console.log(chalk.cyan(`Updated workspace root to match application directory: ${workingDir}`));
+        }
 
         // Pre-startup validation and auto-repair
         const validation = validateProjectStructure(workingDir);
@@ -2282,6 +2307,16 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           startedAt: appInfo.startTime,
           outputPath: appInfo.outputPath,
         });
+        if (workspace.parentRoot) {
+          saveAppRuntime({
+            workspaceRoot: workspace.parentRoot,
+            pid: appInfo.pid,
+            port: appInfo.port,
+            url: finalUrl,
+            startedAt: appInfo.startTime,
+            outputPath: appInfo.outputPath,
+          });
+        }
 
         console.log(chalk.gray(`App started and ready at ${finalUrl}`));
         // Detach the app process from parent to allow parent CLI to exit while child continues running

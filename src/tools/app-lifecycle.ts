@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as net from "node:net";
-import { Workspace } from "./workspace.js";
+import { Workspace, isInsideRoot } from "./workspace.js";
 import { validateProjectStructure, autoRepairProjectStructure } from "./scaffold.js";
 
 export type AppProcessInfo = {
@@ -694,13 +694,21 @@ export function getAppRuntime(workspaceRoot: string): AppRuntimeRecord | null {
   const registry = loadRegistry();
   const key = normalizeWorkspaceKey(workspaceRoot);
   const record = registry[key];
-  if (!record) return null;
-  if (!isProcessAlive(record.pid)) {
+  if (record) {
+    if (isProcessAlive(record.pid)) return record;
     delete registry[key];
     saveRegistry(registry);
-    return null;
   }
-  return record;
+
+  // Also check if any active record is inside an immediate child project of workspaceRoot
+  const resolvedRoot = path.resolve(workspaceRoot);
+  for (const [k, rec] of Object.entries(registry)) {
+    if (isProcessAlive(rec.pid) && isInsideRoot(resolvedRoot, rec.workspaceRoot)) {
+      return rec;
+    }
+  }
+
+  return null;
 }
 
 /** Persist (or update) the app runtime record for a workspace. */
