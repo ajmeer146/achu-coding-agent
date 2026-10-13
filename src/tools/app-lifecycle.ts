@@ -146,7 +146,7 @@ export function spawnAppProcess(
   let outputPath: string | undefined;
   try {
     outputPath = path.join(os.tmpdir(), `achu-app-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
-    
+
     const wrapperSrc = `
       const fs = require('fs');
       const { spawn } = require('child_process');
@@ -246,6 +246,8 @@ export function detachAppProcess(appInfo: AppProcessInfo): void {
  */
 export function extractPortFromOutput(output: string): number | null {
   const patterns = [
+    /Accepting connections at\s+https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/i,
+    /serving on\s+https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/i,
     /Local:\s*https?:\/\/localhost:(\d+)/i,
     /http:\/\/localhost:(\d+)/i,
     /http:\/\/127\.0\.0\.1:(\d+)/i,
@@ -271,6 +273,8 @@ export function extractPortFromOutput(output: string): number | null {
  */
 export function extractUrlFromOutput(output: string): string | null {
   const patterns = [
+    /Accepting connections at\s+(https?:\/\/[^\s]+)/i,
+    /serving on\s+(https?:\/\/[^\s]+)/i,
     /Local:\s*(https?:\/\/[^\s]+)/i,
     /(https?:\/\/localhost:\d+)/i,
     /(https?:\/\/127\.0\.0\.1:\d+)/i,
@@ -287,6 +291,87 @@ export function extractUrlFromOutput(output: string): string | null {
 }
 
 /**
+ * Resolves the actual reachable URL for a web project.
+ * If the root URL (/) returns a directory listing (e.g. static server without index.html)
+ * or 404, it checks candidate entry files (e.g. modified .html files or root html files)
+ * and returns the full path (e.g. http://localhost:62727/hello-ajmeer.html).
+ */
+export async function resolveProjectEntryUrl(
+  baseUrl: string,
+  workspaceRoot?: string,
+  candidateFiles?: string[]
+): Promise<string> {
+  const normalizedBase = baseUrl.replace(/\/+$/, "");
+  if (!workspaceRoot) return normalizedBase;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+    let rootResponse: Response | null = null;
+    let rootText = "";
+    try {
+      rootResponse = await fetch(normalizedBase, { method: "GET", redirect: "manual", signal: controller.signal });
+      rootText = await rootResponse.text();
+    } catch {
+      // Ignore network errors on initial probe
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    const isDirectoryListing = rootText.includes("Files within ") || rootText.includes("Directory listing");
+    const isNotFound = rootResponse ? (rootResponse.status === 404) : false;
+
+    // If root works and is not a directory listing or 404, root is fine
+    if (rootResponse && rootResponse.ok && !isDirectoryListing && !isNotFound) {
+      return normalizedBase;
+    }
+
+    // Collect candidate HTML files
+    const candidates: string[] = [];
+    if (candidateFiles && Array.isArray(candidateFiles)) {
+      for (const f of candidateFiles) {
+        if (typeof f === "string" && f.toLowerCase().endsWith(".html")) {
+          candidates.push(f);
+        }
+      }
+    }
+
+    try {
+      const entries = await fs.promises.readdir(workspaceRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.toLowerCase().endsWith(".html") && entry.name.toLowerCase() !== "index.html") {
+          if (!candidates.includes(entry.name)) {
+            candidates.push(entry.name);
+          }
+        }
+      }
+    } catch {
+      // Ignore readdir errors
+    }
+
+    for (const candidate of candidates) {
+      const cleanPath = candidate.replace(/^[/\\]+/, "").replace(/\\/g, "/");
+      const candidateUrl = `${normalizedBase}/${cleanPath}`;
+      try {
+        const ctl = new AbortController();
+        const tid = setTimeout(() => ctl.abort(), 1500);
+        const res = await fetch(candidateUrl, { method: "GET", redirect: "follow", signal: ctl.signal });
+        clearTimeout(tid);
+        if (res.ok) {
+          return candidateUrl;
+        }
+      } catch {
+        // Continue to next candidate
+      }
+    }
+  } catch {
+    // Fall back to normalized base
+  }
+
+  return normalizedBase;
+}
+
+/**
  * Wait for application readiness by polling the URL.
  */
 export async function waitForReadiness(
@@ -299,7 +384,7 @@ export async function waitForReadiness(
 ): Promise<ReadinessCheckResult> {
   const { timeoutMs = 60000, intervalMs = 1000, onProgress } = options;
   const maxAttempts = Math.ceil(timeoutMs / intervalMs);
-  const startTime = Date.now();
+  let lastStatus: number | null = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (onProgress) onProgress(attempt, maxAttempts);
@@ -307,15 +392,18 @@ export async function waitForReadiness(
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
+
       const response = await fetch(url, {
         method: "GET",
+        redirect: "manual",
         signal: controller.signal,
       });
-      
-      clearTimeout(timeoutId);
 
-      if (response.ok) {
+      clearTimeout(timeoutId);
+      lastStatus = response.status;
+
+      // 2xx, 3xx redirects (e.g. 301/302 from serve), or even 404 on a static server means HTTP is ready
+      if (response.ok || (response.status >= 300 && response.status < 400)) {
         return { ready: true, url };
       }
     } catch {
@@ -327,10 +415,11 @@ export async function waitForReadiness(
     }
   }
 
-  return { 
-    ready: false, 
-    url, 
-    error: `Application readiness timeout after ${timeoutMs}ms` 
+  const detail = lastStatus ? ` (last HTTP status: ${lastStatus})` : "";
+  return {
+    ready: false,
+    url,
+    error: `Application readiness timeout after ${timeoutMs}ms${detail}`
   };
 }
 
@@ -384,7 +473,7 @@ export function isOwnedProcess(appInfo: AppProcessInfo | null, pid: number): boo
  */
 export function appendAppOutput(appInfo: AppProcessInfo, chunk: string): void {
   appInfo.output += chunk;
-  
+
   // Update URL/port if detected
   if (!appInfo.port) {
     const port = extractPortFromOutput(chunk);
@@ -577,15 +666,24 @@ export async function discoverNewServerUrl(options: {
   } = options;
 
   const deadline = Date.now() + timeoutMs;
+  let iteration = 0;
 
   for (;;) {
+    if (isAlive && !isAlive()) return null;
+
     // Prefer the spawned process's own reported URL when available.
     if (getUrlFromOutput) {
       const reported = getUrlFromOutput();
       if (reported) return reported;
     }
 
-    if (candidatePort) {
+    // If candidatePort was occupied prior to spawn, the process had a port conflict
+    // and was forced to choose another port. Avoid immediately probing candidatePort range
+    // on the first loop iterations to give stdout time to announce the real selected port.
+    const candidateConflict = candidatePort !== null && preexistingPorts.has(candidatePort);
+    const allowPortProbing = !candidateConflict || iteration >= 2;
+
+    if (candidatePort && allowPortProbing) {
       const serving = await probePortRange(candidatePort, maxProbes, 500);
       for (let port = candidatePort; port < candidatePort + maxProbes; port++) {
         if (port > 65535) break;
@@ -598,6 +696,7 @@ export async function discoverNewServerUrl(options: {
     if (isAlive && !isAlive()) return null;
     if (Date.now() >= deadline) return null;
 
+    iteration++;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
 }

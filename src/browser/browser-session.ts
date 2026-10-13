@@ -1,4 +1,4 @@
-// Reference the DOM library for DOM types in the evaluate function
+﻿// Reference the DOM library for DOM types in the evaluate function
 /// <reference lib="dom" />
 
 import { chromium, Browser, Page, LaunchOptions } from 'playwright';
@@ -22,15 +22,15 @@ export class BrowserSession {
    * Launches the browser and creates a new page.
    * @returns {Promise<void>}
    */
-async init(): Promise<void> {
+  async init(): Promise<void> {
     if (this.browser === null) {
       this.browser = await chromium.launch(this.launchOptions);
     }
     if (this.page === null && this.browser !== null) {
       this.page = await this.browser.newPage();
       // Set default timeouts for page operations
-      this.page.setDefaultTimeout(60000);
-      this.page.setDefaultNavigationTimeout(60000);
+      this.page.setDefaultTimeout(30000);
+      this.page.setDefaultNavigationTimeout(30000);
 
       // Collect console errors
       this.page.on('console', msg => {
@@ -48,29 +48,77 @@ async init(): Promise<void> {
           this.pageErrors.push(error.message);
         }
       });
+
+      // Collect failed network requests
+      this.page.on('requestfailed', request => {
+        const failure = request.failure();
+        if (failure && this.pageErrors.length < 50) {
+          this.pageErrors.push(`Failed request: ${request.url()} - ${failure.errorText}`);
+        }
+      });
+    }
+  }
+
+  /**
+   * Checks whether the browser automation service is available and operational.
+   */
+  async isAvailable(): Promise<{ available: boolean; error?: string }> {
+    try {
+      if (this.browser === null) {
+        await this.init();
+      }
+      return { available: true };
+    } catch (err: any) {
+      return {
+        available: false,
+        error: err.message ?? "Browser automation service unavailable",
+      };
     }
   }
 
   /**
    * Navigates to the given URL.
    * @param {string} url - The URL to navigate to.
-   * @returns {Promise<{ success: true; url: string; title: string } | { success: false; error: string; recoverable: boolean }>}
+   * @returns {Promise<{ success: true; url: string; title: string; status?: number | null } | { success: false; error: string; recoverable: boolean; isConnectivityError?: boolean; status?: number | null }>}
    */
-  async navigate(url: string): Promise<{ success: true; url: string; title: string } | { success: false; error: string; recoverable: boolean }> {
+  async navigate(url: string): Promise<
+    | { success: true; url: string; title: string; status?: number | null }
+    | { success: false; error: string; recoverable: boolean; isConnectivityError?: boolean; status?: number | null }
+  > {
     if (!this.page) {
-      return { success: false, error: 'Browser page not initialized. Call init() first.', recoverable: true };
+      return { success: false, error: 'Browser page not initialized. Call init() first.', recoverable: true, isConnectivityError: true };
     }
     try {
       this.consoleErrors = [];
       this.pageErrors = [];
-      await this.page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+
+      let response = null;
+      try {
+        response = await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      } catch (err: any) {
+        const msg = err.message ?? '';
+        if (msg.includes('ERR_CONNECTION_REFUSED') || msg.includes('ECONNREFUSED') || msg.includes('Target closed') || msg.includes('browser has been closed')) {
+          throw err;
+        }
+        // Fallback to load wait if domcontentloaded timed out
+        response = await this.page.goto(url, { waitUntil: 'load', timeout: 15000 });
+      }
+
+      const status = response ? response.status() : null;
       const title = await this.page.title();
-      return { success: true, url: this.page.url(), title };
+      return { success: true, url: this.page.url(), title, status };
     } catch (err: any) {
-      return { 
-        success: false, 
-        error: err.message ?? 'Unknown error during navigation', 
-        recoverable: err.name !== 'TimeoutError' // Timeout errors might be recoverable by retrying?
+      const msg = err.message ?? 'Unknown error during navigation';
+      const isConnRefused = msg.includes('ERR_CONNECTION_REFUSED') || msg.includes('ECONNREFUSED');
+      const isTargetClosed = msg.includes('Target closed') || msg.includes('browser has been closed') || msg.includes('Session closed');
+      const isTimeout = err.name === 'TimeoutError' || msg.includes('Timeout') || msg.includes('timed out');
+      const isConnectivityError = isTargetClosed || msg.includes('Executable doesn\'t exist') || msg.includes('Protocol error');
+      return {
+        success: false,
+        error: msg,
+        recoverable: isTimeout || isConnRefused,
+        isConnectivityError,
+        status: null,
       };
     }
   }
@@ -142,10 +190,10 @@ async init(): Promise<void> {
 
       return { success: true, info };
     } catch (err: any) {
-      return { 
-        success: false, 
-        error: err.message ?? 'Unknown error during inspection', 
-        recoverable: true 
+      return {
+        success: false,
+        error: err.message ?? 'Unknown error during inspection',
+        recoverable: true
       };
     }
   }
@@ -183,10 +231,10 @@ async init(): Promise<void> {
       }
       return { success: true, message: `Clicked on ${selector}` };
     } catch (err: any) {
-      return { 
-        success: false, 
-        error: err.message ?? `Failed to click on ${selector}`, 
-        recoverable: true 
+      return {
+        success: false,
+        error: err.message ?? `Failed to click on ${selector}`,
+        recoverable: true
       };
     }
   }
@@ -234,10 +282,10 @@ async init(): Promise<void> {
       }
       return { success: true, message: `Typed into ${selector}` };
     } catch (err: any) {
-      return { 
-        success: false, 
-        error: err.message ?? `Failed to type into ${selector}`, 
-        recoverable: true 
+      return {
+        success: false,
+        error: err.message ?? `Failed to type into ${selector}`,
+        recoverable: true
       };
     }
   }
@@ -255,10 +303,10 @@ async init(): Promise<void> {
       const base64 = screenshotBuffer.toString('base64');
       return { success: true, screenshot: base64 };
     } catch (err: any) {
-      return { 
-        success: false, 
-        error: err.message ?? 'Failed to take screenshot', 
-        recoverable: true 
+      return {
+        success: false,
+        error: err.message ?? 'Failed to take screenshot',
+        recoverable: true
       };
     }
   }
@@ -276,10 +324,10 @@ async init(): Promise<void> {
       const title = await this.page.title();
       return { success: true, url, title };
     } catch (err: any) {
-      return { 
-        success: false, 
-        error: err.message ?? 'Failed to get page info', 
-        recoverable: true 
+      return {
+        success: false,
+        error: err.message ?? 'Failed to get page info',
+        recoverable: true
       };
     }
   }

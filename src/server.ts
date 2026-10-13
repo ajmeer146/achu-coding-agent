@@ -14,6 +14,7 @@ import { browseDirectory } from "./tools/directory-browser.js";
 import { runAgent } from "./agent.js";
 import { spawn } from "node:child_process";
 import { captureWorkspaceBaseline, detectChanges, ChangedFile, generateDiffForDisplay, TaskBaseline } from "./tools/file-tracker.js";
+import { getAppRuntime, isUrlServing, isProcessAlive } from "./tools/app-lifecycle.js";
 import { createSessionManager } from "./session/session-manager.js";
 import { SessionData, SessionMetadata } from "./session/session-types.js";
 
@@ -25,6 +26,16 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
 app.use(express.json());
+app.use((_req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  if (_req.method === "OPTIONS") {
+    res.sendStatus(200);
+    return;
+  }
+  next();
+});
 app.use(express.static(path.join(__dirname, "../public")));
 
 interface ClientConnection {
@@ -130,6 +141,12 @@ async function handleMessage(client: ClientConnection, message: any) {
           path: selection.root,
           entryCount: selection.entries,
         });
+
+        // If an active app server exists for this workspace, send the live URL immediately
+        const runtime = getAppRuntime(selection.root);
+        if (runtime && runtime.url && isProcessAlive(runtime.pid) && await isUrlServing(runtime.url)) {
+          sendEvent(client.ws, "app_url", { url: runtime.url });
+        }
 
         // Immediately populate the file tree for the newly selected workspace.
         const workspace = new Workspace(selection.root);
@@ -682,6 +699,9 @@ async function runAgentWithWorkspace(
     if (m?.[1]) {
       sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId });
     }
+    if (text.includes("App process stopped.")) {
+      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId });
+    }
   });
 
   child.stderr.on("data", (data: Buffer) => {
@@ -692,6 +712,9 @@ async function runAgentWithWorkspace(
     const m = text.match(/App started and ready at\s+(https?:\/\/[^\s"']+)/i);
     if (m?.[1]) {
       sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId });
+    }
+    if (text.includes("App process stopped.")) {
+      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId });
     }
   });
 

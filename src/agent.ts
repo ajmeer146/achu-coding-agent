@@ -13,7 +13,7 @@ import { createFile } from "./tools/create-file.js";
 import { runCommand } from "./tools/terminal.js";
 import { navigate } from "./browser/browser-tools.js";
 import { BrowserSession } from "./browser/browser-session.js";
-import { detectStartCommand, spawnAppProcess, waitForReadiness, stopAppProcess, getAppUrl, readAppOutput, cleanupAppOutputFile, hasAppProcessExited, extractUrlFromOutput, extractPortFromOutput, AppProcessInfo, detachAppProcess, isServerStartupCommand, isUrlServing, probePortRange, discoverNewServerUrl, getAppRuntime, saveAppRuntime, clearAppRuntime } from "./tools/app-lifecycle.js";
+import { detectStartCommand, spawnAppProcess, waitForReadiness, stopAppProcess, getAppUrl, readAppOutput, cleanupAppOutputFile, hasAppProcessExited, extractUrlFromOutput, extractPortFromOutput, AppProcessInfo, detachAppProcess, isServerStartupCommand, isUrlServing, probePortRange, discoverNewServerUrl, getAppRuntime, saveAppRuntime, clearAppRuntime, resolveProjectEntryUrl, isProcessAlive } from "./tools/app-lifecycle.js";
 import { verifyTextExists as verify_text, verifyHeadingExists as verify_heading, verifyInputExists as verify_input, verifyLinkExists as verify_link, runVerificationSuite, generateVerificationTargetsFromTask, VerificationTarget } from "./browser/browser-verification.js";
 import { open_browser, close_browser, inspect_page } from "./browser/browser-tools.js";
 import { loadSessionState, saveSessionState } from "./session/session-persistence.js";
@@ -120,6 +120,7 @@ export type AgentState = {
       isFollowUpTask: boolean;
     };
     snapshotManager: SnapshotManager;
+    rollbackRequested?: boolean;
   };
 
 const DEFAULT_MAX_STEPS = 30;
@@ -1966,12 +1967,18 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         const startInfo = await detectStartCommand(workspace);
         if (!startInfo.command) return "No start command found in package.json scripts (dev, start, serve, preview).";
 
+        // Avoid starting duplicate servers if the process in state is already active and healthy
+        if (state.appProcess && !hasAppProcessExited(state.appProcess) && state.appUrl && await isUrlServing(state.appUrl)) {
+          console.log(chalk.gray(`Development server is already active and healthy at ${state.appUrl}.`));
+          return `App started and ready at ${state.appUrl} (reused active server)`;
+        }
+
         // Cross-task reuse ONLY when confirmed: a previously recorded server
-        // for THIS workspace is still alive (checked by getAppRuntime) and
+        // for THIS workspace is still alive (checked by getAppRuntime and isProcessAlive) and
         // serving. A server belonging to another workspace, or a stale one, is
         // never reused.
         const record = getAppRuntime(workspace.root);
-        if (record && record.url && await isUrlServing(record.url)) {
+        if (record && isProcessAlive(record.pid) && record.url && await isUrlServing(record.url)) {
           state.appUrl = record.url;
           state.appProcess = {
             process: null as any,
@@ -2054,28 +2061,36 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           await cleanupStartFailure();
           return `App failed to become ready: ${readiness.error}. Output: ${finalOutput.slice(-3000) || "<empty>"}`;
         }
+
+        // Resolve entry path (e.g. nested or standalone HTML files such as hello-ajmeer.html)
+        const modifiedFiles = Array.from(state.completedTasks)
+          .filter(t => t.startsWith("edit_file:") || t.startsWith("create_file:"))
+          .map(t => t.split(":")[1] || t);
+        const resolvedUrl = await resolveProjectEntryUrl(url, workspace.root, modifiedFiles);
+        const finalUrl = resolvedUrl || url;
+
         appInfo.status = "ready";
-        appInfo.url = url;
-        const detectedPort = parseInt((url.match(/:(\d+)/) || [])[1] || "", 10);
+        appInfo.url = finalUrl;
+        const detectedPort = parseInt((finalUrl.match(/:(\d+)/) || [])[1] || "", 10);
         if (Number.isInteger(detectedPort)) appInfo.port = detectedPort;
         else if (!appInfo.port && startInfo.port) appInfo.port = startInfo.port;
 
         // Persist the authoritative runtime URL so later tasks can confirm and
         // reuse it (same workspace only) and Live Preview gets the right URL.
-        state.appUrl = url;
+        state.appUrl = finalUrl;
         saveAppRuntime({
           workspaceRoot: workspace.root,
           pid: appInfo.pid,
           port: appInfo.port,
-          url,
+          url: finalUrl,
           startedAt: appInfo.startTime,
           outputPath: appInfo.outputPath,
         });
 
-        console.log(chalk.gray(`App started and ready at ${url}`));
+        console.log(chalk.gray(`App started and ready at ${finalUrl}`));
         // Detach the app process from parent to allow parent CLI to exit while child continues running
         detachAppProcess(appInfo);
-        return `App started and ready at ${url}`; }
+        return `App started and ready at ${finalUrl}`; }
       case "stop_app": {
         if (state.appProcess && state.appProcess.status !== "stopped") {
           await stopAppProcess(state.appProcess);
@@ -2087,13 +2102,23 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
       }
       case "browser_verify": {
         if (!state.browserSession) return "Browser session not initialized. Use open_browser first.";
-        const baseUrl = state.appUrl || (state.appProcess ? getAppUrl(state.appProcess) : null);
+        const availability = await state.browserSession.isAvailable();
+        if (!availability.available) {
+          return `Browser verification BLOCKED: Browser automation service unavailable (${availability.error}). Application edits remain intact.`;
+        }
+        const baseUrl = (args.baseUrl as string) || state.appUrl || (state.appProcess ? getAppUrl(state.appProcess) : null);
         if (!baseUrl) return "No base URL available. Start app first.";
         const targets = (args.targets as VerificationTarget[]) || generateVerificationTargetsFromTask(state.currentPlan.map(s => s.description).join(" "));
         console.log(chalk.gray(`Running browser verification at ${baseUrl}...`));
         console.log(chalk.gray(`Navigating to ${baseUrl}...`));
         const navResult = await state.browserSession.navigate(baseUrl);
-        if (!navResult.success) return `Navigation to ${baseUrl} failed: ${navResult.error}`;
+        if (!navResult.success) {
+          if (navResult.isConnectivityError) {
+            return `Browser verification BLOCKED: Browser tool connectivity failure (${navResult.error}). Application edits remain intact.`;
+          }
+          const statusText = navResult.status ? ` (HTTP status ${navResult.status})` : "";
+          return `Navigation to ${baseUrl} failed${statusText}: ${navResult.error}`;
+        }
         console.log(chalk.gray(`Page loaded: ${navResult.title}`));
         const summary = await runVerificationSuite(state.browserSession, baseUrl, targets);
         state.browserVerificationAttempts++;
@@ -2125,7 +2150,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           }
           return `Browser verification passed at ${baseUrl}:\n${lines.join("\n")}${warningText}`;
       }
-      case "open_browser": { if (state.browserSession) return "Browser already open."; const session = new BrowserSession(); state.browserSession = session; const result = await open_browser(session); return result.success ? "Browser opened successfully" : `Failed to open browser: ${result.error}`; }
+      case "open_browser": { if (state.browserSession) return "Browser already open."; const session = new BrowserSession(); const result = await open_browser(session); if (result.success) { state.browserSession = session; return "Browser opened successfully"; } return `Failed to open browser (tool unavailable): ${result.error}`; }
       case "close_browser": { if (!state.browserSession) return "Browser not open."; const result = await close_browser(state.browserSession); state.browserSession = null; return result.success ? "Browser closed" : `Failed to close browser: ${result.error}`; }
       default: return `Unknown tool: ${toolCall.function.name}`;
     }
@@ -2595,8 +2620,31 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
         const recoveryExhausted = state.recoveryAttempts >= maxRecoveryAttempts;
         const noProgress = !madeProgress;
         const hasRunnableSteps = runnableSteps.length > 0;
-        const impossibleTask = (recoveryExhausted && noProgress && !hasRunnableSteps) || repeatedSameFailure;
-        if (impossibleTask) { state.stopReason = repeatedSameFailure ? `Impossible task: same failure occurred 3+ times despite recovery attempts. Last error: ${state.lastError?.errorMessage}` : `Impossible task: recovery exhausted (${maxRecoveryAttempts} attempts), no progress made, no runnable steps available.`; console.log(chalk.red(`\nImpossible task detected. Stopping.`)); }
+        const terminalFailure = (recoveryExhausted && noProgress && !hasRunnableSteps) || repeatedSameFailure;
+
+        const isBrowserOrInfraFailure = Boolean(
+          state.lastError?.command === "browser_verify" ||
+          state.lastError?.command === "open_browser" ||
+          state.lastError?.command === "start_app"
+        );
+        const hasCompletedEdits = Array.from(state.completedTasks).some((t: string) => t.startsWith("edit_file:") || t.startsWith("create_file:")) ||
+          state.currentPlan.some(s => (s.toolType === "edit_file" || s.toolType === "create_file") && s.status === "completed");
+
+        if (terminalFailure) {
+          if (isBrowserOrInfraFailure || (hasCompletedEdits && state.lastError?.command === "run_verification")) {
+            // Verification or browser infrastructure failed, but code edits were performed
+            state.stopReason = repeatedSameFailure
+              ? `Verification failed: same verification failure occurred 3+ times despite recovery attempts. Last error: ${state.lastError?.errorMessage}`
+              : `Verification failed: recovery exhausted (${maxRecoveryAttempts} attempts), verification could not pass.`;
+            console.log(chalk.yellow(`\nVerification failure recovery limit reached. Stopping.`));
+          } else {
+            // Truly impossible task: no progress made during code editing/planning
+            state.stopReason = repeatedSameFailure
+              ? `Impossible task: same failure occurred 3+ times despite recovery attempts. Last error: ${state.lastError?.errorMessage}`
+              : `Impossible task: recovery exhausted (${maxRecoveryAttempts} attempts), no progress made, no runnable steps available.`;
+            console.log(chalk.red(`\nImpossible task detected. Stopping.`));
+          }
+        }
         if (runnableSteps.length > 0) { console.log(chalk.cyan(`\nRecovery: Found ${runnableSteps.length} runnable step(s)`)); for (const rs of runnableSteps) console.log(chalk.gray(`  - ${rs.description}`)); const nextRunnable = runnableSteps[0]; nextRunnable.status = "running"; state.phase = "execute"; }
       }
 
@@ -2612,15 +2660,31 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
     if (isPlanComplete(state.currentPlan) && (!state.requestedVerification || state.verificationPassed) && !hasRequiredVerificationStep) break;
   }
 
-  // Automatic Rollback on terminal failure
-  if (state.stopReason) {
-    console.log(chalk.yellow(`\nInitiating automatic rollback of files modified during this session...`));
+  // Rollback Safety Policy:
+  // Do NOT rollback if code editing succeeded but verification failed or was blocked!
+  // Completed code edits must be preserved by default for partial completion.
+  // Rollback ONLY occurs if:
+  // 1. Explicitly requested (state.rollbackRequested === true), OR
+  // 2. An unrecoverable terminal error occurred before any code changes could be successfully completed.
+  const hasCompletedEdits = Array.from(state.completedTasks).some((t: string) => t.startsWith("edit_file:") || t.startsWith("create_file:")) ||
+    state.currentPlan.some(s => (s.toolType === "edit_file" || s.toolType === "create_file") && s.status === "completed");
+
+  const shouldRollback = Boolean(
+    state.rollbackRequested ||
+    (state.stopReason && !hasCompletedEdits && state.currentPlan.some(s => s.status === "failed"))
+  );
+
+  if (shouldRollback) {
+    const reason = state.rollbackRequested ? "explicit request" : "unrecoverable failure before code edits completed";
+    console.log(chalk.yellow(`\nInitiating rollback of files modified during this session (policy: ${reason})...`));
     const result = await state.snapshotManager.rollback();
     if (result.success) {
       console.log(chalk.green(`Rollback successful. Restored files: ${result.restored.join(", ") || "none"}`));
     } else {
       console.log(chalk.red(`Rollback partial/failed. Restored: ${result.restored.join(", ")}. Conflicts: ${result.conflicts.join(", ")}`));
     }
+  } else if (hasCompletedEdits && !state.verificationPassed) {
+    console.log(chalk.cyan(`\nPreserving completed code edits despite verification outcome (partial completion).`));
   }
 
   // Cleanup snapshot dir

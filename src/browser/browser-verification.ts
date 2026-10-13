@@ -320,7 +320,23 @@ export async function runVerificationSuite(
   const pageInfoResult = await session.inspectPage();
   const pageInfo = pageInfoResult.success ? pageInfoResult.info : undefined;
 
-  const overallPassed = results.every(r => r.passed);
+  // If no specific targets were provided, verify page actually inspected and loaded cleanly
+  if (targets.length === 0) {
+    const loadedCleanly = Boolean(
+      pageInfoResult.success &&
+      pageInfo &&
+      (pageInfo.title.trim().length > 0 || pageInfo.visibleText.trim().length > 0)
+    );
+    results.push({
+      passed: loadedCleanly,
+      target: { type: "text", text: "Page content" },
+      actual: loadedCleanly
+        ? `Page loaded cleanly: "${pageInfo?.title || 'Untitled'}"`
+        : (pageInfoResult.success ? "Page appears blank or failed to render" : pageInfoResult.error),
+    });
+  }
+
+  const overallPassed = results.length > 0 && results.every(r => r.passed);
 
   return {
     overallPassed,
@@ -346,32 +362,107 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
     }
   }
 
-  // Look for specific element mentions
+  // Helper to add target if not already present (avoid duplicates)
+  const addTarget = (target: VerificationTarget) => {
+    const exists = targets.some(t => t.type === target.type && t.text === target.text && t.url === target.url);
+    if (!exists) targets.push(target);
+  };
+
+  // Look for specific element mentions with QUOTED text (existing behavior)
   if (lowerTask.includes("heading") || lowerTask.includes("title")) {
     const headingMatch = task.match(/(?:heading|title)\s+["'`]([^"'`]+)["'`]/i);
     if (headingMatch) {
-      targets.push({ type: "heading", text: headingMatch[1], required: true });
+      addTarget({ type: "heading", text: headingMatch[1], required: true });
     }
   }
 
   if (lowerTask.includes("button")) {
     const buttonMatch = task.match(/button\s+["'`]([^"'`]+)["'`]/i);
     if (buttonMatch) {
-      targets.push({ type: "button", text: buttonMatch[1], required: true });
+      addTarget({ type: "button", text: buttonMatch[1], required: true });
     }
   }
 
   if (lowerTask.includes("input") || lowerTask.includes("field")) {
     const inputMatch = task.match(/(?:input|field)\s+["'`]([^"'`]+)["'`]/i);
     if (inputMatch) {
-      targets.push({ type: "input", text: inputMatch[1], required: true });
+      addTarget({ type: "input", text: inputMatch[1], required: true });
     }
   }
 
   if (lowerTask.includes("link")) {
     const linkMatch = task.match(/link\s+["'`]([^"'`]+)["'`]/i);
     if (linkMatch) {
-      targets.push({ type: "link", text: linkMatch[1], required: true });
+      addTarget({ type: "link", text: linkMatch[1], required: true });
+    }
+  }
+
+  // NEW: Handle unquoted natural-language patterns like "heading Hello Achu", "button Submit", etc.
+  // Match: element-type followed by text (until next element keyword, punctuation, or stop word)
+  const unquotedPatterns = [
+    { type: "heading" as const, keywords: ["heading", "title"] },
+    { type: "button" as const, keywords: ["button"] },
+    { type: "input" as const, keywords: ["input", "field"] },
+    { type: "link" as const, keywords: ["link"] },
+  ];
+
+  // Stop words that indicate end of element description
+  const stopWords = /\b(that|which|with|and|or|to|for|the|a|an|on|in|at|by|from|into|onto|upon|then|when|if|so|but|as|is|was|were|be|been|being|have|has|had|do|does|did|will|would|should|could|may|might|must|can|shall)\b/i;
+
+  // Element keywords that can end a capture (excluding the one we're currently matching)
+  // "page" and "route" are too generic and often appear after target text
+  const allElementKeywords = ["heading", "title", "button", "input", "field", "link"];
+
+  for (const { type, keywords } of unquotedPatterns) {
+    for (const keyword of keywords) {
+      // Pattern: keyword followed by text (capture words until stop word, punctuation, or OTHER element keyword)
+      // e.g., "heading Hello Achu" -> captures "Hello Achu"
+      // e.g., "button Submit now" -> captures "Submit"
+      // Exclude current keyword from stop keywords to allow "heading My Title"
+      const otherKeywords = allElementKeywords.filter(k => k !== keyword && k !== (keyword === "heading" ? "title" : keyword === "title" ? "heading" : ""));
+      const keywordPattern = otherKeywords.map(k => `\\b${k}\\b`).join("|");
+      const regex = new RegExp(`${keyword}\\s+((?:(?!${keywordPattern}|[.,;:]).)+)`, "gi");
+      let match;
+      while ((match = regex.exec(task)) !== null) {
+        let text = match[1].trim();
+        // Trim at stop word
+        const stopMatch = text.match(stopWords);
+        if (stopMatch && stopMatch.index !== undefined) {
+          text = text.substring(0, stopMatch.index).trim();
+        }
+        // Filter out generic/non-concrete text
+        if (text && text.length > 1 && !/^(a|an|the|with|and|or|to|for|that|this|my|your|our|their)$/i.test(text)) {
+          // Only add if text doesn't contain quoted strings (already handled)
+          if (!/["'`]/.test(text)) {
+            addTarget({ type, text, required: true });
+          }
+        }
+      }
+    }
+  }
+
+  // NEW: Handle quoted text BEFORE keyword pattern (e.g., '"Get Started" button', '"Welcome" heading')
+  // This complements the existing quoted text extraction which only creates "text" targets
+  const quotedBeforePatterns = [
+    { type: "heading" as const, keywords: ["heading", "title"] },
+    { type: "button" as const, keywords: ["button"] },
+    { type: "input" as const, keywords: ["input", "field"] },
+    { type: "link" as const, keywords: ["link"] },
+  ];
+
+  for (const { type, keywords } of quotedBeforePatterns) {
+    for (const keyword of keywords) {
+      // Pattern: quoted text followed by keyword
+      // e.g., '"Get Started" button' -> captures "Get Started" as button
+      // e.g., '"Welcome" heading' -> captures "Welcome" as heading
+      const regex = new RegExp(`["'\`]([^"'\`]+)["'\`]\\s+${keyword}`, "gi");
+      let match;
+      while ((match = regex.exec(task)) !== null) {
+        const text = match[1].trim();
+        if (text && text.length > 1) {
+          addTarget({ type, text, required: true });
+        }
+      }
     }
   }
 
@@ -379,7 +470,7 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
     const routeMatches = task.match(/\/(about|contact|home|dashboard|pricing|features?|blog|login|signup|register)/gi);
     if (routeMatches) {
       for (const route of routeMatches) {
-        targets.push({ type: "route", url: route.toLowerCase(), required: true });
+        addTarget({ type: "route", url: route.toLowerCase(), required: true });
       }
     }
   }
