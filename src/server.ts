@@ -30,12 +30,35 @@ app.use((_req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Private-Network", "true");
   if (_req.method === "OPTIONS") {
     res.sendStatus(200);
     return;
   }
   next();
 });
+
+// Explicit health check endpoints for connection handshakes
+app.get("/health", (_req, res) => {
+  res.json({
+    status: "ok",
+    service: "achu-coding-agent",
+    version: "1.0.0",
+    timestamp: Date.now(),
+    uptime: process.uptime(),
+  });
+});
+
+app.get("/api/health", (_req, res) => {
+  res.json({
+    status: "ok",
+    service: "achu-coding-agent",
+    version: "1.0.0",
+    timestamp: Date.now(),
+    uptime: process.uptime(),
+  });
+});
+
 app.use(express.static(path.join(__dirname, "../public")));
 
 interface ClientConnection {
