@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as crypto from "node:crypto";
-import { Workspace } from "./workspace.js";
+import { Workspace, isInsideRoot } from "./workspace.js";
 
 export type FileOperationType = "create" | "edit" | "delete";
 
@@ -42,6 +42,10 @@ export class SnapshotManager {
     await fs.mkdir(this.snapshotsDir, { recursive: true });
   }
 
+  setWorkspaceRoot(newRoot: string): void {
+    (this as any).workspaceRoot = path.resolve(newRoot);
+  }
+
   /**
    * Called BEFORE a file is modified/created by the agent.
    */
@@ -54,7 +58,7 @@ export class SnapshotManager {
     const absolutePath = path.resolve(this.workspaceRoot, relativePath);
     
     // Prevent directory traversal
-    if (!absolutePath.startsWith(path.resolve(this.workspaceRoot))) {
+    if (!isInsideRoot(this.workspaceRoot, absolutePath)) {
       throw new Error(`Path traversal attempt detected: ${relativePath}`);
     }
 

@@ -675,7 +675,7 @@ if (isAppOrGenericTask) {
       }
       
       const isReactIntent = /\b(react|vite|component|jsx|tsx|spa)\b/i.test(lowerTask) ||
-        (/\b(portfolio|dashboard|saas|landing page|store|ecommerce|e-commerce|devshowcase)\b/i.test(lowerTask) && !/\b(plain|pure|vanilla)\s+html\b/i.test(lowerTask));
+        (/\b(portfolio|dashboard|saas|landing page|store|e-?commerc\w*|devshowcase)\b/i.test(lowerTask) && !/\b(plain|pure|vanilla)\s+html\b/i.test(lowerTask));
 
       if (hasAppBuild || hasAppCreate) {
         if (!isExistingProject) {
@@ -1956,7 +1956,7 @@ const schemas = {
   run_command: z.object({ command: z.string() }),
   run_verification: z.object({ command: z.string() }),
   list_directory: z.object({ directoryPath: z.string().default(".") }),
-  create_file: z.object({ path: z.string(), content: z.string() }),
+  create_file: z.object({ path: z.string(), content: z.string(), overwrite: z.boolean().optional() }),
   scaffold_project: z.object({
     template: z.enum(["react-vite", "static"]),
     name: z.string().optional(),
@@ -2004,6 +2004,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           return result; 
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          console.error(chalk.red(`Edit failed on ${filePath}: ${message}`));
           return `Tool error: ${message}`;
         }
       }
@@ -2060,15 +2061,33 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         const filePath = args.path; const content = args.content; 
         const protectedFiles = ["tsconfig.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"]; 
         const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase(); 
-        if (protectedFiles.includes(normalizedPath)) return `BLOCKED: ${filePath} is a protected configuration file and cannot be created automatically.`; 
+        if (protectedFiles.includes(normalizedPath)) {
+          const blockMsg = `BLOCKED: ${filePath} is a protected configuration file and cannot be created automatically.`;
+          console.error(chalk.red(blockMsg));
+          return blockMsg;
+        }
         console.log(chalk.cyan(`Creating: ${filePath}`)); 
         try { 
           await state.snapshotManager.captureBefore(filePath, "create");
-          const result = await createFile(workspace, filePath, content); 
+          const result = await createFile(workspace, filePath, content, args.overwrite ?? true); 
           await state.snapshotManager.captureAfter(filePath);
           return result;
         } catch (error) { 
-          const message = error instanceof Error ? error.message : String(error); return `Tool error: ${message}`; 
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes("File already exists")) {
+            console.log(chalk.gray(`File ${filePath} already exists. Updating contents with edit_file...`));
+            try {
+              const editResult = await editFile(workspace, filePath, [{ newText: content }]);
+              await state.snapshotManager.captureAfter(filePath);
+              return editResult;
+            } catch (editError) {
+              const editMsg = editError instanceof Error ? editError.message : String(editError);
+              console.error(chalk.red(`Edit fallback failed on ${filePath}: ${editMsg}`));
+              return `Tool error: ${editMsg}`;
+            }
+          }
+          console.error(chalk.red(`Create failed on ${filePath}: ${message}`));
+          return `Tool error: ${message}`; 
         } 
       }
       case "navigate": { const url = args.url; if (!state.browserSession) return "Browser session not initialized. Use open_browser first."; console.log(chalk.gray(`Navigating: ${url}`)); const navResult = await navigate(state.browserSession, url); return truncate(navResult.success ? `Navigated to ${url}` : `Navigation failed: ${navResult.error}`); }
@@ -2087,6 +2106,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         }
         if (scaffoldRes.projectRoot && scaffoldRes.projectRoot !== workspace.root) {
           workspace.setRoot(scaffoldRes.projectRoot);
+          state.snapshotManager.setWorkspaceRoot(workspace.root);
           console.log(chalk.cyan(`Authoritative project root updated to: ${scaffoldRes.projectRoot}`));
         }
         for (const file of scaffoldRes.files) {
@@ -2118,6 +2138,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         const workingDir = startInfo.cwd || workspace.root;
         if (workingDir !== workspace.root) {
           workspace.setRoot(workingDir);
+          state.snapshotManager.setWorkspaceRoot(workspace.root);
           console.log(chalk.cyan(`Updated workspace root to match application directory: ${workingDir}`));
         }
 
@@ -2788,6 +2809,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
         const madeProgress = currentCompletedCount > lastCompletedStepCount;
         if (!madeProgress) state.recoveryAttempts += 1; else { state.recoveryAttempts = 0; lastCompletedStepCount = currentCompletedCount; }
         state.lastError = { command: toolCall.function.name, exitCode: result.includes("Exit code:") ? parseInt(result.split("Exit code:")[1].split("\n")[0].trim()) : 1, stdout: result, stderr: "", errorMessage: result.startsWith("Tool error:") ? result : result.split("\n")[0] };
+        console.error(chalk.red(`\n[Execution Failure] Step "${failedStep.description}" failed: ${state.lastError.errorMessage}`));
         if (state.recoveryAttempts >= maxRecoveryAttempts) { state.stopReason = `Recovery limit reached (${maxRecoveryAttempts} attempts). Task cannot continue. Last error: ${state.lastError.errorMessage}`; console.log(chalk.red(`\nRecovery limit reached after ${state.recoveryAttempts} attempts. Stopping.`)); } else { state.phase = "recover"; console.log(chalk.yellow(`\nStep failed: ${failedStep.description} - entering recovery (attempt ${state.recoveryAttempts}/${maxRecoveryAttempts})`)); }
       }
 
@@ -2831,15 +2853,17 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
       }
 
       if (state.phase === "recover") {
-        state.currentPlan = rePlanFailedSteps(state.currentPlan, state.completedTasks, task);
-        // Allow ONE bounded retry of failed lifecycle steps ONLY if recovery attempts not exhausted:
+        // Allow bounded retry of failed steps ONLY if recovery attempts not exhausted:
         if (state.recoveryAttempts < maxRecoveryAttempts) {
           for (const step of state.currentPlan) {
-            if (step.status === "failed" && step.toolType && LIFECYCLE_TOOL_TYPES.includes(step.toolType)) {
+            if (step.status === "failed") {
               step.status = "pending";
               console.log(chalk.gray(`Recovery: retrying failed step "${step.description}"`));
             }
           }
+        } else {
+          // Recovery attempts truly exhausted - cascade failure to dependents
+          state.currentPlan = rePlanFailedSteps(state.currentPlan, state.completedTasks, task);
         }
         const currentCompletedCount = state.currentPlan.filter(s => s.status === "completed").length;
         const madeProgress = currentCompletedCount > lastCompletedStepCount;

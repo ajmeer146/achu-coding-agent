@@ -172,6 +172,16 @@ export async function editFile(
       continue;
     }
 
+    // 5. Full HTML document replacement:
+    if (
+      filePath.toLowerCase().endsWith(".html") &&
+      (newText.trim().startsWith("<!DOCTYPE html") || newText.trim().startsWith("<html"))
+    ) {
+      updatedNormalized = newText;
+      successes.push(`Replaced HTML document in ${filePath}.`);
+      continue;
+    }
+
     // If all attempts failed, throw informative error with current excerpt
     const excerpt = currentNormalized.slice(0, 400).trim();
     throw new Error(

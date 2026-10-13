@@ -453,4 +453,117 @@ export default function App() {
       await fs.rm(baseDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
   });
+
+  test("13. File creation and full-replacement reliability on index.html with complex characters", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "achu-file-replace-"));
+    const ws = new Workspace(tempDir);
+    const { createFile } = await import("../src/tools/create-file.js");
+    const { editFile } = await import("../src/tools/edit-file.js");
+
+    // 13a. Create new index.html
+    const initialHtml = "<!DOCTYPE html><html><head><title>Initial</title></head><body><h1>Initial</h1></body></html>";
+    const createRes1 = await createFile(ws, "index.html", initialHtml);
+    assert.ok(createRes1.includes("Successfully created"));
+    const onDisk1 = await ws.read("index.html");
+    assert.equal(onDisk1, initialHtml);
+
+    // 13b. Overwrite existing index.html via createFile with overwrite=true
+    const updatedHtmlWithComplexChars = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Unique E-commerce &amp; Store: Price $99.99 for {Premium} "Item" 🚀</title>
+</head>
+<body>
+  <h1>Sale: $49.99 only!</h1>
+  <p>Template styles: { display: "flex", gap: "1rem" }</p>
+</body>
+</html>`;
+    const createRes2 = await createFile(ws, "index.html", updatedHtmlWithComplexChars, true);
+    assert.ok(createRes2.includes("Successfully updated"));
+    const onDisk2 = await ws.read("index.html");
+    assert.equal(onDisk2, updatedHtmlWithComplexChars);
+    assert.ok(onDisk2.includes("$99.99"));
+    assert.ok(onDisk2.includes("$49.99"));
+    assert.ok(onDisk2.includes("🚀"));
+
+    // 13c. Full replacement via editFile with newText only
+    const thirdHtml = `<!DOCTYPE html><html><body><h1>Third Version: $199.00</h1></body></html>`;
+    const editRes1 = await editFile(ws, "index.html", [{ newText: thirdHtml }]);
+    assert.ok(editRes1.includes("Successfully edited"));
+    const onDisk3 = await ws.read("index.html");
+    assert.equal(onDisk3.trim(), thirdHtml.trim());
+    assert.ok(onDisk3.includes("$199.00"));
+
+    await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
+
+  test("14. Genuine E2E static HTML website lifecycle with Live Preview in workspace with spaces", async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "achu intrn py static "));
+    const ws = new Workspace(baseDir);
+    const { editFile } = await import("../src/tools/edit-file.js");
+
+    // 14a. Scaffold static project in workspace
+    const scaffoldRes = await scaffoldStaticProject(ws, "EcommerceStore");
+    assert.equal(scaffoldRes.success, true);
+    assert.ok(await ws.exists("index.html"));
+    assert.ok(await ws.exists("styles.css"));
+    assert.ok(await ws.exists("package.json"));
+
+    // 14b. Overwrite index.html with unique ecommerce webpage
+    const ecommerceHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Unique E-Commerce Store</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Unique E-Commerce Collection</h1>
+    <p>Exclusive handcrafted goods starting at $29.99</p>
+  </header>
+  <main>
+    <section class="card">
+      <h2>Featured Products</h2>
+      <div class="product">
+        <h3>Premium Silk Shirt</h3>
+        <p class="price">$79.99</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>`;
+    const updateRes = await editFile(ws, "index.html", [{ newText: ecommerceHtml }]);
+    assert.ok(updateRes.includes("Successfully edited"));
+
+    // 14c. Verify file read-back matches
+    const readBack = await ws.read("index.html");
+    assert.ok(readBack.includes("Unique E-Commerce Collection"));
+    assert.ok(readBack.includes("$79.99"));
+
+    // 14d. Allocate port and start web server
+    const port = await allocateAvailablePort(54660);
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(readBack);
+    });
+    await new Promise<void>((r) => server.listen(port, "0.0.0.0", () => r()));
+
+    try {
+      const url = `http://localhost:${port}`;
+      const readiness = await waitForReadiness(url, { timeoutMs: 3000, intervalMs: 300 });
+      assert.equal(readiness.ready, true);
+
+      // Verify HTTP response content
+      const response = await fetch(url);
+      const text = await response.text();
+      assert.ok(text.includes("Unique E-Commerce Collection"));
+      assert.ok(text.includes("$79.99"));
+      assert.equal(text.includes("Files within "), false, "Must not be a directory listing");
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+      await fs.rm(baseDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  });
 });
