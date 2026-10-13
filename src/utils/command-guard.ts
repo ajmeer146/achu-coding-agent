@@ -49,46 +49,144 @@ const BLOCKED_COMMAND_PATTERNS = [
 ];
 
 const UNIX_COMMAND_PATTERNS = [
-  { pattern: /^ls\s+-la\b/, replacement: 'Get-ChildItem -Force' },
-  { pattern: /^ls\b/, replacement: 'Get-ChildItem' },
-  { pattern: /^head\s+-(\d+)\b/, replacement: (_match: string, n: string) => `Select-Object -First ${n}` },
-  { pattern: /^tail\s+-(\d+)\b/, replacement: (_match: string, n: string) => `Select-Object -Last ${n}` },
-  { pattern: /^grep\s+/, replacement: 'Select-String' },
-  { pattern: /^cat\s+/, replacement: 'Get-Content' },
-  { pattern: /^rm\s+/, replacement: 'Remove-Item' },
-  { pattern: /^cp\s+/, replacement: 'Copy-Item' },
-  { pattern: /^mv\s+/, replacement: 'Move-Item' },
-  { pattern: /^mkdir\s+/, replacement: 'New-Item -ItemType Directory' },
-  { pattern: /^touch\s+/, replacement: 'New-Item -ItemType File' },
-  { pattern: /^which\s+/, replacement: 'Get-Command' },
-  { pattern: /^pwd\b/, replacement: 'Get-Location' },
-  { pattern: /^echo\s+/, replacement: 'Write-Output' },
+  { pattern: /^ls\s+-la\b/i, replacement: "Get-ChildItem -Force" },
+  { pattern: /^ls\b/i, replacement: "Get-ChildItem" },
+  { pattern: /^head\s+(?:-n\s+|-)?(\d+)\b/i, replacement: (_match: string, n: string) => `Select-Object -First ${n}` },
+  { pattern: /^tail\s+(?:-n\s+|-)?(\d+)\b/i, replacement: (_match: string, n: string) => `Select-Object -Last ${n}` },
+  { pattern: /^grep\s+/i, replacement: "Select-String " },
+  { pattern: /^cat\s+/i, replacement: "Get-Content " },
+  { pattern: /^rm\s+-rf\s+/i, replacement: "Remove-Item -Recurse -Force " },
+  { pattern: /^rm\s+/i, replacement: "Remove-Item -Force " },
+  { pattern: /^cp\s+-r\s+/i, replacement: "Copy-Item -Recurse " },
+  { pattern: /^cp\s+/i, replacement: "Copy-Item " },
+  { pattern: /^mv\s+/i, replacement: "Move-Item " },
+  { pattern: /^mkdir\s+-p\s+/i, replacement: "New-Item -ItemType Directory -Force -Path " },
+  { pattern: /^mkdir\s+/i, replacement: "New-Item -ItemType Directory -Force -Path " },
+  { pattern: /^touch\s+/i, replacement: "New-Item -ItemType File -Force -Path " },
+  { pattern: /^which\s+/i, replacement: "Get-Command " },
+  { pattern: /^pwd\b/i, replacement: "Get-Location" },
+  { pattern: /^echo\s+/i, replacement: "Write-Output " },
 ];
 
-export function normalizeUnixCommand(command: string): { normalized: string; wasChanged: boolean; warning?: string } {
-  const trimmed = command.trim();
-  
-  for (const { pattern, replacement } of UNIX_COMMAND_PATTERNS) {
-    const match = trimmed.match(pattern);
-    if (match) {
-      if (typeof replacement === 'function') {
-        // match[1], match[2], etc. are the capture groups
-        const newCmd = replacement(trimmed, match[1]);
-        return { 
-          normalized: newCmd, 
-          wasChanged: true,
-          warning: `Unix command "${match[0]}" normalized to PowerShell: "${newCmd}"`
-        };
-      }
-      return { 
-        normalized: trimmed.replace(pattern, replacement), 
-        wasChanged: true,
-        warning: `Unix command "${match[0]}" normalized to PowerShell: "${replacement}"`
-      };
+/**
+ * Convert Unix '&&' statement separators to PowerShell '; if ($?) { ... }' syntax.
+ * Respects single and double quotes so '&&' inside strings is never touched.
+ */
+export function replaceLogicalAndForPowerShell(command: string): string {
+  if (!command.includes("&&")) return command;
+
+  const parts: string[] = [];
+  let current = "";
+  let inDoubleQuote = false;
+  let inSingleQuote = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    const prev = i > 0 ? command[i - 1] : "";
+
+    if (ch === '"' && !inSingleQuote && prev !== "\\") {
+      inDoubleQuote = !inDoubleQuote;
+      current += ch;
+    } else if (ch === "'" && !inDoubleQuote && prev !== "\\") {
+      inSingleQuote = !inSingleQuote;
+      current += ch;
+    } else if (ch === "&" && command[i + 1] === "&" && !inDoubleQuote && !inSingleQuote) {
+      parts.push(current.trim());
+      current = "";
+      i++; // skip next &
+    } else {
+      current += ch;
     }
   }
-  
-  return { normalized: command, wasChanged: false };
+  parts.push(current.trim());
+
+  if (parts.length <= 1) return command;
+
+  let result = parts[0];
+  for (let i = 1; i < parts.length; i++) {
+    result += `; if ($?) { ${parts[i]} }`;
+  }
+  return result;
+}
+
+/**
+ * Normalize Unix pipeline utilities (head, tail, grep) to PowerShell equivalents.
+ */
+export function normalizePipelinesForPowerShell(command: string): string {
+  let result = command;
+
+  // | head -30, | head -n 30
+  result = result.replace(/\|\s*head\s+(?:-n\s+|-)?(\d+)\b/gi, "| Select-Object -First $1");
+  // | head (default 10)
+  result = result.replace(/\|\s*head\b/gi, "| Select-Object -First 10");
+
+  // | tail -30, | tail -n 30
+  result = result.replace(/\|\s*tail\s+(?:-n\s+|-)?(\d+)\b/gi, "| Select-Object -Last $1");
+  // | tail (default 10)
+  result = result.replace(/\|\s*tail\b/gi, "| Select-Object -Last 10");
+
+  // | grep <pattern>
+  result = result.replace(/\|\s*grep\s+(?:-[a-zA-Z]+\s+)?(['"]?)([^'"|\s]+)\1/gi, '| Select-String -Pattern "$2"');
+
+  return result;
+}
+
+export function normalizeUnixCommand(command: string): { normalized: string; wasChanged: boolean; warning?: string } {
+  let normalized = command.trim();
+  let wasChanged = false;
+  const warnings: string[] = [];
+
+  // 1. If command uses DOS dir with switches (e.g. dir /a /s /b), wrap in cmd /c so PowerShell doesn't misinterpret / switches as parameters
+  if (/^dir\s+\/[a-zA-Z]/i.test(normalized)) {
+    normalized = `cmd.exe /c ${normalized}`;
+    return {
+      normalized,
+      wasChanged: true,
+      warning: `DOS dir command normalized to cmd.exe: "${normalized}"`,
+    };
+  }
+
+  // 2. Chained commands with &&
+  const afterAnd = replaceLogicalAndForPowerShell(normalized);
+  if (afterAnd !== normalized) {
+    normalized = afterAnd;
+    wasChanged = true;
+    warnings.push("Normalized '&&' to PowerShell conditional chaining");
+  }
+
+  // 3. Pipeline utilities
+  const afterPipelines = normalizePipelinesForPowerShell(normalized);
+  if (afterPipelines !== normalized) {
+    normalized = afterPipelines;
+    wasChanged = true;
+    warnings.push("Normalized pipeline utilities (head/tail/grep) to PowerShell cmdlets");
+  }
+
+  // 4. Prefix commands (ls, cat, rm, etc.)
+  for (const { pattern, replacement } of UNIX_COMMAND_PATTERNS) {
+    if (pattern.test(normalized)) {
+      if (typeof replacement === "function") {
+        const match = normalized.match(pattern);
+        if (match) {
+          const newCmd = replacement(normalized, match[1]);
+          normalized = newCmd;
+          wasChanged = true;
+          warnings.push(`Normalized command prefix to "${newCmd}"`);
+        }
+      } else {
+        normalized = normalized.replace(pattern, replacement);
+        wasChanged = true;
+        warnings.push(`Normalized command prefix to "${replacement}"`);
+      }
+      break;
+    }
+  }
+
+  return {
+    normalized,
+    wasChanged,
+    warning: warnings.length > 0 ? warnings.join("; ") : undefined,
+  };
 }
 
 const BLOCKED_CONFIG_FILES = new Set([

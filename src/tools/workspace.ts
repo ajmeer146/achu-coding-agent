@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import os from "node:os";
 
 /**
  * Returns true when `child` is the same as, or located inside, `root`.
@@ -62,6 +63,97 @@ export async function validateWorkspaceDirectory(
   }
 
   return { root, realRoot, entries: entries.length };
+}
+
+/**
+ * Returns the base root folder where new projects should be isolated.
+ */
+export function getDefaultProjectsBaseDir(): string {
+  if (process.env.ACHU_PROJECTS_DIR) {
+    return path.resolve(process.env.ACHU_PROJECTS_DIR);
+  }
+  if (process.env.WORKSPACE_VOLUME_ROOT && process.env.WORKSPACE_VOLUME_ROOT !== "/workspaces") {
+    return path.resolve(process.env.WORKSPACE_VOLUME_ROOT);
+  }
+  const desktop = path.join(os.homedir(), "OneDrive", "Desktop");
+  if (fsSync.existsSync(desktop)) {
+    return path.join(desktop, "achu-projects");
+  }
+  const regularDesktop = path.join(os.homedir(), "Desktop");
+  if (fsSync.existsSync(regularDesktop)) {
+    return path.join(regularDesktop, "achu-projects");
+  }
+  return path.join(os.homedir(), "achu-projects");
+}
+
+/**
+ * Derive a clean directory slug from a task description or project name.
+ */
+export function deriveProjectSlug(taskOrName: string): string {
+  const input = String(taskOrName || "").trim();
+  // Check for explicit "called **<name>**" or "called <name>" or "named <name>"
+  const calledMatch = input.match(/(?:called|named)\s+[*_`]*([a-zA-Z0-9_\-\s]+?)[*_`]*(?:\.|\n|$|,|\s+(?:with|that|which|using))/i);
+  let name = "";
+  if (calledMatch && calledMatch[1]) {
+    name = calledMatch[1].trim();
+  } else {
+    // Check for "Build a ... website/app/landing page"
+    const buildMatch = input.match(/(?:build|create)\s+(?:a|an)\s+(?:[a-zA-Z0-9_\-]+\s+)*(?:website|app|page|store|platform|dashboard|portfolio)\s*(?:called|named)?\s*([a-zA-Z0-9_\-]+)?/i);
+    if (buildMatch && buildMatch[1]) {
+      name = buildMatch[1].trim();
+    }
+  }
+
+  if (!name) {
+    const words = input.slice(0, 30).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    name = words || `project-${Date.now()}`;
+  }
+
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return slug || `project-${Date.now()}`;
+}
+
+/**
+ * Detect whether a task represents a brand new website or application building request.
+ */
+export function isNewWebsiteTask(task: string): boolean {
+  const lower = String(task || "").toLowerCase();
+  const hasBuild = /\b(build|create|scaffold|generate|setup)\b/i.test(lower);
+  const hasTarget = /\b(website|web app|webapp|landing page|portfolio|e-commerce|store|dashboard|site|application)\b/i.test(lower);
+  const isFollowUp = /\b(modify|update|improve|extend|change|fix|add to|refactor|test|check)\b/i.test(lower);
+  return hasBuild && hasTarget && !isFollowUp;
+}
+
+/**
+ * Determine whether a task requires a dedicated isolated workspace directory
+ * rather than reusing the current directory.
+ */
+export async function shouldIsolateNewProject(task: string, currentWorkspaceRoot: string | null): Promise<boolean> {
+  if (!currentWorkspaceRoot) return true;
+  if (!isNewWebsiteTask(task)) return false;
+
+  try {
+    const ws = new Workspace(currentWorkspaceRoot);
+    const hasPkg = await ws.exists("package.json");
+    const hasIndex = await ws.exists("index.html");
+    if (!hasPkg && !hasIndex) {
+      // Empty or clean workspace is safe to use
+      return false;
+    }
+    const slug = deriveProjectSlug(task);
+    const currentDirName = path.basename(currentWorkspaceRoot).toLowerCase();
+    if (currentDirName === slug.toLowerCase()) {
+      return false;
+    }
+    // Existing project is unrelated; isolate into dedicated project folder
+    return true;
+  } catch {
+    return true;
+  }
 }
 
 export class Workspace {

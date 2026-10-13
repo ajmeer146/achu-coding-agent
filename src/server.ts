@@ -4,7 +4,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { Workspace, validateWorkspaceDirectory } from "./tools/workspace.js";
+import { Workspace, validateWorkspaceDirectory, getDefaultProjectsBaseDir, deriveProjectSlug, shouldIsolateNewProject } from "./tools/workspace.js";
 import { listDirectory } from "./tools/list-directory.js";
 import { readFile } from "./tools/read-file.js";
 import { createFile } from "./tools/create-file.js";
@@ -113,6 +113,42 @@ async function handleMessage(client: ClientConnection, message: any) {
   const { type, payload } = message;
 
   switch (type) {
+    case "create_project": {
+      try {
+        const { path: requestedPath, name, task } = payload || {};
+        let targetDir = requestedPath ? String(requestedPath).trim() : "";
+        if (!targetDir) {
+          const slug = deriveProjectSlug(name || task || `project-${Date.now()}`);
+          targetDir = path.join(getDefaultProjectsBaseDir(), slug);
+        }
+        await fs.promises.mkdir(targetDir, { recursive: true });
+        const selection = await validateWorkspaceDirectory(targetDir);
+        client.workspaceRoot = selection.root;
+        client.currentSessionId = null;
+        client.currentTaskId = null;
+        client.changedFiles = [];
+        client.baseline = null;
+
+        sendEvent(client.ws, "project_selected", {
+          path: selection.root,
+          entryCount: selection.entries,
+          isNew: true,
+        });
+        sendEvent(client.ws, "app_url", {
+          url: null,
+          workspaceRoot: selection.root,
+        });
+
+        const workspace = new Workspace(selection.root);
+        const tree = await buildFileTree(workspace);
+        sendEvent(client.ws, "file_tree", { path: selection.root, tree });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        sendEvent(client.ws, "project_error", { message: msg });
+      }
+      break;
+    }
+
     case "select_project": {
       const projectPath = payload.path;
       if (!projectPath || String(projectPath).trim().length === 0) {
@@ -129,6 +165,11 @@ async function handleMessage(client: ClientConnection, message: any) {
       }
 
       try {
+        // Automatically create if explicitly requested or if under default projects dir
+        if (payload.createIfMissing && !fs.existsSync(String(projectPath))) {
+          await fs.promises.mkdir(String(projectPath), { recursive: true });
+        }
+
         // Never fall back to another directory: invalid selections fail loudly.
         const selection = await validateWorkspaceDirectory(String(projectPath));
         client.workspaceRoot = selection.root;
@@ -145,7 +186,18 @@ async function handleMessage(client: ClientConnection, message: any) {
         // If an active app server exists for this workspace, send the live URL immediately
         const runtime = getAppRuntime(selection.root);
         if (runtime && runtime.url && isProcessAlive(runtime.pid) && await isUrlServing(runtime.url)) {
-          sendEvent(client.ws, "app_url", { url: runtime.url });
+          sendEvent(client.ws, "app_url", {
+            url: runtime.url,
+            workspaceRoot: selection.root,
+            port: runtime.port,
+            pid: runtime.pid,
+          });
+        } else {
+          // Explicitly clear preview for workspace without running app
+          sendEvent(client.ws, "app_url", {
+            url: null,
+            workspaceRoot: selection.root,
+          });
         }
 
         // Immediately populate the file tree for the newly selected workspace.
@@ -440,13 +492,56 @@ async function handleMessage(client: ClientConnection, message: any) {
     }
 
     case "run_task": {
-      if (!client.workspaceRoot) {
-        sendEvent(client.ws, "error", { message: "No project selected" });
-        return;
-      }
       const task = payload.task;
       if (!task) {
         sendEvent(client.ws, "error", { message: "Task is required" });
+        return;
+      }
+
+      // If client requests a new project, or no workspace is active, or the current workspace contains an unrelated project
+      const needsIsolation = Boolean(
+        payload.isNewProject ||
+        !client.workspaceRoot ||
+        (await shouldIsolateNewProject(task, client.workspaceRoot))
+      );
+
+      if (needsIsolation) {
+        const slug = deriveProjectSlug(payload.projectName || task);
+        const baseDir = getDefaultProjectsBaseDir();
+        let targetDir = path.join(baseDir, slug);
+        if (fs.existsSync(targetDir)) {
+          try {
+            const files = fs.readdirSync(targetDir);
+            if (files.length > 0) {
+              targetDir = path.join(baseDir, `${slug}-${Date.now()}`);
+            }
+          } catch {}
+        }
+        await fs.promises.mkdir(targetDir, { recursive: true });
+        const selection = await validateWorkspaceDirectory(targetDir);
+        client.workspaceRoot = selection.root;
+        client.currentSessionId = null;
+        client.currentTaskId = null;
+        client.changedFiles = [];
+        client.baseline = null;
+
+        sendEvent(client.ws, "project_selected", {
+          path: selection.root,
+          entryCount: selection.entries,
+          isNew: true,
+        });
+        sendEvent(client.ws, "app_url", {
+          url: null,
+          workspaceRoot: selection.root,
+        });
+
+        const wsObj = new Workspace(selection.root);
+        const tree = await buildFileTree(wsObj);
+        sendEvent(client.ws, "file_tree", { path: selection.root, tree });
+      }
+
+      if (!client.workspaceRoot) {
+        sendEvent(client.ws, "error", { message: "No project selected" });
         return;
       }
 
@@ -694,13 +789,13 @@ async function runAgentWithWorkspace(
     const text = data.toString();
     stdoutBuffer += text;
     console.log(`[run_task] stdout chunk (${text.length} chars): ${text.slice(0, 200).replace(/\n/g, "\\n")}`);
-    sendEvent(client.ws, "agent_output", { taskId, stream: "stdout", content: text, sessionId });
+    sendEvent(client.ws, "agent_output", { taskId, stream: "stdout", content: text, sessionId, workspaceRoot });
     const m = text.match(/App started and ready at\s+(https?:\/\/[^\s"']+)/i);
     if (m?.[1]) {
-      sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId });
+      sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId, workspaceRoot });
     }
     if (text.includes("App process stopped.")) {
-      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId });
+      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId, workspaceRoot });
     }
   });
 
@@ -708,13 +803,13 @@ async function runAgentWithWorkspace(
     const text = data.toString();
     stderrBuffer += text;
     console.log(`[run_task] stderr chunk (${text.length} chars): ${text.slice(0, 200).replace(/\n/g, "\\n")}`);
-    sendEvent(client.ws, "agent_output", { taskId, stream: "stderr", content: text, sessionId });
+    sendEvent(client.ws, "agent_output", { taskId, stream: "stderr", content: text, sessionId, workspaceRoot });
     const m = text.match(/App started and ready at\s+(https?:\/\/[^\s"']+)/i);
     if (m?.[1]) {
-      sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId });
+      sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId, workspaceRoot });
     }
     if (text.includes("App process stopped.")) {
-      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId });
+      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId, workspaceRoot });
     }
   });
 

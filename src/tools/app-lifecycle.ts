@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as net from "node:net";
 import { Workspace } from "./workspace.js";
 
 export type AppProcessInfo = {
@@ -24,6 +25,7 @@ export type StartCommandResult = {
   command: string;
   port: number | null;
   url: string | null;
+  cwd?: string;
 };
 
 /**
@@ -40,37 +42,61 @@ export function isServerStartupCommand(command: string): boolean {
  * Detect the appropriate start command from package.json scripts.
  * Prefers dev/start scripts based on package manager and framework.
  * Also parses a candidate port from the script text for reliable URL probing.
+ * Checks workspace root first, then immediate subdirectories if not at root.
  */
 export async function detectStartCommand(workspace: Workspace): Promise<StartCommandResult> {
+  const scriptPriority = ["dev", "start", "serve", "preview"];
+
+  // 1. Check workspace root package.json
   try {
-    const packageJsonContent = await workspace.read("package.json");
-    const packageJson = JSON.parse(packageJsonContent);
-    const scripts = packageJson.scripts || {};
+    if (await workspace.exists("package.json")) {
+      const packageJsonContent = await workspace.read("package.json");
+      const packageJson = JSON.parse(packageJsonContent);
+      const scripts = packageJson.scripts || {};
 
-    // Priority order for start scripts
-    const scriptPriority = [
-      "dev",
-      "start",
-      "serve",
-      "preview",
-    ];
-
-    for (const script of scriptPriority) {
-      if (scripts[script]) {
-        // Get package manager
-        const pm = await detectPackageManager(workspace);
-        const prefix = pm === "npm" ? "npm run" : `${pm} run`;
-        const command = `${prefix} ${script}`;
-        const scriptText = String(scripts[script] ?? "");
-        const port = parsePortFromScript(scriptText);
-        return { command, port, url: null };
+      for (const script of scriptPriority) {
+        if (scripts[script]) {
+          const pm = await detectPackageManager(workspace);
+          const prefix = pm === "npm" ? "npm run" : `${pm} run`;
+          const command = `${prefix} ${script}`;
+          const scriptText = String(scripts[script] ?? "");
+          const port = parsePortFromScript(scriptText);
+          return { command, port, url: null, cwd: workspace.root };
+        }
       }
     }
+  } catch {}
 
-    return { command: "", port: null, url: null };
-  } catch {
-    return { command: "", port: null, url: null };
-  }
+  // 2. Check immediate subdirectories for package.json (e.g. scaffolded project folder)
+  try {
+    const entries = await fs.promises.readdir(workspace.root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name !== "node_modules" && !entry.name.startsWith(".")) {
+        const subDirPath = path.join(workspace.root, entry.name);
+        const subPkgPath = path.join(subDirPath, "package.json");
+        if (fs.existsSync(subPkgPath)) {
+          try {
+            const raw = fs.readFileSync(subPkgPath, "utf8");
+            const parsed = JSON.parse(raw);
+            const scripts = parsed.scripts || {};
+            for (const script of scriptPriority) {
+              if (scripts[script]) {
+                const subWorkspace = new Workspace(subDirPath);
+                const pm = await detectPackageManager(subWorkspace);
+                const prefix = pm === "npm" ? "npm run" : `${pm} run`;
+                const command = `${prefix} ${script}`;
+                const scriptText = String(scripts[script] ?? "");
+                const port = parsePortFromScript(scriptText);
+                return { command, port, url: null, cwd: subDirPath };
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+
+  return { command: "", port: null, url: null, cwd: workspace.root };
 }
 
 /**
@@ -102,9 +128,72 @@ export type ReadinessCheckResult = {
 };
 
 /**
- * Detect package manager from lockfiles.
+ * Check if a TCP port is currently free and available for binding.
+ */
+export async function isPortAvailable(port: number): Promise<boolean> {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, "0.0.0.0");
+  });
+}
+
+/**
+ * Allocate an available port when the preferred port is occupied.
+ * Tries preferred port first, then sequential available alternatives.
+ */
+export async function allocateAvailablePort(preferredPort = 3000, maxAttempts = 100): Promise<number> {
+  const start = preferredPort > 0 && preferredPort <= 65535 ? preferredPort : 3000;
+  if ((await isPortAvailable(start)) && !(await isUrlServing(`http://localhost:${start}`, 200))) {
+    return start;
+  }
+  for (let offset = 1; offset <= maxAttempts; offset++) {
+    const candidate = start + offset;
+    if (candidate > 65535) break;
+    if ((await isPortAvailable(candidate)) && !(await isUrlServing(`http://localhost:${candidate}`, 200))) {
+      return candidate;
+    }
+  }
+  return start + 1;
+}
+
+/**
+ * Replace port flags in a server command with a new port number.
+ */
+export function replacePortInCommand(command: string, newPort: number): string {
+  let replaced = command;
+  if (/(?:-l|-p|--port)\s+\d+/i.test(replaced)) {
+    replaced = replaced.replace(/((?:-l|-p|--port)\s+)\d+/i, `$1${newPort}`);
+  } else if (/--port=\d+/i.test(replaced)) {
+    replaced = replaced.replace(/(--port=)\d+/i, `$1${newPort}`);
+  } else if (/PORT=\d+/i.test(replaced)) {
+    replaced = replaced.replace(/(PORT=)\d+/i, `$1${newPort}`);
+  } else if (/\b(serve|http-server)\b/i.test(replaced) && !/--port|-p|-l/.test(replaced)) {
+    replaced = `${replaced} -l ${newPort}`;
+  }
+  return replaced;
+}
+
+/**
+ * Detect package manager from lockfiles or package.json field.
  */
 export async function detectPackageManager(workspace: Workspace): Promise<string> {
+  try {
+    if (await workspace.exists("package.json")) {
+      const pkg = JSON.parse(await workspace.read("package.json"));
+      if (typeof pkg.packageManager === "string") {
+        if (pkg.packageManager.startsWith("pnpm")) return "pnpm";
+        if (pkg.packageManager.startsWith("yarn")) return "yarn";
+        if (pkg.packageManager.startsWith("bun")) return "bun";
+        if (pkg.packageManager.startsWith("npm")) return "npm";
+      }
+    }
+  } catch {}
+
   const lockfiles = [
     { name: "pnpm", file: "pnpm-lock.yaml" },
     { name: "yarn", file: "yarn.lock" },
@@ -154,7 +243,8 @@ export function spawnAppProcess(
         cwd: process.argv[2],
         shell: true,
         windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: process.env
       });
       const outStream = fs.createWriteStream(process.argv[3], { flags: 'a' });
       child.stdout.pipe(outStream);

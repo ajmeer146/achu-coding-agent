@@ -21,7 +21,11 @@ program
     }
 
     try {
-      await runAgent(task);
+      const result = await runAgent(task);
+      if (!result.success) {
+        console.error(chalk.red(`\nTask failed: ${result.error || result.stopReason || "Execution was not successful"}`));
+        process.exitCode = 1;
+      }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : String(error);

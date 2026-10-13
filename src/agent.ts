@@ -2,6 +2,8 @@
 
 import OpenAI from "openai";
 import chalk from "chalk";
+import * as path from "node:path";
+import * as fs from "node:fs";
 
 import { getModelConfig } from "./router.js";
 import { Workspace } from "./tools/workspace.js";
@@ -13,7 +15,7 @@ import { createFile } from "./tools/create-file.js";
 import { runCommand } from "./tools/terminal.js";
 import { navigate } from "./browser/browser-tools.js";
 import { BrowserSession } from "./browser/browser-session.js";
-import { detectStartCommand, spawnAppProcess, waitForReadiness, stopAppProcess, getAppUrl, readAppOutput, cleanupAppOutputFile, hasAppProcessExited, extractUrlFromOutput, extractPortFromOutput, AppProcessInfo, detachAppProcess, isServerStartupCommand, isUrlServing, probePortRange, discoverNewServerUrl, getAppRuntime, saveAppRuntime, clearAppRuntime, resolveProjectEntryUrl, isProcessAlive } from "./tools/app-lifecycle.js";
+import { detectStartCommand, spawnAppProcess, waitForReadiness, stopAppProcess, getAppUrl, readAppOutput, cleanupAppOutputFile, hasAppProcessExited, extractUrlFromOutput, extractPortFromOutput, AppProcessInfo, detachAppProcess, isServerStartupCommand, isUrlServing, probePortRange, discoverNewServerUrl, getAppRuntime, saveAppRuntime, clearAppRuntime, resolveProjectEntryUrl, isProcessAlive, allocateAvailablePort, isPortAvailable, replacePortInCommand, detectPackageManager } from "./tools/app-lifecycle.js";
 import { verifyTextExists as verify_text, verifyHeadingExists as verify_heading, verifyInputExists as verify_input, verifyLinkExists as verify_link, runVerificationSuite, generateVerificationTargetsFromTask, VerificationTarget } from "./browser/browser-verification.js";
 import { open_browser, close_browser, inspect_page } from "./browser/browser-tools.js";
 import { loadSessionState, saveSessionState } from "./session/session-persistence.js";
@@ -145,12 +147,28 @@ function truncateToolResult(value: string): string {
   return `${value.slice(0, MAX_TOOL_RESULT_SIZE)}\n...[tool result truncated: ${value.length} bytes total]`;
 }
 
-function normalizeCommand(command: string): string {
-  return command.trim().replace(/\s+/g, " ").replace(/^["'`]+|["'`]+$/g, "");
+export function stripEnclosingQuotes(command: string): string {
+  const trimmed = command.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+    (trimmed.startsWith("`") && trimmed.endsWith("`"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+export function normalizeCommand(command: string): string {
+  return stripEnclosingQuotes(command);
+}
+
+export function normalizeCommandForComparison(command: string): string {
+  return stripEnclosingQuotes(command).replace(/\s+/g, " ").toLowerCase();
 }
 
 function commandsMatch(a: string, b: string): boolean {
-  return normalizeCommand(a).toLowerCase() === normalizeCommand(b).toLowerCase();
+  return normalizeCommandForComparison(a) === normalizeCommandForComparison(b);
 }
 
 function isValidCommand(cmd: string): boolean {
@@ -574,7 +592,7 @@ export function initializePlan(task: string, existingProjectInfo?: { hasProject:
     return plan.some(s => s.toolType === toolType && s.description.toLowerCase().includes(description.toLowerCase().split(' ')[0]));
   };
 
-  if (hasRepoAnalysis || hasConfigDiscovery || hasSourceDiscovery) {
+  if (isExistingProject && (hasRepoAnalysis || hasConfigDiscovery || hasSourceDiscovery)) {
     if (hasConfigDiscovery && !hasSimilarStep("list_directory", "config")) addStep("Discover project configuration files (package.json, tsconfig.json, etc.)", "list_directory");
     if (hasSourceDiscovery && !hasSimilarStep("list_directory", "source")) addStep("Discover source directory structure and entry points", "list_directory");
     if (hasRepoAnalysis && !hasSimilarStep("read_file", "analyze")) addStep("Analyze project structure and architecture", "read_file");
@@ -582,7 +600,7 @@ export function initializePlan(task: string, existingProjectInfo?: { hasProject:
   }
 
   const isBuildErrorFix = isAppBuildingTask && /fix\s+(any\s+)?(build|compilation|verification)\s+(errors?|issues?)/.test(lowerTask);
-  if (hasBugFix && !hasKnownFile && !hasFilePath && !isBuildErrorFix) {
+  if (isExistingProject && hasBugFix && !hasKnownFile && !hasFilePath && !isBuildErrorFix) {
     addStep("Search for relevant files related to the bug", "search_code");
   }
 
@@ -664,6 +682,16 @@ if (isAppOrGenericTask) {
             
             if (existingFiles.includes("script.js")) addStep("Modify script.js for requested changes", "edit_file", "script.js");
             else if (!hasSimilarStep("create_file", "script.js")) addStep("Create script.js", "create_file", "script.js");
+          }
+        } else {
+          // New project task in existing directory: create files for the new project
+          if (!hasTestCreation) {
+            if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
+            if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
+            if (!hasSimilarStep("create_file", "script.js")) addStep("Create script.js", "create_file", "script.js");
+          }
+          if (!hasSimilarStep("create_file", "package.json")) {
+            addStep("Create package.json with development scripts", "create_file", "package.json");
           }
         }
       }
@@ -1927,9 +1955,53 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           return `Tool error: ${message}`;
         }
       }
-      case "run_command": { const command = normalizeCommand(args.command); if (!command) return "Tool error: Empty command."; if (isModifiedVerificationCommand(command, state.requestedVerification)) return "BLOCKED: this is a modified verification command. Use run_verification with the exact requested command."; if (isVerificationWorkaround(command)) return "BLOCKED: verification/configuration workaround is not allowed."; if (isTargetFileManipulation(command, state.requestedVerification)) return "BLOCKED: moving, renaming, copying, or deleting the verification target is not allowed.";
+      case "run_command": {
+        const rawCmd = args.command;
+        const command = stripEnclosingQuotes(rawCmd);
+        if (!command) return "Tool error: Empty command.";
+        if (isModifiedVerificationCommand(command, state.requestedVerification)) return "BLOCKED: this is a modified verification command. Use run_verification with the exact requested command.";
+        if (isVerificationWorkaround(command)) return "BLOCKED: verification/configuration workaround is not allowed.";
+        if (isTargetFileManipulation(command, state.requestedVerification)) return "BLOCKED: moving, renaming, copying, or deleting the verification target is not allowed.";
         if (isServerStartupCommand(command)) return "BLOCKED: use 'start_app' tool to start development servers. run_command cannot be used for server startup.";
-        console.log(chalk.gray(`Running: ${command}`)); const result = await runCommand(command, workspace.root); state.commandHistory.push(command); return truncateToolResult([`Exit code: ${result.exitCode}`, result.stdout ? `STDOUT:\n${result.stdout}` : "STDOUT: <empty>", result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>"].join("\n")); }
+        if (/\bcreate-react-app\b/i.test(command)) {
+          return "BLOCKED: 'create-react-app' is deprecated, unsupported, and fails on modern Node.js. Use Vite ('npm create vite@latest <name> -- --template react') or build directly using 'create_file' with HTML/CSS/JavaScript and a package.json.";
+        }
+
+        // Gracefully handle existing directory creation attempts
+        const cmdMdMatch = command.match(/^\s*cmd(?:\.exe)?\s+(?:\/c|\/k)\s+(?:md|mkdir)\s+["']?([^"']+)["']?\s*$/i);
+        if (cmdMdMatch && cmdMdMatch[1]) {
+          const checkDir = path.resolve(workspace.root, cmdMdMatch[1].trim());
+          if (fs.existsSync(checkDir)) {
+            console.log(chalk.gray(`Directory already exists: ${checkDir}`));
+            return `Directory already exists: ${cmdMdMatch[1].trim()}\nExit code: 0\nSTDOUT: Directory already exists\nSTDERR: <empty>`;
+          }
+        }
+
+        console.log(chalk.gray(`Running: ${command}`));
+        const result = await runCommand(command, workspace.root);
+        state.commandHistory.push(command);
+
+        const combinedOut = `${result.stdout}\n${result.stderr}`;
+        const isCancelled = combinedOut.includes("Operation cancelled") || combinedOut.includes("canceled by user");
+        const effectiveExitCode = isCancelled && result.exitCode === 0 ? 1 : result.exitCode;
+
+        if (isCancelled) {
+          return truncateToolResult([
+            `Exit code: 1`,
+            `STATUS: CANCELLED (Scaffolding/command cancelled by prompt/user interrupt).`,
+            `ERROR: The target directory may already exist or contain files, causing an interactive prompt.`,
+            `RECOVERY ADVICE: Inspect the directory with 'list_directory'. If partial files exist, clean or inspect them, or build the website files directly using 'create_file'.`,
+            result.stdout ? `STDOUT:\n${result.stdout}` : "STDOUT: <empty>",
+            result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>"
+          ].join("\n"));
+        }
+
+        return truncateToolResult([
+          `Exit code: ${effectiveExitCode}`,
+          result.stdout ? `STDOUT:\n${result.stdout}` : "STDOUT: <empty>",
+          result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>"
+        ].join("\n"));
+      }
       case "run_verification": { const command = normalizeCommand(args.command); try { const result = await executeVerification(workspace, command, state); const combinedOutput = `${result.stdout}\n${result.stderr}`; if (result.exitCode !== 0 && isEnvironmentVerificationFailure(combinedOutput)) { return truncate([`Verification command: ${result.command}`, `Exit code: ${result.exitCode}`, result.stdout ? `STDOUT:\n${result.stdout}` : "STDOUT: <empty>", result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>", "", "VERIFICATION FAILED", "TS5112 CONFIGURATION ERROR", "", "STOP: The exact requested command cannot be made to succeed through source-code changes.", "No configuration workaround is permitted."].join("\n")); } return truncateToolResult([`Verification command: ${result.command}`, `Exit code: ${result.exitCode}`, result.stdout ? `STDOUT:\n${result.stdout}` : "STDOUT: <empty>", result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>", result.exitCode === 0 ? "VERIFICATION PASSED" : "VERIFICATION FAILED"].join("\n")); } catch (error) { const message = error instanceof Error ? error.message : String(error); if (state.stopReason) return `STOPPED SAFELY: ${message}`; return `Verification error: ${message}`; } }
       case "list_directory": { const directoryPath = args.directoryPath; console.log(chalk.gray(`Listing: ${directoryPath}`)); const result = await listDirectory(workspace, directoryPath); return truncate(result); }
       case "create_file": { 
@@ -1967,50 +2039,101 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         const startInfo = await detectStartCommand(workspace);
         if (!startInfo.command) return "No start command found in package.json scripts (dev, start, serve, preview).";
 
+        const workingDir = startInfo.cwd || workspace.root;
+
+        // Check if dependencies are declared but node_modules missing in working directory
+        let hasDependencies = false;
+        try {
+          const pkgPath = path.join(workingDir, "package.json");
+          if (fs.existsSync(pkgPath)) {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+            const depsCount = Object.keys(pkg.dependencies || {}).length + Object.keys(pkg.devDependencies || {}).length;
+            if (depsCount > 0) hasDependencies = true;
+          }
+        } catch {}
+
+        if (hasDependencies && !fs.existsSync(path.join(workingDir, "node_modules"))) {
+          console.log(chalk.gray(`Dependencies declared but node_modules missing in ${workingDir}. Installing dependencies...`));
+          const subWs = new Workspace(workingDir);
+          const pm = await detectPackageManager(subWs);
+          const installRes = await runCommand(`${pm} install`, workingDir, 300000);
+          if (installRes.exitCode !== 0) {
+            return `Dependency installation failed via '${pm} install' (code ${installRes.exitCode}): ${installRes.stderr || installRes.stdout}`;
+          }
+          console.log(chalk.gray("Dependencies installed successfully."));
+        }
+
         // Avoid starting duplicate servers if the process in state is already active and healthy
         if (state.appProcess && !hasAppProcessExited(state.appProcess) && state.appUrl && await isUrlServing(state.appUrl)) {
           console.log(chalk.gray(`Development server is already active and healthy at ${state.appUrl}.`));
           return `App started and ready at ${state.appUrl} (reused active server)`;
         }
 
-        // Cross-task reuse ONLY when confirmed: a previously recorded server
-        // for THIS workspace is still alive (checked by getAppRuntime and isProcessAlive) and
-        // serving. A server belonging to another workspace, or a stale one, is
-        // never reused.
+        // Cross-task reuse ONLY for genuine follow-up tasks on an existing project.
+        // For new project tasks or when new files were created, a previously running server
+        // must never be substituted for the new project.
+        const isFollowUp = state.projectState.isFollowUpTask;
         const record = getAppRuntime(workspace.root);
-        if (record && isProcessAlive(record.pid) && record.url && await isUrlServing(record.url)) {
-          state.appUrl = record.url;
-          state.appProcess = {
-            process: null as any,
-            command: "",
-            cwd: workspace.root,
-            pid: record.pid,
-            url: record.url,
-            port: record.port,
-            startTime: record.startedAt,
-            status: "ready",
-            output: "",
-            outputPath: record.outputPath,
-          };
-          console.log(chalk.gray(`Reusing existing server for this workspace at ${record.url}.`));
-          console.log(chalk.gray(`App started and ready at ${record.url}`));
-          return `App started and ready at ${record.url} (reused existing server)`;
+        if (record && isProcessAlive(record.pid)) {
+          if (isFollowUp && record.url && await isUrlServing(record.url)) {
+            state.appUrl = record.url;
+            state.appProcess = {
+              process: null as any,
+              command: "",
+              cwd: workingDir,
+              pid: record.pid,
+              url: record.url,
+              port: record.port,
+              startTime: record.startedAt,
+              status: "ready",
+              output: "",
+              outputPath: record.outputPath,
+            };
+            console.log(chalk.gray(`Reusing existing server for this workspace at ${record.url}.`));
+            console.log(chalk.gray(`App started and ready at ${record.url}`));
+            return `App started and ready at ${record.url} (reused existing server)`;
+          } else if (!isFollowUp) {
+            console.log(chalk.gray(`New project build: stopping leftover server (PID ${record.pid}) before starting fresh...`));
+            try { process.kill(record.pid, "SIGTERM"); } catch {}
+            clearAppRuntime(workspace.root);
+          }
         }
 
-        console.log(chalk.gray(`Starting app: ${startInfo.command}${startInfo.port ? ` (candidate port: ${startInfo.port})` : ""}`));
+        const candidatePort = startInfo.port || 3000;
+        let effectivePort = candidatePort;
+        let commandToRun = startInfo.command;
+
+        // Check if candidate port is already in use by another running server
+        const isPortServing = await isUrlServing(`http://localhost:${candidatePort}`, 300);
+        const isPortFree = await isPortAvailable(candidatePort);
+
+        if (isPortServing || !isPortFree) {
+          console.log(chalk.yellow(`Candidate port ${candidatePort} is occupied. Allocating alternative available port...`));
+          effectivePort = await allocateAvailablePort(candidatePort);
+          console.log(chalk.gray(`Allocated port ${effectivePort} for application server.`));
+          commandToRun = replacePortInCommand(commandToRun, effectivePort);
+          startInfo.port = effectivePort;
+        }
+
+        console.log(chalk.gray(`Starting app: ${commandToRun}${effectivePort ? ` (port: ${effectivePort}, cwd: ${workingDir})` : ""}`));
 
         // Snapshot which ports are ALREADY serving BEFORE we spawn. A leftover
         // server from a previous task commonly sits on the framework default
         // port; without this snapshot a probe would accept the OLD server as
         // if it were the new one.
         const MAX_PROBES = 20;
-        const preexistingPorts = startInfo.port
-          ? await probePortRange(startInfo.port, MAX_PROBES, 500)
+        const preexistingPorts = effectivePort
+          ? await probePortRange(effectivePort, MAX_PROBES, 500)
           : new Set<number>();
+
+        const spawnEnv: NodeJS.ProcessEnv = {
+          ...process.env,
+          PORT: String(effectivePort),
+        };
 
         // File-based stdio: the parent holds NO pipe handles, so the CLI can
         // exit naturally while the detached server keeps running (Live Preview).
-        const appInfo = spawnAppProcess(startInfo.command, workspace.root);
+        const appInfo = spawnAppProcess(commandToRun, workingDir, spawnEnv);
         state.appProcess = appInfo;
 
         const cleanupStartFailure = async (): Promise<void> => {
@@ -2029,7 +2152,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         // available.
         let lastPrintedLength = 0;
         const url = await discoverNewServerUrl({
-          candidatePort: startInfo.port,
+          candidatePort: effectivePort,
           preexistingPorts,
           maxProbes: MAX_PROBES,
           timeoutMs: 15000,
@@ -2066,7 +2189,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         const modifiedFiles = Array.from(state.completedTasks)
           .filter(t => t.startsWith("edit_file:") || t.startsWith("create_file:"))
           .map(t => t.split(":")[1] || t);
-        const resolvedUrl = await resolveProjectEntryUrl(url, workspace.root, modifiedFiles);
+        const resolvedUrl = await resolveProjectEntryUrl(url, workingDir, modifiedFiles);
         const finalUrl = resolvedUrl || url;
 
         appInfo.status = "ready";
@@ -2720,8 +2843,19 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
     .filter(t => t.startsWith("edit_file:") || t.startsWith("create_file:"))
     .map(t => t.split(":")[1] || t);
 
-  const success = !state.stopReason || state.verificationPassed;
-  const error = state.stopReason && !state.verificationPassed ? state.stopReason : undefined;
+  const browserVerificationIncomplete = isWebAppLifecycle && state.browserVerificationRequested && !state.browserVerificationPassed;
+  const hasFailedSteps = state.currentPlan?.some(s => s.status === "failed") ?? false;
+  const allRequiredStepsComplete = state.currentPlan ? state.currentPlan.every(s => s.status === "completed" || (s.toolType === "stop_app" && isWebAppLifecycle)) : true;
+
+  const success = !state.stopReason &&
+    !browserVerificationIncomplete &&
+    !hasFailedSteps &&
+    allRequiredStepsComplete &&
+    (state.requestedVerification ? state.verificationPassed : true);
+
+  const error = !success
+    ? state.stopReason || (browserVerificationIncomplete ? "Browser verification did not pass" : "Task could not be completed successfully")
+    : undefined;
 
   return {
     success,
