@@ -284,7 +284,7 @@ async function handleMessage(client: ClientConnection, message: any) {
       }
       try {
         const workspace = new Workspace(client.workspaceRoot);
-        const result = await createFile(workspace, filePath, payload.content);
+        const result = await createFile(workspace, filePath, payload.content, payload.overwrite ?? true);
         sendEvent(client.ws, "file_created", { path: filePath, message: result });
         const tree = await buildFileTree(workspace);
         sendEvent(client.ws, "file_tree", { path: client.workspaceRoot, tree });
@@ -812,13 +812,30 @@ async function runAgentWithWorkspace(
     const text = data.toString();
     stdoutBuffer += text;
     console.log(`[run_task] stdout chunk (${text.length} chars): ${text.slice(0, 200).replace(/\n/g, "\\n")}`);
-    sendEvent(client.ws, "agent_output", { taskId, stream: "stdout", content: text, sessionId, workspaceRoot });
+    sendEvent(client.ws, "agent_output", { taskId, stream: "stdout", content: text, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
     const m = text.match(/App started and ready at\s+(https?:\/\/[^\s"']+)/i);
     if (m?.[1]) {
-      sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId, workspaceRoot });
+      sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
     }
     if (text.includes("App process stopped.")) {
-      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId, workspaceRoot });
+      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
+    }
+
+    // Synchronize workspace root if the CLI updated it to a child/application directory
+    const rootMatch = text.match(/(?:Authoritative project root updated to|Updated workspace root to match application directory|Established authoritative project root at subdirectory):\s+(.+)/i);
+    if (rootMatch && rootMatch[1]) {
+      const candidateRoot = rootMatch[1].trim().replace(/[\r\n]+$/, "");
+      if (fs.existsSync(candidateRoot)) {
+        console.log(`[run_task] Authoritative project root updated to: ${candidateRoot}`);
+        client.workspaceRoot = candidateRoot;
+        sendEvent(client.ws, "project_selected", { path: candidateRoot, entryCount: 0 });
+        try {
+          const wsObj = new Workspace(candidateRoot);
+          buildFileTree(wsObj).then((tree) => {
+            sendEvent(client.ws, "file_tree", { path: candidateRoot, tree });
+          }).catch(() => {});
+        } catch {}
+      }
     }
   });
 
@@ -826,20 +843,20 @@ async function runAgentWithWorkspace(
     const text = data.toString();
     stderrBuffer += text;
     console.log(`[run_task] stderr chunk (${text.length} chars): ${text.slice(0, 200).replace(/\n/g, "\\n")}`);
-    sendEvent(client.ws, "agent_output", { taskId, stream: "stderr", content: text, sessionId, workspaceRoot });
+    sendEvent(client.ws, "agent_output", { taskId, stream: "stderr", content: text, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
     const m = text.match(/App started and ready at\s+(https?:\/\/[^\s"']+)/i);
     if (m?.[1]) {
-      sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId, workspaceRoot });
+      sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
     }
     if (text.includes("App process stopped.")) {
-      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId, workspaceRoot });
+      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
     }
   });
 
   child.on("error", async (err) => {
     console.error(`[run_task] Child process 'error' event: ${err.message}`, err);
     client.agentProcess = null;
-    await cleanupAndEmitFailure(client, workspaceRoot, sessionId, taskId, `Spawn failed: ${err.message}`);
+    await cleanupAndEmitFailure(client, client.workspaceRoot || workspaceRoot, sessionId, taskId, `Spawn failed: ${err.message}`);
   });
 
   child.on("close", async (code, signal) => {
@@ -847,7 +864,8 @@ async function runAgentWithWorkspace(
     client.agentProcess = null;
     const finalOutput = stdoutBuffer + stderrBuffer;
     
-    const workspace = new Workspace(workspaceRoot);
+    const effectiveRoot = client.workspaceRoot || workspaceRoot;
+    const workspace = new Workspace(effectiveRoot);
     const detectedChanges = baseline ? await detectChanges(workspace, baseline) : [];
     client.changedFiles = detectedChanges;
     

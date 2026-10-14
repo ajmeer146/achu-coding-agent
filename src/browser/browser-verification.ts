@@ -324,9 +324,11 @@ export async function runVerificationSuite(
   const isDirectoryListing = Boolean(
     pageInfo &&
     (pageInfo.title.includes("Files within ") ||
-     pageInfo.title.includes("Directory listing") ||
-     pageInfo.title.startsWith("Index of /") ||
-     pageInfo.visibleText.includes("Files within "))
+     pageInfo.title.toLowerCase().includes("directory listing") ||
+     pageInfo.title.toLowerCase().startsWith("index of") ||
+     pageInfo.visibleText.includes("Files within ") ||
+     pageInfo.visibleText.toLowerCase().includes("directory listing for") ||
+     pageInfo.visibleText.toLowerCase().includes("directory listing"))
   );
 
   if (isDirectoryListing) {
@@ -363,7 +365,7 @@ export async function runVerificationSuite(
     });
   }
 
-  const overallPassed = results.length > 0 && results.every(r => r.passed);
+  const overallPassed = results.length > 0 && !isDirectoryListing && results.every(r => r.passed);
 
   return {
     overallPassed,

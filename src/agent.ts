@@ -2344,6 +2344,11 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         detachAppProcess(appInfo);
         return `App started and ready at ${finalUrl}`; }
       case "stop_app": {
+        const isWebAppLifecycle = state.currentPlan.some(s => s.toolType === "start_app" || s.toolType === "browser_verify");
+        if (isWebAppLifecycle && (state.browserVerificationPassed || state.appUrl)) {
+          console.log(chalk.cyan(`Web-app lifecycle: keeping development server alive for Live Preview at ${state.appUrl || "active URL"}`));
+          return `Development server remains running for Live Preview at ${state.appUrl || (state.appProcess ? getAppUrl(state.appProcess) : "active URL")}`;
+        }
         if (state.appProcess && state.appProcess.status !== "stopped") {
           await stopAppProcess(state.appProcess);
         }
@@ -2485,6 +2490,10 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
 
   // Detect existing project early for all cases
   const existingProjectInfo = await detectExistingProject(workspace);
+  if (workspace.root !== workspaceRoot) {
+    snapshotManager.setWorkspaceRoot(workspace.root);
+    console.log(chalk.cyan(`Synchronized snapshot manager root to: ${workspace.root}`));
+  }
   console.log(chalk.gray(`Project detection: ${existingProjectInfo.hasProject ? 'EXISTING (' + existingProjectInfo.projectType + ')' : 'NEW PROJECT'}`));
   if (existingProjectInfo.hasProject) {
     console.log(chalk.gray(`Existing files: ${existingProjectInfo.existingFiles.join(', ')}`));
@@ -2810,7 +2819,13 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
         if (!madeProgress) state.recoveryAttempts += 1; else { state.recoveryAttempts = 0; lastCompletedStepCount = currentCompletedCount; }
         state.lastError = { command: toolCall.function.name, exitCode: result.includes("Exit code:") ? parseInt(result.split("Exit code:")[1].split("\n")[0].trim()) : 1, stdout: result, stderr: "", errorMessage: result.startsWith("Tool error:") ? result : result.split("\n")[0] };
         console.error(chalk.red(`\n[Execution Failure] Step "${failedStep.description}" failed: ${state.lastError.errorMessage}`));
-        if (state.recoveryAttempts >= maxRecoveryAttempts) { state.stopReason = `Recovery limit reached (${maxRecoveryAttempts} attempts). Task cannot continue. Last error: ${state.lastError.errorMessage}`; console.log(chalk.red(`\nRecovery limit reached after ${state.recoveryAttempts} attempts. Stopping.`)); } else { state.phase = "recover"; console.log(chalk.yellow(`\nStep failed: ${failedStep.description} - entering recovery (attempt ${state.recoveryAttempts}/${maxRecoveryAttempts})`)); }
+        state.phase = "recover";
+        if (state.recoveryAttempts >= maxRecoveryAttempts) {
+          state.stopReason = `Recovery limit reached (${maxRecoveryAttempts} attempts). Task cannot continue. Last error: ${state.lastError.errorMessage}`;
+          console.log(chalk.red(`\nRecovery limit reached after ${state.recoveryAttempts} attempts. Stopping.`));
+        } else {
+          console.log(chalk.yellow(`\nStep failed: ${failedStep.description} - entering recovery (attempt ${state.recoveryAttempts}/${maxRecoveryAttempts})`));
+        }
       }
 
       await executePendingVerificationStep(workspace, state, messages, task);
@@ -2825,7 +2840,13 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
           const currentCompletedCount = state.currentPlan.filter(s => s.status === "completed").length;
           const madeProgress = currentCompletedCount > lastCompletedStepCount;
           if (!madeProgress) state.recoveryAttempts += 1; else { state.recoveryAttempts = 0; lastCompletedStepCount = currentCompletedCount; }
-          if (state.recoveryAttempts >= maxRecoveryAttempts) { state.stopReason = `Recovery limit reached (${maxRecoveryAttempts} attempts). All remaining steps blocked by failed dependencies.`; console.log(chalk.red(`\nRecovery limit reached after ${state.recoveryAttempts} attempts. Stopping.`)); } else { state.phase = "recover"; console.log(chalk.yellow(`\nRemaining steps blocked by failed dependencies - entering recovery (attempt ${state.recoveryAttempts}/${maxRecoveryAttempts})`)); }
+          state.phase = "recover";
+          if (state.recoveryAttempts >= maxRecoveryAttempts) {
+            state.stopReason = `Recovery limit reached (${maxRecoveryAttempts} attempts). All remaining steps blocked by failed dependencies.`;
+            console.log(chalk.red(`\nRecovery limit reached after ${state.recoveryAttempts} attempts. Stopping.`));
+          } else {
+            console.log(chalk.yellow(`\nRemaining steps blocked by failed dependencies - entering recovery (attempt ${state.recoveryAttempts}/${maxRecoveryAttempts})`));
+          }
         }
       }
 
@@ -2848,7 +2869,14 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
           const currentCompletedCount = state.currentPlan.filter(s => s.status === "completed").length;
           const madeProgress = currentCompletedCount > lastCompletedStepCount;
           if (!madeProgress) state.recoveryAttempts += 1; else { state.recoveryAttempts = 0; lastCompletedStepCount = currentCompletedCount; }
-          if (state.recoveryAttempts >= maxRecoveryAttempts) { state.stopReason = `Verification failed after ${maxRecoveryAttempts} recovery attempts. Cannot continue.`; console.log(chalk.red(`\nVerification failed and recovery limit reached. Stopping.`)); } else { state.phase = "recover"; state.lastError = { command: justFailedStep.toolType, exitCode: 1, stdout: "Verification failed", stderr: "", errorMessage: `Verification step failed: ${justFailedStep.description}` }; console.log(chalk.yellow(`\nVerification failed: ${justFailedStep.description} - entering recovery (attempt ${state.recoveryAttempts}/${maxRecoveryAttempts})`)); }
+          state.phase = "recover";
+          if (state.recoveryAttempts >= maxRecoveryAttempts) {
+            state.stopReason = `Verification failed after ${maxRecoveryAttempts} recovery attempts. Cannot continue.`;
+            console.log(chalk.red(`\nVerification failed and recovery limit reached. Stopping.`));
+          } else {
+            state.lastError = { command: justFailedStep.toolType, exitCode: 1, stdout: "Verification failed", stderr: "", errorMessage: `Verification step failed: ${justFailedStep.description}` };
+            console.log(chalk.yellow(`\nVerification failed: ${justFailedStep.description} - entering recovery (attempt ${state.recoveryAttempts}/${maxRecoveryAttempts})`));
+          }
         }
       }
 
@@ -2872,9 +2900,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
         let repeatedSameFailure = false;
         if (state.lastError) { const failureKey = `${state.lastError.command}:${state.lastError.exitCode}:${(state.lastError.errorMessage ?? "").slice(0, 160)}`; const repeatedCount = state.repeatedFailures.get(failureKey) || 0; state.repeatedFailures.set(failureKey, repeatedCount + 1); if (repeatedCount + 1 >= 3) repeatedSameFailure = true; }
         const recoveryExhausted = state.recoveryAttempts >= maxRecoveryAttempts;
-        const noProgress = !madeProgress;
-        const hasRunnableSteps = runnableSteps.length > 0;
-        const terminalFailure = recoveryExhausted || repeatedSameFailure || (!hasRunnableSteps && noProgress);
+        const terminalFailure = recoveryExhausted || repeatedSameFailure;
 
         const isBrowserOrInfraFailure = Boolean(
           state.lastError?.command === "browser_verify" ||

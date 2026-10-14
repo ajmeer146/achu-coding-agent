@@ -70,6 +70,38 @@ function findMatchingRangeByLines(
 
   if (matches.length === 1) return matches[0];
 
+  // Pass 3: Whitespace-collapsed and quote-tolerant matching
+  const collapseWs = (l: string) => normalizeQuotes(l.trim().replace(/\s+/g, " "));
+  const wsNormOld = trimmedOld.map(collapseWs);
+  for (let i = 0; i <= currentLines.length - oldLines.length; i++) {
+    let match = true;
+    for (let j = 0; j < oldLines.length; j++) {
+      if (collapseWs(currentLines[i + j]) !== wsNormOld[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      matches.push({ startIndex: i, count: oldLines.length });
+    }
+  }
+
+  if (matches.length === 1) return matches[0];
+
+  // Pass 4: Stripping leading and trailing blank lines from oldLines
+  let nonBlankStart = 0;
+  while (nonBlankStart < oldLines.length && oldLines[nonBlankStart].trim() === "") nonBlankStart++;
+  let nonBlankEnd = oldLines.length;
+  while (nonBlankEnd > nonBlankStart && oldLines[nonBlankEnd - 1].trim() === "") nonBlankEnd--;
+
+  if (nonBlankStart > 0 || nonBlankEnd < oldLines.length) {
+    const strippedOld = oldLines.slice(nonBlankStart, nonBlankEnd);
+    if (strippedOld.length > 0 && strippedOld.length <= currentLines.length) {
+      const strippedRes = findMatchingRangeByLines(currentLines, strippedOld);
+      if (strippedRes) return strippedRes;
+    }
+  }
+
   return null;
 }
 

@@ -3,6 +3,8 @@ import { validateCommand, normalizeUnixCommand } from "../utils/command-guard.js
 
 export type CommandResult = {
   command: string;
+  normalizedCommand?: string;
+  cwd?: string;
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -29,9 +31,10 @@ function getShellCommand(command: string): { shell: string; args: string[] } {
   const isWindows = process.platform === "win32";
   
   if (isWindows) {
+    const wrappedCommand = `${command}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } elseif (-not $?) { exit 1 }`;
     return {
       shell: "powershell.exe",
-      args: ["-NoProfile", "-NonInteractive", "-Command", command],
+      args: ["-NoProfile", "-NonInteractive", "-Command", wrappedCommand],
     };
   } else {
     return {
@@ -123,6 +126,8 @@ export async function runCommand(
       if (!timedOut) {
         resolve({
           command,
+          normalizedCommand: normalized,
+          cwd,
           exitCode: exitCode ?? -1,
           stdout,
           stderr,

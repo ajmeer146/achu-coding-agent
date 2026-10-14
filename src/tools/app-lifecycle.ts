@@ -561,37 +561,26 @@ export async function waitForReadiness(
  */
 export async function stopAppProcess(appInfo: AppProcessInfo): Promise<void> {
   if (appInfo.status === "stopped") return;
+  appInfo.status = "stopped";
 
-  return new Promise((resolve) => {
-    const child = appInfo.process;
-    if (!child) {
-      appInfo.status = "stopped";
-      resolve();
-      return;
-    }
-
-    let resolved = false;
-    const forceKillTimeout = setTimeout(() => {
-      if (!resolved) {
-        child.kill("SIGKILL");
-        resolved = true;
-        appInfo.status = "stopped";
-        resolve();
-      }
-    }, 5000);
-
-    child.on("close", () => {
-      if (!resolved) {
-        clearTimeout(forceKillTimeout);
-        resolved = true;
-        appInfo.status = "stopped";
-        resolve();
-      }
+  // On Windows, terminate the process tree owned by this exact PID and wait for handles to release
+  if (process.platform === "win32" && appInfo.pid > 0) {
+    await new Promise<void>((resolve) => {
+      const killer = spawn("taskkill", ["/pid", appInfo.pid.toString(), "/t", "/f"], {
+        windowsHide: true,
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      killer.on("close", () => resolve());
+      killer.on("error", () => resolve());
+      setTimeout(resolve, 3000);
     });
+  }
 
-    // Try graceful shutdown first
-    child.kill("SIGTERM");
-  });
+  const child = appInfo.process;
+  if (child) {
+    try { child.kill("SIGTERM"); } catch {}
+    try { child.kill("SIGKILL"); } catch {}
+  }
 }
 
 /**

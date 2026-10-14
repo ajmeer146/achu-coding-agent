@@ -204,6 +204,213 @@ export function normalizePipelinesForPowerShell(command: string): string {
   return result;
 }
 
+function cleanPathArg(arg: string): string {
+  const trimmed = arg.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+export function splitCommandClauses(command: string): Array<{ text: string; connector?: "&&" | "||" | ";" }> {
+  const clauses: Array<{ text: string; connector?: "&&" | "||" | ";" }> = [];
+  let current = "";
+  let inDouble = false;
+  let inSingle = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    const prev = i > 0 ? command[i - 1] : "";
+
+    if (ch === '"' && !inSingle && prev !== "\\") {
+      inDouble = !inDouble;
+      current += ch;
+    } else if (ch === "'" && !inDouble && prev !== "\\") {
+      inSingle = !inSingle;
+      current += ch;
+    } else if (!inDouble && !inSingle && ch === "&" && command[i + 1] === "&") {
+      clauses.push({ text: current.trim(), connector: "&&" });
+      current = "";
+      i++;
+    } else if (!inDouble && !inSingle && ch === "|" && command[i + 1] === "|") {
+      clauses.push({ text: current.trim(), connector: "||" });
+      current = "";
+      i++;
+    } else if (!inDouble && !inSingle && ch === ";") {
+      clauses.push({ text: current.trim(), connector: ";" });
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim().length > 0 || clauses.length === 0) {
+    clauses.push({ text: current.trim(), connector: undefined });
+  }
+  return clauses;
+}
+
+export function normalizeSingleCommand(cmd: string): { normalized: string; warnings: string[] } {
+  let normalized = cmd.trim();
+  const warnings: string[] = [];
+
+  // Null redirection
+  if (/2>\/dev\/null/i.test(normalized)) {
+    normalized = normalized.replace(/2>\/dev\/null/gi, "2>$null");
+    warnings.push("Normalized '2>/dev/null' to '2>$null'");
+  }
+  if (/>\/dev\/null/i.test(normalized)) {
+    normalized = normalized.replace(/>\/dev\/null/gi, ">$null");
+    warnings.push("Normalized '>/dev/null' to '>$null'");
+  }
+
+  // DOS dir with switches
+  const dirMatch = normalized.match(/^dir((?:\s+\/[a-zA-Z0-9\-_/]+)+)(?:\s+(.*))?$/i);
+  if (dirMatch) {
+    const switches = dirMatch[1].trim();
+    const rawPath = dirMatch[2] ? dirMatch[2].trim() : "";
+    if (rawPath) {
+      const cleanPath = cleanPathArg(rawPath);
+      const isBare = /\/b\b/i.test(switches);
+      const isForce = /\/a\b/i.test(switches);
+      const isRecurse = /\/s\b/i.test(switches);
+      const parts = ["Get-ChildItem"];
+      if (isForce) parts.push("-Force");
+      if (isRecurse) parts.push("-Recurse");
+      if (isBare) parts.push("-Name");
+      parts.push(`-LiteralPath "${cleanPath}"`);
+      const converted = parts.join(" ");
+      warnings.push(`Normalized DOS dir with path to "${converted}"`);
+      return { normalized: converted, warnings };
+    } else {
+      const wrapped = `cmd.exe /c ${normalized}`;
+      warnings.push(`DOS dir command normalized to cmd.exe: "${wrapped}"`);
+      return { normalized: wrapped, warnings };
+    }
+  }
+
+  // Pipeline utilities (head, tail, grep)
+  const afterPipelines = normalizePipelinesForPowerShell(normalized);
+  if (afterPipelines !== normalized) {
+    normalized = afterPipelines;
+    warnings.push("Normalized pipeline utilities (head/tail/grep) to PowerShell cmdlets");
+  }
+
+  // ls -la with optional path
+  const lsLaMatch = normalized.match(/^ls\s+-la(?:\s+(.*))?$/i);
+  if (lsLaMatch) {
+    const rawPath = lsLaMatch[1] ? lsLaMatch[1].trim() : "";
+    if (rawPath) {
+      const cleanPath = cleanPathArg(rawPath);
+      const converted = `Get-ChildItem -Force -LiteralPath "${cleanPath}"`;
+      warnings.push(`Normalized command prefix to "${converted}"`);
+      return { normalized: converted, warnings };
+    }
+    warnings.push(`Normalized command prefix to "Get-ChildItem -Force"`);
+    return { normalized: "Get-ChildItem -Force", warnings };
+  }
+
+  // ls with optional path (and optional -l or -a)
+  const lsMatch = normalized.match(/^ls(?:\s+-(?:l|a|al|la))?(?:\s+(.*))?$/i);
+  if (lsMatch && !normalized.toLowerCase().startsWith("lsof")) {
+    const hasForce = normalized.toLowerCase().includes("-a");
+    const rawPath = lsMatch[1] ? lsMatch[1].trim() : "";
+    const forceFlag = hasForce ? " -Force" : "";
+    if (rawPath) {
+      const cleanPath = cleanPathArg(rawPath);
+      const converted = `Get-ChildItem${forceFlag} -LiteralPath "${cleanPath}"`;
+      warnings.push(`Normalized command prefix to "${converted}"`);
+      return { normalized: converted, warnings };
+    }
+    const converted = `Get-ChildItem${forceFlag}`;
+    warnings.push(`Normalized command prefix to "${converted}"`);
+    return { normalized: converted, warnings };
+  }
+
+  // pwd
+  if (/^pwd\b/i.test(normalized)) {
+    warnings.push(`Normalized command prefix to "Get-Location"`);
+    return { normalized: normalized.replace(/^pwd\b/i, "Get-Location"), warnings };
+  }
+
+  // curl -> curl.exe
+  if (/^curl\s+/i.test(normalized)) {
+    warnings.push(`Normalized command prefix to "curl.exe "`);
+    return { normalized: normalized.replace(/^curl\s+/i, "curl.exe "), warnings };
+  }
+
+  // ps aux -> Get-Process
+  if (/^ps\s+(?:aux|-ef|-a)\b/i.test(normalized)) {
+    warnings.push(`Normalized command prefix to "Get-Process"`);
+    return { normalized: normalized.replace(/^ps\s+(?:aux|-ef|-a)\b/i, "Get-Process"), warnings };
+  }
+
+  // cat with path
+  const catMatch = normalized.match(/^cat\s+(.*)$/i);
+  if (catMatch && catMatch[1]) {
+    const cleanPath = cleanPathArg(catMatch[1]);
+    const converted = `Get-Content -LiteralPath "${cleanPath}"`;
+    warnings.push(`Normalized command prefix to "${converted}"`);
+    return { normalized: converted, warnings };
+  }
+
+  // cd with path: preserve paths with spaces safely
+  const cdMatch = normalized.match(/^cd\s+(.*)$/i);
+  if (cdMatch && cdMatch[1]) {
+    const cleanPath = cleanPathArg(cdMatch[1]);
+    const converted = `Set-Location -LiteralPath "${cleanPath}"`;
+    warnings.push(`Normalized cd path to "${converted}"`);
+    return { normalized: converted, warnings };
+  }
+
+  // mkdir -p / mkdir
+  const mkdirMatch = normalized.match(/^mkdir\s+(?:-p\s+)?(.*)$/i);
+  if (mkdirMatch && mkdirMatch[1]) {
+    const cleanPath = cleanPathArg(mkdirMatch[1]);
+    const converted = `New-Item -ItemType Directory -Force -Path "${cleanPath}"`;
+    warnings.push(`Normalized command prefix to "${converted}"`);
+    return { normalized: converted, warnings };
+  }
+
+  // touch
+  const touchMatch = normalized.match(/^touch\s+(.*)$/i);
+  if (touchMatch && touchMatch[1]) {
+    const cleanPath = cleanPathArg(touchMatch[1]);
+    const converted = `New-Item -ItemType File -Force -Path "${cleanPath}"`;
+    warnings.push(`Normalized command prefix to "${converted}"`);
+    return { normalized: converted, warnings };
+  }
+
+  // rm -rf / rm
+  const rmRfMatch = normalized.match(/^rm\s+-rf\s+(.*)$/i);
+  if (rmRfMatch && rmRfMatch[1]) {
+    const cleanPath = cleanPathArg(rmRfMatch[1]);
+    const converted = `Remove-Item -Recurse -Force -LiteralPath "${cleanPath}"`;
+    warnings.push(`Normalized command prefix to "${converted}"`);
+    return { normalized: converted, warnings };
+  }
+  const rmMatch = normalized.match(/^rm\s+(.*)$/i);
+  if (rmMatch && rmMatch[1]) {
+    const cleanPath = cleanPathArg(rmMatch[1]);
+    const converted = `Remove-Item -Force -LiteralPath "${cleanPath}"`;
+    warnings.push(`Normalized command prefix to "${converted}"`);
+    return { normalized: converted, warnings };
+  }
+
+  // which
+  if (/^which\s+/i.test(normalized)) {
+    warnings.push(`Normalized command prefix to "Get-Command "`);
+    return { normalized: normalized.replace(/^which\s+/i, "Get-Command "), warnings };
+  }
+
+  // echo
+  if (/^echo\s+/i.test(normalized)) {
+    warnings.push(`Normalized command prefix to "Write-Output "`);
+    return { normalized: normalized.replace(/^echo\s+/i, "Write-Output "), warnings };
+  }
+
+  return { normalized, warnings };
+}
+
 export function normalizeUnixCommand(command: string): { normalized: string; wasChanged: boolean; warning?: string } {
   let normalized = command.trim();
   let wasChanged = false;
@@ -217,81 +424,46 @@ export function normalizeUnixCommand(command: string): { normalized: string; was
     warnings.push("Balanced unclosed quotes for safe shell parsing");
   }
 
-  // 2. Normalize null redirection (2>/dev/null, >/dev/null) to PowerShell equivalents
-  if (/2>\/dev\/null/i.test(normalized)) {
-    normalized = normalized.replace(/2>\/dev\/null/gi, "2>$null");
-    wasChanged = true;
-    warnings.push("Normalized '2>/dev/null' to '2>$null'");
-  }
-  if (/>\/dev\/null/i.test(normalized)) {
-    normalized = normalized.replace(/>\/dev\/null/gi, ">$null");
-    wasChanged = true;
-    warnings.push("Normalized '>/dev/null' to '>$null'");
-  }
-
-  // 3. If command uses DOS dir with switches (e.g. dir /a /s /b), wrap in cmd /c so PowerShell doesn't misinterpret / switches as parameters
-  if (/^dir\s+\/[a-zA-Z]/i.test(normalized)) {
-    normalized = `cmd.exe /c ${normalized}`;
+  // 2. Split compound commands into individual statements respecting quotes
+  const clauses = splitCommandClauses(normalized);
+  if (clauses.length <= 1 && !clauses[0]?.connector) {
+    const singleResult = normalizeSingleCommand(clauses[0] ? clauses[0].text : normalized);
+    warnings.push(...singleResult.warnings);
+    const finalCmd = singleResult.normalized;
     return {
-      normalized,
-      wasChanged: true,
-      warning: `DOS dir command normalized to cmd.exe: "${normalized}"`,
+      normalized: finalCmd,
+      wasChanged: wasChanged || finalCmd !== command.trim(),
+      warning: warnings.length > 0 ? warnings.join("; ") : undefined,
     };
   }
 
-  // 4. Chained commands with && and ||
-  const afterAnd = replaceLogicalAndForPowerShell(normalized);
-  if (afterAnd !== normalized) {
-    normalized = afterAnd;
-    wasChanged = true;
-    warnings.push("Normalized '&&' to PowerShell conditional chaining");
-  }
+  const normalizedClauses = clauses.map((c) => {
+    const single = normalizeSingleCommand(c.text);
+    warnings.push(...single.warnings);
+    return {
+      text: single.normalized,
+      connector: c.connector,
+    };
+  });
 
-  const afterOr = replaceLogicalOrForPowerShell(normalized);
-  if (afterOr !== normalized) {
-    normalized = afterOr;
-    wasChanged = true;
-    warnings.push("Normalized '||' to PowerShell conditional chaining");
-  }
-
-  // 5. Wrap subcommands that use DOS dir switches in cmd.exe /c
-  if (/(?:^|[\s;&|])dir\s+\/[a-zA-Z]/i.test(normalized)) {
-    normalized = normalized.replace(/(^|[\s;&|])(dir\s+\/[a-zA-Z][^;&|\n]*)/gi, '$1cmd.exe /c "$2"');
-    wasChanged = true;
-    warnings.push("Wrapped DOS dir switches in cmd.exe /c");
-  }
-
-  // 6. Pipeline utilities
-  const afterPipelines = normalizePipelinesForPowerShell(normalized);
-  if (afterPipelines !== normalized) {
-    normalized = afterPipelines;
-    wasChanged = true;
-    warnings.push("Normalized pipeline utilities (head/tail/grep) to PowerShell cmdlets");
-  }
-
-  // 7. Prefix commands (ls, cat, rm, curl, ps, etc.)
-  for (const { pattern, replacement } of UNIX_COMMAND_PATTERNS) {
-    if (pattern.test(normalized)) {
-      if (typeof replacement === "function") {
-        const match = normalized.match(pattern);
-        if (match) {
-          const newCmd = replacement(normalized, match[1]);
-          normalized = newCmd;
-          wasChanged = true;
-          warnings.push(`Normalized command prefix to "${newCmd}"`);
-        }
-      } else {
-        normalized = normalized.replace(pattern, replacement);
-        wasChanged = true;
-        warnings.push(`Normalized command prefix to "${replacement}"`);
-      }
-      break;
+  let result = normalizedClauses[0].text;
+  for (let i = 0; i < normalizedClauses.length - 1; i++) {
+    const conn = normalizedClauses[i].connector;
+    const nextText = normalizedClauses[i + 1].text;
+    if (conn === "&&") {
+      result += `; if ($?) { ${nextText} }`;
+      warnings.push("Normalized '&&' to PowerShell conditional chaining");
+    } else if (conn === "||") {
+      result += `; if (-not $?) { ${nextText} }`;
+      warnings.push("Normalized '||' to PowerShell conditional chaining");
+    } else {
+      result += `; ${nextText}`;
     }
   }
 
   return {
-    normalized,
-    wasChanged,
+    normalized: result,
+    wasChanged: wasChanged || result !== command.trim(),
     warning: warnings.length > 0 ? warnings.join("; ") : undefined,
   };
 }
