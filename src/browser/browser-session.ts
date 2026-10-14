@@ -332,6 +332,10 @@ export class BrowserSession {
     }
   }
 
+  getPage(): Page | null {
+    return this.page;
+  }
+
   /**
    * Closes the browser and cleans up resources.
    * @returns {Promise<void>}

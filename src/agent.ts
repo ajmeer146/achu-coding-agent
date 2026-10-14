@@ -294,19 +294,19 @@ export function extractRequestedVerification(task: string): string | null {
 export function inferVerificationCommand(task: string, workspaceRoot: string): string | null {
   const lowerTask = task.toLowerCase();
   const needsVerification = /\b(verify|test|build|compile)\b|run\s+(npm|npx|node|tsc|pytest|cargo|go)\s|run\s+(the\s+)?(build|compile)\b/.test(lowerTask);
-  
+
   if (!needsVerification) return null;
-  
+
   // Check if task explicitly mentions "existing test" or "existing verification command"
   // which implies we should use what's in package.json
   const mentionsExisting = /existing\b.*\b(test|verification|command)/i.test(task);
-  
+
   // For now, return a marker that verification is needed but command should be inferred
   // The actual inference will happen at runtime by checking package.json
   if (mentionsExisting) {
     return "INFER_FROM_PROJECT";
   }
-  
+
   return null;
 }
 
@@ -315,7 +315,7 @@ export async function inferVerificationFromPackageJson(workspaceRoot: string): P
     const packageJsonPath = `${workspaceRoot}/package.json`;
     const content = await readFile(new Workspace(workspaceRoot), packageJsonPath);
     const pkg = JSON.parse(content);
-    
+
     // Prefer test script, then build script
     if (pkg.scripts?.test && pkg.scripts.test !== "echo \"Error: no test specified\" && exit 1") {
       return "npm test";
@@ -528,7 +528,7 @@ export async function detectExistingProject(workspace: Workspace): Promise<{
 export function initializePlan(task: string, existingProjectInfo?: { hasProject: boolean; projectType: string; existingFiles: string[]; framework: string | null }): PlanStep[] {
   const lowerTask = task.toLowerCase();
   const plan: PlanStep[] = [];
-  
+
   // Extract existing project info for follow-up task planning
   const existingFiles = existingProjectInfo?.existingFiles ?? [];
   const isExistingProject = existingProjectInfo?.hasProject ?? false;
@@ -539,25 +539,28 @@ export function initializePlan(task: string, existingProjectInfo?: { hasProject:
   const hasInspect = /read|inspect|look at|examine|check|find|search|list/.test(lowerTask);
   const hasBrowser = /navigate|open|click|type|browser|website|page|url/.test(lowerTask);
   const hasMultiFile = /and\s+(fix|edit|modify|update|create|add|remove)\s/.test(lowerTask) || /, then|, and then|, next|; then/.test(lowerTask);
-  
+
   const hasRepoAnalysis = /analyze|explain|understand|overview|structure|architecture/.test(lowerTask);
   const hasConfigDiscovery = /package\.json|tsconfig|config|settings/.test(lowerTask);
   const hasSourceDiscovery = /source|src|entry|main|index/.test(lowerTask);
-  
+
   const hasReadOnly = /(?:do\s+not|don'?t|never)\s+(?:modify|edit|change)\s+(?:the\s+)?(?:file|code|source)|read\.?only|inspect\s+only|explain\s+only|analyze\s+only|tell\s+me|what\s+(?:is|does|this)/.test(lowerTask);
-  
+
   const hasBugFix = /bug|fix|error|issue|broken/.test(lowerTask);
-  const hasAuth = /auth|login|signin|signup|password|token|session|jwt/.test(lowerTask);
-  const hasValidation = /valid|sanitiz|check.*input|verify.*input/.test(lowerTask);
+  const hasAuth = /\b(auth|authentication|login|signin|sign-in|signup|sign-up|password|jwt|oauth)\b/i.test(lowerTask) &&
+    !/\b(browser\s+session|\.achu-sessions|session\s+failed)\b/i.test(lowerTask);
+  const hasValidation = /\b(form\s+validation|input\s+validation|validate\s+(?:user\s+)?input|sanitiz\w*)\b/i.test(lowerTask);
   const hasKnownFile = /\.(ts|js|tsx|jsx|py|rs|go|java|cpp|c|h|cs|rb|php)\b/.test(lowerTask);
   const hasFilePath = /[a-zA-Z0-9_\-]+\.(ts|js|tsx|jsx|py|rs|go|java|cpp|c|h|cs|rb|php)/.test(lowerTask);
-  
-  const hasTestCreation = /\b(add|create|write|implement)\b.*\btest/i.test(lowerTask);
-  const hasTestRun = /run.*test|execute.*test|pytest|jest|mocha|vitest/.test(lowerTask);
-  
+
+  const hasTestCreation = /\b(add|create|write|implement)\b[^\n.!?]*(?:unit\s+tests?|integration\s+tests?|test\s+files?|test\s+suite|\btests\b|\bspecs?\b)/i.test(lowerTask) &&
+    !/\b(?:test[\s_-]*lab|testing\s+dashboard|test\s+run|test\s+runner|test\s+command|npm\s+test)\b/i.test(lowerTask);
+  const hasTestRun = /\b(run|execute)\b[^\n.!?]*(?:unit\s+tests?|integration\s+tests?|test\s+suite|\btests\b|\bpytest\b|\bjest\b|\bmocha\b|\bvitest\b)/i.test(lowerTask) &&
+    !/\b(?:test[\s_-]*lab|testing\s+dashboard|test\s+server)\b/i.test(lowerTask);
+
   // Check if task mentions "existing test" or "existing verification" - if so, don't create new test
   const mentionsExistingTest = /existing\b.*\b(test|verification)/i.test(task);
-  
+
   const hasTypeScriptExplicit = /typescript|tsc\b|tsconfig\b/.test(lowerTask);
   const hasNode = /node|npm|npx|package\.json/.test(lowerTask);
   const hasNextJs = /next\.js|nextjs|next\.config/.test(lowerTask) && /next|nextjs|next\.config/.test(lowerTask);
@@ -565,25 +568,24 @@ export function initializePlan(task: string, existingProjectInfo?: { hasProject:
   const hasPython = /python|pytest|pip|requirements\.txt|pyproject\.toml/.test(lowerTask);
   const hasRust = /rust|cargo|rustc|Cargo\.toml/.test(lowerTask);
   const hasGo = /golang|go\.mod|go\.sum/.test(lowerTask);
-  
+
   const hasExplicitFile = hasFilePath || /calculator|utils|helper|service|api|component|module/.test(lowerTask);
   const hasExplicitVerification = /verify\s+with|run\s+(npm|npx|yarn)\s+test|exact\s+command/.test(lowerTask);
-  
-  const appTargets = 'portfolio|landing page|dashboard|website|web app|full stack|todo app|react app|component library|site|page';
-  const adjectives = '(modern|responsive|simple|beautiful|clean|minimal|professional|personal|custom|single|multi)';
-  const hasAppBuild = new RegExp(`build\\s+(a|an)\\s+(?:${adjectives}\\s+)*(?:${appTargets})`, 'i').test(lowerTask);
-  const hasAppCreate = new RegExp(`create\\s+(a|an)\\s+(?:${adjectives}\\s+)*(?:${appTargets})`, 'i').test(lowerTask);
+
+  const appTargets = 'portfolio|landing page|dashboard|website|web app|webapp|full stack|todo app|react app|component library|site|page|application';
+  const hasAppBuild = new RegExp(`\\b(build|scaffold|setup)\\b[^\\n.!?]*\\b(?:${appTargets})\\b`, 'i').test(lowerTask);
+  const hasAppCreate = new RegExp(`\\b(create|generate)\\b[^\\n.!?]*\\b(?:${appTargets})\\b`, 'i').test(lowerTask);
   const hasAppAdd = new RegExp(`add\\s+(a|an)\\s+(?:landing page|page|component|feature|route|view)`, 'i').test(lowerTask);
   const hasAppAddFlexible = /add\s+(an?\s+\w+\s+)?(page|component|feature|route|view)/.test(lowerTask);
   const hasAppModify = /modify|update|improve|extend|make.*premium|make.*modern|enhance|change/.test(lowerTask) && /app|website|page|component|dashboard|layout|hero|section/.test(lowerTask);
   const isAppBuildingTask = hasAppBuild || hasAppCreate || hasAppAdd || hasAppAddFlexible || hasAppModify;
-  
+
   const hasAppBuildGeneric = /build\s+(a|an)\s+\w+/.test(lowerTask) && /app|site|page|dashboard|component|library/.test(lowerTask);
   const hasCreateGeneric = /create\s+(a|an)\s+\w+/.test(lowerTask) && /app|site|page|dashboard|component|library/.test(lowerTask);
   const isGenericAppTask = hasAppBuildGeneric || hasCreateGeneric;
-  
+
   const isAppOrGenericTask = isAppBuildingTask || isGenericAppTask;
-  
+
   const hasExplicitBrowserAction = /\b(navigate|open|click|type|browser|website|url)\b/.test(lowerTask);
   const hasPageInBrowserContext = /\b(page)\b/.test(lowerTask) && !isAppBuildingTask;
   let hasBrowserIntent = hasExplicitBrowserAction || hasPageInBrowserContext;
@@ -619,7 +621,7 @@ export function initializePlan(task: string, existingProjectInfo?: { hasProject:
     addStep("Search for relevant files related to the bug", "search_code");
   }
 
-  if (hasAuth || hasValidation) {
+  if ((hasAuth || hasValidation) && isExistingProject && !isAppOrGenericTask) {
     if (!hasSimilarStep("search_code", "auth")) addStep("Search for authentication/validation related files", "search_code");
   }
 
@@ -627,16 +629,16 @@ export function initializePlan(task: string, existingProjectInfo?: { hasProject:
   if (isFindTask) {
     if (!hasSimilarStep("list_directory", "find")) addStep("List directory to find the target file", "list_directory");
     if (!hasSimilarStep("read_file", "read")) addStep("Read the target file to understand current implementation", "read_file");
-  } else if ((hasKnownFile || hasFilePath) && !hasReadInspectStep) {
+  } else if ((hasKnownFile || hasFilePath) && !hasReadInspectStep && isExistingProject && !isAppOrGenericTask) {
     if (!hasSimilarStep("read_file", "read")) addStep("Read the target file to understand current implementation", "read_file");
   }
 
-  if (hasTestCreation && !mentionsExistingTest) {
-    if (!hasSimilarStep("search_code", "test")) addStep("Identify test file location and structure", "search_code");
+  if (hasTestCreation && !mentionsExistingTest && (!isAppOrGenericTask || /\b(unit\s+tests?|test\s+files?|write\s+tests?)\b/i.test(lowerTask))) {
+    if (!hasSimilarStep("search_code", "test") && isExistingProject) addStep("Identify test file location and structure", "search_code");
     if (!hasSimilarStep("create_file", "create")) addStep("Create or update test file", "create_file");
   }
 
-  if (hasTestRun && !hasExplicitVerification) {
+  if (hasTestRun && !hasExplicitVerification && (!isAppOrGenericTask || /\b(unit\s+tests?|integration\s+tests?|test\s+suite)\b/i.test(lowerTask))) {
     const isPytest = /pytest/.test(lowerTask);
     if (!hasSimilarStep("run_verification", "test")) {
       if (isPytest) addStep("Run Python tests", "run_verification");
@@ -660,7 +662,7 @@ if (isAppOrGenericTask) {
       if (!plan.some(s => s.toolType === "list_directory" && s.description.includes("Discover"))) {
         if (!hasSimilarStep("list_directory", "project")) addStep("Discover project structure and configuration", "list_directory");
       }
-      
+
       // Always inspect existing project structure for follow-up tasks
       if (isFollowUpTask || hasAppAdd || hasAppModify || hasAppAddFlexible) {
         if (!hasSimilarStep("read_file", "package") && existingFiles.includes("package.json")) addStep("Read package.json to understand project setup", "read_file", "package.json");
@@ -673,11 +675,11 @@ if (isAppOrGenericTask) {
         if (!hasSimilarStep("read_file", "styles") && existingFiles.includes("styles.css")) addStep("Read styles.css to understand current styling", "read_file", "styles.css");
         if (!hasSimilarStep("read_file", "script") && existingFiles.includes("script.js")) addStep("Read script.js to understand current behavior", "read_file", "script.js");
       }
-      
+
       const isReactIntent = /\b(react|vite|component|jsx|tsx|spa)\b/i.test(lowerTask) ||
         (/\b(portfolio|dashboard|saas|landing page|store|e-?commerc\w*|devshowcase)\b/i.test(lowerTask) && !/\b(plain|pure|vanilla)\s+html\b/i.test(lowerTask));
 
-      if (hasAppBuild || hasAppCreate) {
+      if (hasAppBuild || hasAppCreate || isGenericAppTask) {
         if (!isExistingProject) {
           // Only create files for brand new projects
           if (!hasSimilarStep("list_directory", "empty")) addStep("Check if workspace is empty or has existing project", "list_directory");
@@ -703,10 +705,10 @@ if (isAppOrGenericTask) {
           if (!hasTestCreation) {
             if (existingFiles.includes("index.html")) addStep("Modify index.html for requested changes", "edit_file", "index.html");
             else if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
-            
+
             if (existingFiles.includes("styles.css")) addStep("Modify styles.css for requested changes", "edit_file", "styles.css");
             else if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
-            
+
             if (existingFiles.includes("script.js")) addStep("Modify script.js for requested changes", "edit_file", "script.js");
             else if (!hasSimilarStep("create_file", "script.js")) addStep("Create script.js", "create_file", "script.js");
           }
@@ -741,7 +743,7 @@ if (isAppOrGenericTask) {
           if (!hasSimilarStep("run_command", "build")) { addStep("Run the project build command", "run_command"); hasVerificationStep = true; }
         }
       }
-      
+
       // For web application building tasks, ALWAYS add the full app lifecycle:
       // BUILD -> START APP -> OPEN BROWSER -> BROWSER VERIFY -> CLOSE BROWSER -> STOP APP
       // This ensures the generated app is actually started, verified, and previewed.
@@ -778,13 +780,13 @@ if (isAppOrGenericTask) {
       }
     }
 
-  if (hasVerification && (hasEdit || hasInspect)) {
+  if (hasVerification && (hasEdit || hasInspect) && !isAppOrGenericTask) {
     if (!plan.some(s => s.description.includes("Inspect"))) {
       if (!hasSimilarStep("read_file", "inspect")) addStep("Inspect relevant source files to understand the task", "read_file");
     }
   }
 
-  if (hasEdit && !hasReadOnly) {
+  if (hasEdit && !hasReadOnly && !isAppOrGenericTask) {
     if (hasMultiFile) {
       if (!hasSimilarStep("read_file", "identify")) addStep("Identify and read all target files", "read_file");
     }
@@ -796,12 +798,12 @@ if (isAppOrGenericTask) {
     }
   }
 
-  if (hasBrowserIntent) {
+  if (hasBrowserIntent && !isAppOrGenericTask) {
     if (hasBrowserVerification) {
       if (!hasSimilarStep("start_app", "start")) addStep("Start the development server", "start_app");
       if (!hasSimilarStep("open_browser", "open")) addStep("Open a browser session for live preview", "open_browser");
     }
-    if (!hasEdit && !hasInspect && !isAppOrGenericTask) {
+    if (!hasEdit && !hasInspect) {
       if (!hasSimilarStep("navigate", "navigate")) addStep("Navigate to the target URL", "navigate");
     }
     if (hasBrowserVerification && !hasVerificationStep) {
@@ -998,9 +1000,14 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
 }
 
 export function isToolResultFailure(toolName: string, result: string): boolean {
+  if (!result || typeof result !== "string") return false;
   if (result.startsWith("Tool error:")) return true;
   if (result.startsWith("BLOCKED:")) return true;
   if (result.startsWith("STOPPED SAFELY:")) return true;
+  if (toolName === "read_file" || toolName === "list_directory" || toolName === "search_code") {
+    // Read-only tools only fail on explicit Tool error, BLOCKED, or STOPPED SAFELY
+    return false;
+  }
   if (toolName === "run_verification" || toolName === "run_command" || toolName === "browser_verify") {
     if (result.includes("Exit code:") && !result.includes("Exit code: 0")) return true;
     if (result.includes("VERIFICATION FAILED")) return true;
@@ -1051,7 +1058,7 @@ export function isToolResultSuccess(toolName: string, result: string): boolean {
 
 export function isPlanComplete(plan: PlanStep[]): boolean {
   if (plan.length === 0) return false;
-  
+
   // For web-app lifecycle tasks, stop_app is intentionally not executed
   // (server stays running for Live Preview). Consider plan complete if
   // all steps except stop_app are completed.
@@ -1060,7 +1067,7 @@ export function isPlanComplete(plan: PlanStep[]): boolean {
     const nonStopAppSteps = plan.filter(s => s.toolType !== "stop_app");
     return nonStopAppSteps.length > 0 && nonStopAppSteps.every(s => s.status === "completed");
   }
-  
+
   return plan.every(step => step.status === "completed");
 }
 
@@ -1141,11 +1148,11 @@ async function executePendingVerificationStep(
   const verificationStep = state.currentPlan.find(
     s => s.toolType === "run_verification" && s.status === "running"
   );
-  
+
   if (!verificationStep) return false;
-  
+
   if (!state.requestedVerification) return false;
-  
+
   const cached = getCachedVerification(state, state.requestedVerification);
   if (cached) {
     verificationStep.status = "completed";
@@ -1154,10 +1161,10 @@ async function executePendingVerificationStep(
     state.currentPlan = reconcilePlanForNoFixNeeded(state.currentPlan, state);
     return true;
   }
-  
+
   console.log(chalk.yellow(`\nAuto-executing pending verification: ${verificationStep.description}`));
   console.log(chalk.gray(`Running verification: ${state.requestedVerification}`));
-  
+
   const toolCall = {
     id: `auto-verify-${Date.now()}`,
     type: "function" as const,
@@ -1166,21 +1173,21 @@ async function executePendingVerificationStep(
       arguments: JSON.stringify({ command: state.requestedVerification })
     }
   };
-  
+
   const result = await executeTool(workspace, toolCall, state);
   messages.push({ role: "tool", content: result, tool_call_id: toolCall.id });
-  
+
   const taskIdentity = getTaskIdentity(toolCall);
   state.completedTasks.add(taskIdentity);
   state.stepsTaken.set(taskIdentity, (state.stepsTaken.get(taskIdentity) || 0) + 1);
-  
+
   state.currentPlan = updatePlanProgress(state.currentPlan, state.completedTasks, toolCall, result);
-  
+
   if (isToolResultFailure("run_verification", result)) {
     console.log(chalk.red(`\nAuto-executed verification failed: ${verificationStep.description}`));
     return true;
   }
-  
+
   console.log(chalk.green(`\nAuto-executed verification passed: ${verificationStep.description}`));
   state.currentPlan = reconcilePlanForNoFixNeeded(state.currentPlan, state);
   return true;
@@ -1195,7 +1202,7 @@ function isInspectionStep(step: PlanStep): boolean {
 function isConditionalMutationStep(step: PlanStep): boolean {
   const desc = step.description.toLowerCase();
   return (step.toolType === "edit_file" || step.toolType === "create_file") &&
-    (desc.includes("if incorrect") || desc.includes("if needed") || desc.includes("if necessary") || 
+    (desc.includes("if incorrect") || desc.includes("if needed") || desc.includes("if necessary") ||
      desc.includes("if it is") || desc.includes("fix") || desc.includes("make the necessary") ||
      desc.includes("apply the required") || desc.includes("update if") || desc.includes("modify if"));
 }
@@ -1206,18 +1213,18 @@ function isNoChangeNeeded(state: AgentState): boolean {
   if (!state.requestedVerification && !state.verificationPassed) return false;
   if (state.phase === "recover") return false;
   if (state.lastVerification && state.lastVerification.exitCode !== 0) return false;
-  
+
   // For bug-fix tasks, require strong verification (tests), not just build/compile
-  const isBugFixTask = state.currentPlan?.some(s => 
+  const isBugFixTask = state.currentPlan?.some(s =>
     /\b(fix|bug|incorrect|broken)\b/i.test(s.description)
   ) ?? false;
   if (isBugFixTask && !state.verificationIsStrong) return false;
-  
+
   // Check that relevant inspection has been completed
   if (!state.currentPlan || state.currentPlan.length === 0) return false;
   const hasCompletedInspection = state.currentPlan.some(s => s.status === "completed" && isInspectionStep(s));
   if (!hasCompletedInspection) return false;
-  
+
   return true;
 }
 
@@ -1237,18 +1244,18 @@ export function reconcilePlanForNoFixNeeded(plan: PlanStep[], state: AgentState)
 
 export function reconcilePlanOnModelCompletion(plan: PlanStep[], state: AgentState): PlanStep[] {
   const updatedPlan = plan.map(step => ({ ...step }));
-  
+
   // Only reconcile when no verification is required
   if (state.requestedVerification) return updatedPlan;
-  
+
   const hasToolWork = (state.completedTasks || new Set()).size > 0;
   if (!hasToolWork) return updatedPlan;
-  
+
   const noEditsMade = fileEditFingerprint(state) === 0;
-  
+
   for (const step of updatedPlan) {
     if (step.status === "completed" || step.status === "failed") continue;
-    
+
     const desc = step.description.toLowerCase();
     const toolType = step.toolType?.toLowerCase();
 
@@ -1260,31 +1267,31 @@ export function reconcilePlanOnModelCompletion(plan: PlanStep[], state: AgentSta
 
     // Mark redundant inspection steps as completed
     if ((toolType === "read_file" || toolType === "search_code" || toolType === "list_directory") &&
-        (desc.includes("inspect") || desc.includes("read") || desc.includes("identif") || 
-         desc.includes("understand") || desc.includes("find") || desc.includes("list") || 
+        (desc.includes("inspect") || desc.includes("read") || desc.includes("identif") ||
+         desc.includes("understand") || desc.includes("find") || desc.includes("list") ||
          desc.includes("search") || desc.includes("discover"))) {
       step.status = "completed";
       continue;
     }
-    
+
     // Mark redundant edit/create steps as completed if no edits were actually needed
     if (noEditsMade && (toolType === "edit_file" || toolType === "create_file") &&
-        (desc.includes("edit") || desc.includes("fix") || desc.includes("change") || 
-         desc.includes("modif") || desc.includes("update") || desc.includes("add") || 
+        (desc.includes("edit") || desc.includes("fix") || desc.includes("change") ||
+         desc.includes("modif") || desc.includes("update") || desc.includes("add") ||
          desc.includes("creat") || desc.includes("make"))) {
       step.status = "completed";
       continue;
     }
-    
+
     // Mark redundant verification steps as completed if no verification was requested
-    if ((toolType === "run_verification" || toolType === "browser_verify" || 
+    if ((toolType === "run_verification" || toolType === "browser_verify" ||
          desc.includes("verify") || desc.includes("test") || desc.includes("build")) &&
         !state.requestedVerification) {
       step.status = "completed";
       continue;
     }
   }
-  
+
   return updatedPlan;
 }
 
@@ -1304,8 +1311,13 @@ export function generateRecoveryHint(state: AgentState): string | null {
   if (appUrl) {
     repeatedHint += `\n\nIMPORTANT: The development server is running at ${appUrl}. Use this exact URL for browser verification. Do NOT use localhost:3000 or any other port.`;
   }
-  // Windows-specific recovery guidance
-  repeatedHint += `\n\nRECOVERY COMMANDS (Windows PowerShell):\n- Check if app is running: Get-Process | Where-Object {$_.ProcessName -like \"*node*\"}\n- Check listening ports: Get-NetTCPConnection -State Listen | Where-Object {$_.LocalPort -eq <port>}\n- Test HTTP: Invoke-WebRequest -Uri ${appUrl || "http://localhost:<port>"} -UseBasicParsing\n- Restart app: use the 'start_app' tool (not shell commands)\n- Note: NEVER attempt to kill processes or run Stop-Process. The 'start_app' tool automatically allocates an alternative port if needed.`;
+  // Domain-specific recovery guidance
+  if (err.command === "start_app") {
+    repeatedHint += `\n\nSERVER STARTUP RECOVERY GUIDANCE:\n- Verify that package.json and all entry points (index.html, src/main.jsx, src/App.jsx) exist.\n- If files are missing, use 'scaffold_project' or 'create_file' first.\n- If dependencies are missing, install them with 'npm install'.\n- If build errors occur, fix the source code with 'edit_file' and verify with build.\n- Do NOT run shell commands to inspect or kill node processes. The 'start_app' tool automatically handles ports and process lifecycle.`;
+  }
+  if (err.command === "browser_verify") {
+    repeatedHint += `\n\nBROWSER VERIFICATION GUIDANCE:\n- Ensure the application server is running and ready.\n- Verify page content matches the expected text or elements before claiming verification.\n- If elements are missing or styled incorrectly, edit the React/HTML files with 'edit_file'.`;
+  }
   if (err.command === "edit_file") {
     repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- To update the file, either read the latest content with 'read_file' first to get exact matching context, or specify 'oldText: "*"' with your new content in 'edit_file' to update the file directly.`;
   }
@@ -1346,16 +1358,16 @@ function modelIndicatesCompletion(content: string | null): boolean {
 export function shouldFinishOnTextResponse(state: AgentState, answer: string | null): boolean {
   const hasAnswer = !!answer;
   const indicatesCompletion = modelIndicatesCompletion(answer);
-  
+
   if (!hasAnswer) return false;
   if (state.requestedVerification && !state.verificationPassed) return false;
   if (state.phase === "understand") return false;
   if (state.stopReason) return true;
-  
+
   const completedTasks = state.completedTasks || new Set();
   const hasToolWork = completedTasks.size > 0;
   const isWebAppLifecycle = state.currentPlan?.some(step => step.toolType === "start_app" || step.toolType === "browser_verify") ?? false;
-  
+
   // For web-app lifecycle, stop_app is intentionally not run (server stays up for Live Preview).
   // Only block on close_browser for web-app tasks; for non-web-app, block on both.
   if (state.currentPlan && state.currentPlan.length > 0) {
@@ -1366,7 +1378,7 @@ export function shouldFinishOnTextResponse(state: AgentState, answer: string | n
       return false;
     });
     if (hasPendingBrowserCleanup) return false;
-    
+
     // Web-app lifecycle guard: a web-app task may NOT finish until the app was
     // actually started and browser verification actually ran.
     if (isWebAppLifecycle) {
@@ -1380,16 +1392,16 @@ export function shouldFinishOnTextResponse(state: AgentState, answer: string | n
       if (pendingRequired) return false;
     }
   }
-  
+
   if (indicatesCompletion && !state.requestedVerification) return true;
   if (!hasToolWork) {
-    const mutationStepsPending = state.currentPlan?.some(step => 
+    const mutationStepsPending = state.currentPlan?.some(step =>
       step.status !== "completed" && ["edit_file", "create_file", "run_command", "run_verification", "start_app", "stop_app", "open_browser", "close_browser", "browser_verify", "navigate", "click", "type"].includes(step.toolType ?? "")
     );
     if (!mutationStepsPending) return true;
     return false;
   }
-  
+
   // For tasks with no plan or single step plan
   if (!state.currentPlan || state.currentPlan.length === 0) return true;
   if (state.currentPlan.length === 1) {
@@ -1397,7 +1409,7 @@ export function shouldFinishOnTextResponse(state: AgentState, answer: string | n
     if (step.status === "completed" || step.status === "failed") return true;
     return false;
   }
-  
+
   // Check required steps
   const requiredSteps = state.currentPlan.filter(step => {
     const desc = step.description.toLowerCase();
@@ -1417,11 +1429,11 @@ export function shouldFinishOnTextResponse(state: AgentState, answer: string | n
     const isEditTool = step.toolType === "edit_file" || step.toolType === "create_file";
     return hasVerify || hasTest || hasBuild || hasRun || hasEdit || hasFix || hasModify || hasCreate || hasWrite || hasAddTest || hasClose || (hasStop && !isWebAppLifecycle) || isCleanupTool || isEditTool;
   });
-  
+
   const allRequiredCompleted = requiredSteps.every(step => step.status === "completed");
   const hasRequiredVerification = requiredSteps.some(step => (step.toolType === "run_verification" || step.toolType === "browser_verify" || step.description.toLowerCase().includes("verify") || step.description.toLowerCase().includes("test") || step.description.toLowerCase().includes("build")) && step.status !== "completed");
   if (hasRequiredVerification) return false;
-  
+
   const noEditsMade = fileEditFingerprint(state) === 0;
   const verificationPassed = state.verificationPassed;
   const noVerificationRequested = !state.requestedVerification;
@@ -1429,10 +1441,10 @@ export function shouldFinishOnTextResponse(state: AgentState, answer: string | n
   const onlyEditStepsIncomplete = incompleteRequiredSteps.length > 0 && incompleteRequiredSteps.every(step => {
     return step.toolType === "edit_file" || step.toolType === "create_file";
   });
-  
+
   const noFixNeeded = (verificationPassed || noVerificationRequested) && noEditsMade && hasToolWork && onlyEditStepsIncomplete;
   if (noFixNeeded) return true;
-  
+
   if (indicatesCompletion && noVerificationRequested && hasToolWork) {
     const hasRunningNonEditSteps = state.currentPlan.some(step => step.status === "running" && step.toolType !== "edit_file" && step.toolType !== "create_file");
     const hasPendingNonEditSteps = state.currentPlan.some(step => {
@@ -1447,14 +1459,14 @@ export function shouldFinishOnTextResponse(state: AgentState, answer: string | n
       return true;
     }
   }
-  
+
   if (!allRequiredCompleted) {
     const hasPendingRunnable = state.currentPlan.some(step => { if (step.status !== "pending") return false; if (!step.dependsOn || step.dependsOn.length === 0) return true; return step.dependsOn.every(depId => { const dep = state.currentPlan.find(s => s.id === depId); return dep && dep.status === "completed"; }); });
     const requiredStepsAllDone = requiredSteps.every(step => step.status === "completed" || step.status === "failed");
     if (state.stopReason && requiredStepsAllDone && !hasPendingRunnable && state.phase === "recover") return true;
     return false;
   }
-  
+
   return allRequiredCompleted;
 }
 
@@ -1832,47 +1844,47 @@ async function callModelWithRetry(
 
   const classifyError = (error: any): { type: string; message: string; retriable: boolean } => {
     if (!error) return { type: "UNKNOWN", message: "Unknown error", retriable: false };
-    
+
     const message = error.message || String(error);
     const status = error.status;
     const code = error.code;
-    
+
     // Quota/rate limit (non-retriable - fail fast)
     if (status === 429 || code === "rate_limit_exceeded" || code === "insufficient_quota") {
       return { type: "QUOTA_EXHAUSTED", message: `QUOTA_EXHAUSTED: ${error.message || 'API quota or rate limit exceeded'}`, retriable: false };
     }
-    
+
     // Timeout/abort
     if (error.name === "AbortError" || code === "ETIMEDOUT" || code === "TIMEOUT" || message.includes("timeout") || code === "ERR_REQUEST_TIMEOUT") {
       return { type: "TIMEOUT", message: `Request timeout after ${message}`, retriable: true };
     }
-    
+
     // Network errors
     if (code === "ECONNRESET" || code === "ENOTFOUND" || code === "ECONNREFUSED" || code === "EHOSTUNREACH") {
       return { type: "NETWORK_ERROR", message: `Network error: ${message}`, retriable: true };
     }
-    
+
     // 5xx server errors
     if (status >= 500 && status < 600) {
       return { type: "SERVER_ERROR", message: `Server error (${status}): ${message}`, retriable: true };
     }
-    
+
     // 4xx client errors (non-retriable except 429 handled above)
     if (status >= 400 && status < 500) {
       return { type: "CLIENT_ERROR", message: `Client error (${status}): ${message}`, retriable: false };
     }
-    
+
     // Network errors by code
     if (code === "ECONNRESET" || code === "ENOTFOUND" || code === "ECONNREFUSED" || code === "EHOSTUNREACH") {
       return { type: "NETWORK_ERROR", message: `Network error: ${message}`, retriable: true };
     }
-    
+
     // Unknown error - treat as retriable for safety
     return { type: "UNKNOWN", message, retriable: true };
   };
 
   let lastError: any;
-  
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const response = await client.chat.completions.create({
@@ -1895,18 +1907,18 @@ async function callModelWithRetry(
           { type: "function", function: { name: "close_browser", description: "Close the browser session.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
           { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks for expected text, headings, buttons, inputs, links, or routes. Provide optional baseUrl and targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Array of verification targets (type: text|heading|button|input|link|route, text/url for expected content).", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string" }, required: { type: "boolean" } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
         ], });
-      
+
       const message = response.choices[0]?.message;
       return { content: message?.content ?? "", toolCalls: (message?.tool_calls ?? []) as unknown as ToolCall[] };
-      
+
     } catch (error: any) {
       const classified = classifyError(error);
-      
+
       // Log the error with full context for debugging (safe - no secrets)
       console.log(chalk.yellow(`[NVIDIA API] Attempt ${attempt + 1}/${maxRetries + 1} failed: type=${classified.type}, retriable=${classified.retriable}, message=${classified.message}`));
-      
+
       lastError = error;
-      
+
       // Non-retriable errors - fail fast
       if (!classified.retriable) {
         if (classified.type === "QUOTA_EXHAUSTED") {
@@ -1914,23 +1926,23 @@ async function callModelWithRetry(
         }
         throw new Error(`${classified.type}: ${classified.message}`);
       }
-      
+
       // If this was the last attempt, throw the error
       if (attempt === maxRetries) {
         throw new Error(`${classified.type} after ${maxRetries + 1} attempts: ${classified.message}`);
       }
-      
+
       // Calculate delay with exponential backoff and jitter
       const delay = Math.min(baseDelayMs * Math.pow(backoffFactor, attempt), maxDelayMs);
       const jitter = Math.random() * 0.3 * delay; // 0-30% jitter
       const totalDelay = delay + jitter;
-      
+
       console.log(chalk.yellow(`[NVIDIA API] Retrying in ${Math.round(totalDelay)}ms (attempt ${attempt + 1}/${maxRetries})...`));
-      
+
       await new Promise(resolve => setTimeout(resolve, totalDelay));
     }
   }
-  
+
   // Should not reach here, but TypeScript needs it
   throw lastError;
 }
@@ -1977,7 +1989,7 @@ const schemas = {
 async function executeTool(workspace: Workspace, toolCall: ToolCall, state: AgentState): Promise<string> {
   let args: any;
   try { args = JSON.parse(toolCall.function.arguments); } catch { return "Tool error: Invalid JSON arguments."; }
-  
+
   if (toolCall.function.name in schemas) {
     const parsed = schemas[toolCall.function.name as keyof typeof schemas].safeParse(args);
     if (!parsed.success) {
@@ -1991,17 +2003,17 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
       case "read_file": { const filePath = args.path; console.log(chalk.gray(`Reading: ${filePath}`)); const content = await readFile(workspace, filePath); return truncateToolResult(content); }
       case "search_code": { const query = args.query; const searchType = args.type || "text"; console.log(chalk.gray(`Searching (${searchType}): ${query}`)); const results = await searchCode(workspace, query, searchType); return truncateToolResult(results); }
       case "edit_file": {
-        const filePath = args.path; 
+        const filePath = args.path;
         const edits = args.edits || [{ oldText: args.oldText !== undefined ? args.oldText : "*", newText: args.newText || "" }];
-        const protectedFiles = ["tsconfig.json", "package.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"]; 
-        const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase(); 
-        if (protectedFiles.includes(normalizedPath)) return `BLOCKED: ${filePath} is a protected configuration file and cannot be modified automatically.`; 
-        console.log(chalk.cyan(`Editing: ${filePath}`)); 
+        const protectedFiles = ["tsconfig.json", "package.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"];
+        const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
+        if (protectedFiles.includes(normalizedPath)) return `BLOCKED: ${filePath} is a protected configuration file and cannot be modified automatically.`;
+        console.log(chalk.cyan(`Editing: ${filePath}`));
         await state.snapshotManager.captureBefore(filePath, "edit");
         try {
           const result = await editFile(workspace, filePath, edits);
           await state.snapshotManager.captureAfter(filePath);
-          return result; 
+          return result;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           console.error(chalk.red(`Edit failed on ${filePath}: ${message}`));
@@ -2010,7 +2022,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
       }
       case "run_command": {
         const rawCmd = args.command;
-        const command = stripEnclosingQuotes(rawCmd);
+        let command = stripEnclosingQuotes(rawCmd);
         if (!command) return "Tool error: Empty command.";
         if (isModifiedVerificationCommand(command, state.requestedVerification)) return "BLOCKED: this is a modified verification command. Use run_verification with the exact requested command.";
         if (isVerificationWorkaround(command)) return "BLOCKED: verification/configuration workaround is not allowed.";
@@ -2030,8 +2042,37 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           }
         }
 
+        // Strip redundant cd if command targets current directory
+        const currentBase = path.basename(workspace.root);
+        const escapedBase = currentBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escapedRoot = workspace.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const redundantCd = new RegExp(`^\\s*cd\\s+["']?(?:\\.\\/|\\.\\\\\\\\)?(?:${escapedBase}|${escapedRoot})["']?\\s*(?:&&|;|\\|\\|)\\s*`, "i");
+        if (redundantCd.test(command)) {
+          command = command.replace(redundantCd, "").trim();
+        }
+
+        // Support cd into existing child subdirectory containing project
+        let commandCwd = workspace.root;
+        const cdChildMatch = command.match(/^\s*cd\s+["']?([^;&"']+)["']?\s*(?:&&|;)\s*(.+)$/i);
+        if (cdChildMatch) {
+          const targetSubdir = path.resolve(workspace.root, cdChildMatch[1].trim());
+          if (fs.existsSync(targetSubdir)) {
+            try {
+              if (fs.statSync(targetSubdir).isDirectory()) {
+                if (fs.existsSync(path.join(targetSubdir, "package.json")) || fs.existsSync(path.join(targetSubdir, "index.html"))) {
+                  workspace.setRoot(targetSubdir);
+                  state.snapshotManager.setWorkspaceRoot(workspace.root);
+                  console.log(chalk.cyan(`Authoritative project root updated to: ${targetSubdir}`));
+                }
+                commandCwd = targetSubdir;
+                command = cdChildMatch[2].trim();
+              }
+            } catch {}
+          }
+        }
+
         console.log(chalk.gray(`Running: ${command}`));
-        const result = await runCommand(command, workspace.root);
+        const result = await runCommand(command, commandCwd);
         state.commandHistory.push(command);
 
         const combinedOut = `${result.stdout}\n${result.stderr}`;
@@ -2057,28 +2098,44 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
       }
       case "run_verification": { const command = normalizeCommand(args.command); try { const result = await executeVerification(workspace, command, state); const combinedOutput = `${result.stdout}\n${result.stderr}`; if (result.exitCode !== 0 && isEnvironmentVerificationFailure(combinedOutput)) { return truncate([`Verification command: ${result.command}`, `Exit code: ${result.exitCode}`, result.stdout ? `STDOUT:\n${result.stdout}` : "STDOUT: <empty>", result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>", "", "VERIFICATION FAILED", "TS5112 CONFIGURATION ERROR", "", "STOP: The exact requested command cannot be made to succeed through source-code changes.", "No configuration workaround is permitted."].join("\n")); } return truncateToolResult([`Verification command: ${result.command}`, `Exit code: ${result.exitCode}`, result.stdout ? `STDOUT:\n${result.stdout}` : "STDOUT: <empty>", result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>", result.exitCode === 0 ? "VERIFICATION PASSED" : "VERIFICATION FAILED"].join("\n")); } catch (error) { const message = error instanceof Error ? error.message : String(error); if (state.stopReason) return `STOPPED SAFELY: ${message}`; return `Verification error: ${message}`; } }
       case "list_directory": { const directoryPath = args.directoryPath; console.log(chalk.gray(`Listing: ${directoryPath}`)); const result = await listDirectory(workspace, directoryPath); return truncate(result); }
-      case "create_file": { 
-        const filePath = args.path; const content = args.content; 
-        const protectedFiles = ["tsconfig.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"]; 
-        const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase(); 
+      case "create_file": {
+        const filePath = args.path; const content = args.content;
+        const protectedFiles = ["tsconfig.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"];
+        const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
         if (protectedFiles.includes(normalizedPath)) {
           const blockMsg = `BLOCKED: ${filePath} is a protected configuration file and cannot be created automatically.`;
           console.error(chalk.red(blockMsg));
           return blockMsg;
         }
-        console.log(chalk.cyan(`Creating: ${filePath}`)); 
-        try { 
+        console.log(chalk.cyan(`Creating: ${filePath}`));
+        try {
           await state.snapshotManager.captureBefore(filePath, "create");
-          const result = await createFile(workspace, filePath, content, args.overwrite ?? true); 
+          const result = await createFile(workspace, filePath, content, args.overwrite ?? true);
           await state.snapshotManager.captureAfter(filePath);
+          if (filePath.endsWith("package.json")) {
+            const authRoot = await workspace.getAuthoritativeProjectRoot();
+            if (authRoot !== workspace.root) {
+              workspace.setRoot(authRoot);
+              state.snapshotManager.setWorkspaceRoot(workspace.root);
+              console.log(chalk.cyan(`Authoritative project root established at: ${authRoot}`));
+            }
+          }
           return result;
-        } catch (error) { 
+        } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (message.includes("File already exists")) {
             console.log(chalk.gray(`File ${filePath} already exists. Updating contents with edit_file...`));
             try {
               const editResult = await editFile(workspace, filePath, [{ newText: content }]);
               await state.snapshotManager.captureAfter(filePath);
+              if (filePath.endsWith("package.json")) {
+                const authRoot = await workspace.getAuthoritativeProjectRoot();
+                if (authRoot !== workspace.root) {
+                  workspace.setRoot(authRoot);
+                  state.snapshotManager.setWorkspaceRoot(workspace.root);
+                  console.log(chalk.cyan(`Authoritative project root established at: ${authRoot}`));
+                }
+              }
               return editResult;
             } catch (editError) {
               const editMsg = editError instanceof Error ? editError.message : String(editError);
@@ -2087,8 +2144,8 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
             }
           }
           console.error(chalk.red(`Create failed on ${filePath}: ${message}`));
-          return `Tool error: ${message}`; 
-        } 
+          return `Tool error: ${message}`;
+        }
       }
       case "navigate": { const url = args.url; if (!state.browserSession) return "Browser session not initialized. Use open_browser first."; console.log(chalk.gray(`Navigating: ${url}`)); const navResult = await navigate(state.browserSession, url); return truncate(navResult.success ? `Navigated to ${url}` : `Navigation failed: ${navResult.error}`); }
       case "scaffold_project": {
@@ -2109,6 +2166,13 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           state.snapshotManager.setWorkspaceRoot(workspace.root);
           console.log(chalk.cyan(`Authoritative project root updated to: ${scaffoldRes.projectRoot}`));
         }
+        // Verify actual location of package.json and synchronize authoritative root
+        const authoritativeRoot = await workspace.getAuthoritativeProjectRoot();
+        if (authoritativeRoot !== workspace.root) {
+          workspace.setRoot(authoritativeRoot);
+          state.snapshotManager.setWorkspaceRoot(workspace.root);
+          console.log(chalk.cyan(`Authoritative project root verified and updated to: ${authoritativeRoot}`));
+        }
         for (const file of scaffoldRes.files) {
           state.completedTasks.add(`create_file:${file}`);
           await state.snapshotManager.captureBefore(file, "create");
@@ -2117,6 +2181,21 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         return `Successfully scaffolded '${template}' project with files: ${scaffoldRes.files.join(", ")}`;
       }
       case "start_app": {
+        // Enforce lifecycle: sync authoritative root first
+        const authoritativeRoot = await workspace.getAuthoritativeProjectRoot();
+        if (authoritativeRoot !== workspace.root) {
+          workspace.setRoot(authoritativeRoot);
+          state.snapshotManager.setWorkspaceRoot(workspace.root);
+          console.log(chalk.cyan(`Updated workspace root to match application directory: ${authoritativeRoot}`));
+        }
+
+        let workingDir = workspace.root;
+        const hasPkg = fs.existsSync(path.join(workingDir, "package.json"));
+        const hasIndex = fs.existsSync(path.join(workingDir, "index.html"));
+        if (!hasPkg && !hasIndex) {
+          return `BLOCKED: Cannot start server before project is scaffolded. package.json and entry files are missing in ${workingDir}. Scaffold the project first.`;
+        }
+
         // Idempotent WITHIN a task: if the process we spawned is still healthy,
         // reuse it.
         if (state.appProcess && state.appProcess.status !== "stopped") {
@@ -2133,9 +2212,11 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         }
 
         const startInfo = await detectStartCommand(workspace);
-        if (!startInfo.command) return "No start command found in package.json scripts (dev, start, serve, preview).";
+        if (!startInfo.command) {
+          return `BLOCKED: No start command found in package.json scripts (dev, start, serve, preview). Ensure package.json defines development scripts.`;
+        }
 
-        const workingDir = startInfo.cwd || workspace.root;
+        workingDir = startInfo.cwd || workspace.root;
         if (workingDir !== workspace.root) {
           workspace.setRoot(workingDir);
           state.snapshotManager.setWorkspaceRoot(workspace.root);
@@ -2461,7 +2542,7 @@ export async function loadSessionStateIfAvailable(): Promise<SessionState | null
 
 export async function runAgent(task: string, options?: { maxSteps?: number; maxRecoveryAttempts?: number }): Promise<AgentResult> {
   const sessionState = await loadSessionStateIfAvailable();
-  
+
   const config = getModelConfig();
   const client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 600000 });
   const workspaceRoot = process.env.WORKSPACE_ROOT || process.cwd();
@@ -2474,7 +2555,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
   const maxRecoveryAttempts = Math.min(Math.max(options?.maxRecoveryAttempts ?? DEFAULT_MAX_RECOVERY_ATTEMPTS, 0), 5);
 
   let requestedVerification = extractRequestedVerification(task);
-  
+
   // If task mentions "existing test" or "existing verification command", infer from package.json
   if (requestedVerification === "INFER_FROM_PROJECT") {
     requestedVerification = await inferVerificationFromPackageJson(workspaceRoot);
@@ -2519,7 +2600,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
     console.log(chalk.cyan(`\nResuming session...`));
     initialPlan = sessionState.currentPlan;
     // Restore project state from session or re-detect
-    const sessionProjectState = sessionState.projectState || { 
+    const sessionProjectState = sessionState.projectState || {
       hasExistingProject: existingProjectInfo.hasProject,
       projectType: existingProjectInfo.projectType,
       existingFiles: existingProjectInfo.existingFiles,
@@ -2556,7 +2637,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
     initialPlan = initializePlan(task, existingProjectInfo);
     const hasBrowserVerifyStep = initialPlan.some(step => step.toolType === "browser_verify");
     // Determine if the verification command is "strong" (test) vs "weak" (build/compile)
-    const isStrongVerification = requestedVerification 
+    const isStrongVerification = requestedVerification
       ? /\b(test|pytest|jest|vitest|mocha|cargo test|go test)\b/i.test(requestedVerification)
       : false;
     const isFollowUpTask = existingProjectInfo.hasProject && /modify|update|improve|extend|change|add|enhance|make.*premium|make.*modern|make.*better/.test(task.toLowerCase());
@@ -2684,7 +2765,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
     }
 
     messages = trimMessageHistory(messages);
-    
+
     let response;
     try {
       response = await callModel(client, config.name, messages);
@@ -2776,7 +2857,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
       state.recentToolCalls.push(recentCall);
       // Keep only last 10 calls
       if (state.recentToolCalls.length > 10) state.recentToolCalls.shift();
-      
+
       // Check for strictly consecutive identical repetition
       let consecutiveCount = 0;
       for (let i = state.recentToolCalls.length - 1; i >= 0; i--) {
@@ -2787,7 +2868,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
           break;
         }
       }
-      
+
       if (consecutiveCount >= 4) {
         console.log(chalk.red(`\nExecution loop detected: ${recentCall.toolName}(${recentCall.target}) repeated ${consecutiveCount} consecutive times. Forcing recovery.`));
         state.stopReason = `Execution loop detected: ${recentCall.toolName}(${recentCall.target}) repeated ${consecutiveCount} consecutive times without progress.`;
@@ -2812,19 +2893,44 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
         }
       }
 
-      const failedStep = state.currentPlan.find(s => s.status === "failed");
-      if (failedStep) {
+      const isCurrentToolFailure = isToolResultFailure(toolCall.function.name, result);
+      const stepThatFailed = newlyFailedSteps[0] || (isCurrentToolFailure ? state.currentPlan.find(s => s.status === "failed") : null);
+
+      if (isCurrentToolFailure && stepThatFailed) {
         const currentCompletedCount = state.currentPlan.filter(s => s.status === "completed").length;
         const madeProgress = currentCompletedCount > lastCompletedStepCount;
         if (!madeProgress) state.recoveryAttempts += 1; else { state.recoveryAttempts = 0; lastCompletedStepCount = currentCompletedCount; }
-        state.lastError = { command: toolCall.function.name, exitCode: result.includes("Exit code:") ? parseInt(result.split("Exit code:")[1].split("\n")[0].trim()) : 1, stdout: result, stderr: "", errorMessage: result.startsWith("Tool error:") ? result : result.split("\n")[0] };
-        console.error(chalk.red(`\n[Execution Failure] Step "${failedStep.description}" failed: ${state.lastError.errorMessage}`));
+
+        let extractedError = "";
+        if (result.startsWith("Tool error:")) {
+          extractedError = result.replace(/^Tool error:\s*/, "");
+        } else if (result.startsWith("BLOCKED:")) {
+          extractedError = result;
+        } else if (result.startsWith("STOPPED SAFELY:")) {
+          extractedError = result;
+        } else if (result.includes("Exit code:")) {
+          const lines = result.split("\n");
+          const stderrLine = lines.find(l => l.startsWith("STDERR:") && !l.includes("<empty>"));
+          const errorLine = lines.find(l => /error|failed|exception/i.test(l) && !l.startsWith("Exit code:"));
+          extractedError = (stderrLine ? stderrLine.replace(/^STDERR:\s*/, "") : null) || errorLine || lines[0];
+        } else {
+          extractedError = result.split("\n")[0];
+        }
+
+        state.lastError = {
+          command: toolCall.function.name,
+          exitCode: result.includes("Exit code:") ? parseInt(result.split("Exit code:")[1].split("\n")[0].trim()) : 1,
+          stdout: result,
+          stderr: "",
+          errorMessage: extractedError
+        };
+        console.error(chalk.red(`\n[Execution Failure] Step "${stepThatFailed.description}" failed: ${state.lastError.errorMessage}`));
         state.phase = "recover";
         if (state.recoveryAttempts >= maxRecoveryAttempts) {
           state.stopReason = `Recovery limit reached (${maxRecoveryAttempts} attempts). Task cannot continue. Last error: ${state.lastError.errorMessage}`;
           console.log(chalk.red(`\nRecovery limit reached after ${state.recoveryAttempts} attempts. Stopping.`));
         } else {
-          console.log(chalk.yellow(`\nStep failed: ${failedStep.description} - entering recovery (attempt ${state.recoveryAttempts}/${maxRecoveryAttempts})`));
+          console.log(chalk.yellow(`\nStep failed: ${stepThatFailed.description} - entering recovery (attempt ${state.recoveryAttempts}/${maxRecoveryAttempts})`));
         }
       }
 
@@ -2860,12 +2966,12 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
       // previously-completed steps).
       const justCompletedStep = newlyCompletedSteps.find(s => s.toolType === "run_verification" || s.toolType === "browser_verify");
       const justFailedStep = newlyFailedSteps.find(s => s.toolType === "run_verification" || s.toolType === "browser_verify");
-      
+
       if (justCompletedStep && (justCompletedStep.toolType === "run_verification" || justCompletedStep.toolType === "browser_verify")) {
         console.log(chalk.green(`\nVerification step completed: ${justCompletedStep.description}`));
         state.currentPlan = reconcilePlanForNoFixNeeded(state.currentPlan, state);
       } else if (justFailedStep && (justFailedStep.toolType === "run_verification" || justFailedStep.toolType === "browser_verify")) {
-        if (state.phase !== "recover") {
+        if (state.phase !== "recover" && !isCurrentToolFailure) {
           const currentCompletedCount = state.currentPlan.filter(s => s.status === "completed").length;
           const madeProgress = currentCompletedCount > lastCompletedStepCount;
           if (!madeProgress) state.recoveryAttempts += 1; else { state.recoveryAttempts = 0; lastCompletedStepCount = currentCompletedCount; }

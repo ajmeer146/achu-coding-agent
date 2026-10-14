@@ -220,14 +220,57 @@ export class Workspace {
     return this.root;
   }
 
+  async syncAuthoritativeRoot(): Promise<string> {
+    const authRoot = await this.getAuthoritativeProjectRoot();
+    if (authRoot !== this.root) {
+      this.setRoot(authRoot);
+    }
+    return this.root;
+  }
+
   /**
    * Resolve a workspace-relative path, rejecting both lexical traversal
    * (`..\\outside`) and symlink escapes (a link inside the workspace pointing
    * outside it). The final, existing ancestor is checked against the real
    * workspace root so a symlinked directory cannot be used to break out.
+   *
+   * Enforces single authoritative resolution: prevents path duplication when a
+   * relative path includes the project root folder name while this.root is
+   * already at that folder.
    */
   resolve(relativePath: string): string {
+    if (path.isAbsolute(relativePath)) {
+      const resolved = path.resolve(relativePath);
+      const isAllowed = isInsideRoot(this.root, resolved) || (this.parentRoot ? isInsideRoot(this.parentRoot, resolved) : false);
+      if (!isAllowed) {
+        throw new Error(`Path outside workspace is not allowed: ${relativePath}`);
+      }
+      this.assertNoSymlinkEscape(resolved, relativePath);
+      return resolved;
+    }
+
+    const norm = relativePath.replace(/\\/g, "/").replace(/^\.\/+/, "");
+    const currentFolder = path.basename(this.root).toLowerCase();
+    const folderPrefix = currentFolder + "/";
+
     let target = path.resolve(this.root, relativePath);
+
+    // If relativePath is prefixed with current directory name (e.g. "achu-test-lab/package.json" when this.root is already ".../achu-test-lab"),
+    // de-duplicate to avoid duplicated nested path ".../achu-test-lab/achu-test-lab/package.json".
+    if (this.parentRoot) {
+      const parentCandidate = path.resolve(this.parentRoot, relativePath);
+      if (isInsideRoot(this.root, parentCandidate)) {
+        target = parentCandidate;
+      }
+    } else if (norm.toLowerCase().startsWith(folderPrefix)) {
+      const stripped = norm.slice(folderPrefix.length);
+      const strippedTarget = path.resolve(this.root, stripped);
+      if (fsSync.existsSync(strippedTarget) || !fsSync.existsSync(target)) {
+        target = strippedTarget;
+      }
+    } else if (norm.toLowerCase() === currentFolder) {
+      target = this.root;
+    }
 
     // If target does not exist at current root, check if it exists in an immediate child project directory
     // (e.g., if project was scaffolded into a subdirectory like 'DevShowcase/src/App.jsx')
