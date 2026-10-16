@@ -1953,7 +1953,16 @@ async function callModelWithRetry(
 }
 
 async function callModel(client: OpenAI, model: string, messages: ChatMessage[]): Promise<{ content: string; toolCalls: ToolCall[] }> {
-  return callModelWithRetry(client, model, messages);
+  try {
+    return await callModelWithRetry(client, model, messages);
+  } catch (err: any) {
+    const isTimeout = err?.message?.includes("timed out") || err?.message?.includes("timeout");
+    if (isTimeout && model !== "nvidia/nemotron-3-super-120b-a12b") {
+      console.log(`[callModel] Model ${model} timed out. Falling back to nvidia/nemotron-3-super-120b-a12b...`);
+      return await callModelWithRetry(client, "nvidia/nemotron-3-super-120b-a12b", messages);
+    }
+    throw err;
+  }
 }
 
 const schemas = {
