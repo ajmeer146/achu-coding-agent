@@ -86,7 +86,14 @@ export class BrowserSession {
     | { success: false; error: string; recoverable: boolean; isConnectivityError?: boolean; status?: number | null }
   > {
     if (!this.page) {
-      return { success: false, error: 'Browser page not initialized. Call init() first.', recoverable: true, isConnectivityError: true };
+      try {
+        await this.init();
+      } catch (initErr: any) {
+        return { success: false, error: `Browser page not initialized: ${initErr.message}`, recoverable: true, isConnectivityError: true };
+      }
+    }
+    if (!this.page) {
+      return { success: false, error: 'Browser page not initialized.', recoverable: true, isConnectivityError: true };
     }
     try {
       this.consoleErrors = [];
