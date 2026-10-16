@@ -676,8 +676,9 @@ if (isAppOrGenericTask) {
         if (!hasSimilarStep("read_file", "script") && existingFiles.includes("script.js")) addStep("Read script.js to understand current behavior", "read_file", "script.js");
       }
 
-      const isReactIntent = /\b(react|vite|component|jsx|tsx|spa)\b/i.test(lowerTask) ||
-        (/\b(portfolio|dashboard|saas|landing page|store|e-?commerc\w*|devshowcase)\b/i.test(lowerTask) && !/\b(plain|pure|vanilla)\s+html\b/i.test(lowerTask));
+      const isReactIntent = (/\b(react|vite|component|jsx|tsx|spa)\b/i.test(lowerTask) ||
+        (/\b(portfolio|dashboard|saas|landing page|store|e-?commerc\w*|devshowcase)\b/i.test(lowerTask) && !/\b(plain|pure|vanilla)\s+html\b/i.test(lowerTask))) &&
+        !/\bindex\.html\b|styles?\.css|\bstatic\b/i.test(lowerTask);
 
       if (hasAppBuild || hasAppCreate || isGenericAppTask) {
         if (!isExistingProject) {
@@ -1887,26 +1888,30 @@ async function callModelWithRetry(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const response = await client.chat.completions.create({
-        model,
-        messages: messages as any,
-        temperature: 0,
-        tools: [
-          { type: "function", function: { name: "read_file", description: "Read a file from the workspace.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } } },
-          { type: "function", function: { name: "search_code", description: "Search source files in the workspace.", parameters: { type: "object", properties: { query: { type: "string" }, type: { type: "string", enum: ["text", "symbol", "path", "imports"], description: "Type of search: 'text' (default) for substring, 'symbol' for functions/classes, 'path' for file path, 'imports' to find what imports a module." } }, required: ["query"], additionalProperties: false } } },
-    { type: "function", function: { name: "edit_file", description: "Edit a source file. Use oldText and newText for targeted replacement, or set oldText: '*' (or omit oldText) to replace the entire file content. Use 'edits' array for multiple replacements.", parameters: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" }, edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } }, required: ["newText"] } } }, required: ["path"], additionalProperties: false } } },
-          { type: "function", function: { name: "run_command", description: "Run a safe non-verification terminal command.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
-          { type: "function", function: { name: "run_verification", description: "Run the exact verification command requested by the user.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
-          { type: "function", function: { name: "list_directory", description: "List the contents of a directory in the workspace.", parameters: { type: "object", properties: { directoryPath: { type: "string", description: "Path of directory to list (relative to workspace root)." } }, required: [], additionalProperties: false } } },
-          { type: "function", function: { name: "create_file", description: "Create a new file in the workspace with the given content.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"], additionalProperties: false } } },
-          { type: "function", function: { name: "scaffold_project", description: "Scaffold a complete, runnable modern application structure with valid files and configurations. Templates: 'react-vite' (React 18 + Vite), 'static' (HTML5/CSS3/JS).", parameters: { type: "object", properties: { template: { type: "string", enum: ["react-vite", "static"], description: "Template to scaffold: 'react-vite' or 'static'." }, name: { type: "string", description: "Project name (optional)." } }, required: ["template"], additionalProperties: false } } },
-          { type: "function", function: { name: "navigate", description: "Navigate to a URL in the browser.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
-          { type: "function", function: { name: "start_app", description: "Start the development server for the current project. Detects the start command from package.json and waits for the application to be ready.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-          { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-          { type: "function", function: { name: "open_browser", description: "Open a browser session for live preview verification.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-          { type: "function", function: { name: "close_browser", description: "Close the browser session.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-          { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks for expected text, headings, buttons, inputs, links, or routes. Provide optional baseUrl and targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Array of verification targets (type: text|heading|button|input|link|route, text/url for expected content).", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string" }, required: { type: "boolean" } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
-        ], });
+      const response = await client.chat.completions.create(
+        {
+          model,
+          messages: messages as any,
+          temperature: 0,
+          tools: [
+            { type: "function", function: { name: "read_file", description: "Read a file from the workspace.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } } },
+            { type: "function", function: { name: "search_code", description: "Search source files in the workspace.", parameters: { type: "object", properties: { query: { type: "string" }, type: { type: "string", enum: ["text", "symbol", "path", "imports"], description: "Type of search: 'text' (default) for substring, 'symbol' for functions/classes, 'path' for file path, 'imports' to find what imports a module." } }, required: ["query"], additionalProperties: false } } },
+            { type: "function", function: { name: "edit_file", description: "Edit a source file. Use oldText and newText for targeted replacement, or set oldText: '*' (or omit oldText) to replace the entire file content. Use 'edits' array for multiple replacements.", parameters: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" }, edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } }, required: ["newText"] } } }, required: ["path"], additionalProperties: false } } },
+            { type: "function", function: { name: "run_command", description: "Run a safe non-verification terminal command.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
+            { type: "function", function: { name: "run_verification", description: "Run the exact verification command requested by the user.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
+            { type: "function", function: { name: "list_directory", description: "List the contents of a directory in the workspace.", parameters: { type: "object", properties: { directoryPath: { type: "string", description: "Path of directory to list (relative to workspace root)." } }, required: [], additionalProperties: false } } },
+            { type: "function", function: { name: "create_file", description: "Create a new file in the workspace with the given content.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"], additionalProperties: false } } },
+            { type: "function", function: { name: "scaffold_project", description: "Scaffold a complete, runnable modern application structure with valid files and configurations. Templates: 'react-vite' (React 18 + Vite), 'static' (HTML5/CSS3/JS).", parameters: { type: "object", properties: { template: { type: "string", enum: ["react-vite", "static"], description: "Template to scaffold: 'react-vite' or 'static'." }, name: { type: "string", description: "Project name (optional)." } }, required: ["template"], additionalProperties: false } } },
+            { type: "function", function: { name: "navigate", description: "Navigate to a URL in the browser.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
+            { type: "function", function: { name: "start_app", description: "Start the development server for the current project. Detects the start command from package.json and waits for the application to be ready.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
+            { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
+            { type: "function", function: { name: "open_browser", description: "Open a browser session for live preview verification.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
+            { type: "function", function: { name: "close_browser", description: "Close the browser session.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
+            { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks for expected text, headings, buttons, inputs, links, or routes. Provide optional baseUrl and targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Array of verification targets (type: text|heading|button|input|link|route, text/url for expected content).", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string" }, required: { type: "boolean" } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
+          ],
+        },
+        { timeout: requestTimeoutMs }
+      );
 
       const message = response.choices[0]?.message;
       return { content: message?.content ?? "", toolCalls: (message?.tool_calls ?? []) as unknown as ToolCall[] };
@@ -2544,7 +2549,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
   const sessionState = await loadSessionStateIfAvailable();
 
   const config = getModelConfig();
-  const client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 600000 });
+  const client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 120000 });
   const workspaceRoot = process.env.WORKSPACE_ROOT || process.cwd();
   const workspace = new Workspace(workspaceRoot);
   const sessionId = process.env.SESSION_ID || `local-${Date.now()}`;

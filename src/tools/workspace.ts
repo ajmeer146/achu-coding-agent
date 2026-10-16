@@ -381,14 +381,25 @@ export class Workspace {
       withFileTypes: true,
     });
 
-    return entries.map((entry) => ({
-      name: entry.name,
-      type: entry.isDirectory()
-        ? "directory"
-        : entry.isFile()
-          ? "file"
-          : "other",
-    }));
+    const IGNORED_ENTRIES = new Set([
+      ".git",
+      ".achu-sessions",
+      ".next",
+      "node_modules",
+      ".turbo",
+      ".cache",
+    ]);
+
+    return entries
+      .filter((entry) => !IGNORED_ENTRIES.has(entry.name))
+      .map((entry) => ({
+        name: entry.name,
+        type: entry.isDirectory()
+          ? "directory"
+          : entry.isFile()
+            ? "file"
+            : "other",
+      }));
   }
 
   async exists(relativePath: string): Promise<boolean> {

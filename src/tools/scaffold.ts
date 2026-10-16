@@ -50,7 +50,20 @@ export function validateProjectStructure(workingDir: string): ProjectValidationR
   const scripts = pkg.scripts || {};
   const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
 
-  const isReact = Boolean(deps.react || deps["react-dom"] || deps["@vitejs/plugin-react"]);
+  const entryCandidates = [
+    "src/main.jsx",
+    "src/main.tsx",
+    "src/main.js",
+    "src/main.ts",
+    "src/index.jsx",
+    "src/index.tsx",
+    "src/index.js",
+    "src/App.jsx",
+    "src/App.tsx",
+    "src/App.js",
+  ];
+  const hasReactFiles = entryCandidates.some((c) => fs.existsSync(path.join(workingDir, c)));
+  const isReact = Boolean((deps.react || deps["react-dom"] || deps["@vitejs/plugin-react"]) && hasReactFiles);
   const hasVite = Boolean(deps.vite || (typeof scripts.dev === "string" && scripts.dev.includes("vite")));
 
   if (isReact) {
@@ -132,7 +145,19 @@ export async function autoRepairProjectStructure(workspace: Workspace): Promise<
 
   const scripts = pkg.scripts || {};
   const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
-  const isReact = Boolean(deps.react || deps["react-dom"]);
+  const hasReactFiles = [
+    "src/main.jsx",
+    "src/main.tsx",
+    "src/main.js",
+    "src/main.ts",
+    "src/index.jsx",
+    "src/index.tsx",
+    "src/index.js",
+    "src/App.jsx",
+    "src/App.tsx",
+    "src/App.js",
+  ].some((c) => fs.existsSync(path.join(root, c)));
+  const isReact = Boolean((deps.react || deps["react-dom"]) && hasReactFiles);
 
   if (isReact) {
     const devScript = String(scripts.dev || "");

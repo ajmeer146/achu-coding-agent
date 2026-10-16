@@ -16,7 +16,7 @@ import { browseDirectory } from "./tools/directory-browser.js";
 import { runAgent } from "./agent.js";
 import { spawn } from "node:child_process";
 import { captureWorkspaceBaseline, detectChanges, ChangedFile, generateDiffForDisplay, TaskBaseline } from "./tools/file-tracker.js";
-import { getAppRuntime, isUrlServing, isProcessAlive } from "./tools/app-lifecycle.js";
+import { getAppRuntime, isUrlServing, isProcessAlive, ensureAppServer, clearAppRuntime } from "./tools/app-lifecycle.js";
 import { createSessionManager } from "./session/session-manager.js";
 import { SessionData, SessionMetadata } from "./session/session-types.js";
 
@@ -322,6 +322,18 @@ async function terminateTaskProcess(task: LocalTaskRecord): Promise<void> {
     }
     task.childProcess = null;
   }
+  // Stop dev server owned by this workspace
+  try {
+    const runtime = getAppRuntime(task.workspaceRoot);
+    if (runtime && runtime.pid && isProcessAlive(runtime.pid)) {
+      if (process.platform === "win32") {
+        spawn("taskkill", ["/pid", runtime.pid.toString(), "/t", "/f"], { windowsHide: true });
+      } else {
+        process.kill(runtime.pid, "SIGTERM");
+      }
+      clearAppRuntime(task.workspaceRoot);
+    }
+  } catch {}
   task.status = "CANCELLED";
   task.endTime = Date.now();
   task.error = "Cancelled by user";
@@ -330,6 +342,13 @@ async function terminateTaskProcess(task: LocalTaskRecord): Promise<void> {
     taskId: task.id,
     sessionId: task.sessionId,
     status: "CANCELLED",
+    workspaceRoot: task.workspaceRoot,
+  });
+  broadcastToAll({
+    type: "app_url",
+    url: null,
+    taskId: task.id,
+    sessionId: task.sessionId,
     workspaceRoot: task.workspaceRoot,
   });
   broadcastToAll({
@@ -484,7 +503,7 @@ async function handleMessage(client: ClientConnection, message: any) {
 
         // If an active app server exists for this workspace, send the live URL immediately
         const runtime = getAppRuntime(selection.root);
-        if (runtime && runtime.url && isProcessAlive(runtime.pid) && await isUrlServing(runtime.url)) {
+        if (runtime && runtime.url && isProcessAlive(runtime.pid) && (await isUrlServing(runtime.url))) {
           sendEvent(client.ws, "app_url", {
             url: runtime.url,
             workspaceRoot: selection.root,
@@ -492,11 +511,27 @@ async function handleMessage(client: ClientConnection, message: any) {
             pid: runtime.pid,
           });
         } else {
-          // Explicitly clear preview for workspace without running app
-          sendEvent(client.ws, "app_url", {
-            url: null,
-            workspaceRoot: selection.root,
-          });
+          // If workspace is runnable, automatically ensure server is started
+          ensureAppServer(selection.root)
+            .then((liveUrl) => {
+              if (liveUrl) {
+                sendEvent(client.ws, "app_url", {
+                  url: liveUrl,
+                  workspaceRoot: selection.root,
+                });
+              } else {
+                sendEvent(client.ws, "app_url", {
+                  url: null,
+                  workspaceRoot: selection.root,
+                });
+              }
+            })
+            .catch(() => {
+              sendEvent(client.ws, "app_url", {
+                url: null,
+                workspaceRoot: selection.root,
+              });
+            });
         }
 
         // Immediately populate the file tree for the newly selected workspace.
@@ -1321,6 +1356,20 @@ async function runAgentWithWorkspace(
 
     if (success) {
       console.log(`[run_task] Task completed successfully`);
+      
+      // Ensure app server is active for live preview if project became runnable
+      if (!taskRecord.appUrl) {
+        try {
+          const liveUrl = await ensureAppServer(effectiveRoot);
+          if (liveUrl) {
+            taskRecord.appUrl = liveUrl;
+            broadcastToAll({ type: "app_url", url: liveUrl, taskId, sessionId, workspaceRoot: effectiveRoot });
+          }
+        } catch (err) {
+          console.warn("[run_task] Error ensuring live app server:", err);
+        }
+      }
+
       broadcastToAll({ 
         type: "task_completed",
         taskId, 
@@ -1328,6 +1377,7 @@ async function runAgentWithWorkspace(
         output: finalOutput,
         changedFiles: detectedChanges.map(f => ({ path: f.path, changeType: f.changeType, additions: f.additions, deletions: f.deletions, isBinary: f.isBinary })),
         workspaceRoot: effectiveRoot,
+        appUrl: taskRecord.appUrl,
       });
       broadcastToAll({ type: "task_status", taskId, status: "COMPLETED", sessionId, workspaceRoot: effectiveRoot });
     } else {

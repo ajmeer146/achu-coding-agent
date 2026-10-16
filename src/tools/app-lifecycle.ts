@@ -830,3 +830,87 @@ export async function discoverNewServerUrl(options: {
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
 }
+
+/**
+ * Automatically ensures a development server is running for an application workspace.
+ * Reuses existing running server if alive, or detects start command and launches detached.
+ */
+export async function ensureAppServer(workspaceRoot: string): Promise<string | null> {
+  const ws = new Workspace(workspaceRoot);
+  const authRoot = await ws.getAuthoritativeProjectRoot();
+
+  // 1. Check if already serving
+  const existing = getAppRuntime(authRoot) || getAppRuntime(workspaceRoot);
+  if (existing && existing.url && isProcessAlive(existing.pid) && (await isUrlServing(existing.url, 600))) {
+    return existing.url;
+  }
+
+  // 2. Detect start command or static fallback
+  const effectiveWs = new Workspace(authRoot);
+  const startInfo = await detectStartCommand(effectiveWs);
+  let command = startInfo.command;
+  let port = startInfo.port || 3000;
+  let workingDir = startInfo.cwd || authRoot;
+
+  if (!command && (fs.existsSync(path.join(authRoot, "index.html")) || fs.existsSync(path.join(workspaceRoot, "index.html")))) {
+    command = "npx serve . -l 3000";
+    port = 3000;
+    workingDir = fs.existsSync(path.join(authRoot, "index.html")) ? authRoot : workspaceRoot;
+  }
+
+  if (!command) {
+    return null;
+  }
+
+  // 3. Port conflict prevention
+  const isPortBusy = (await isUrlServing(`http://localhost:${port}`, 300)) || !(await isPortAvailable(port));
+  if (isPortBusy) {
+    port = await allocateAvailablePort(port);
+    command = replacePortInCommand(command, port);
+  }
+
+  const spawnEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    PORT: String(port),
+  };
+
+  const appInfo = spawnAppProcess(command, workingDir, spawnEnv);
+  const url = await discoverNewServerUrl({
+    candidatePort: port,
+    preexistingPorts: new Set<number>(),
+    maxProbes: 20,
+    timeoutMs: 12000,
+    pollMs: 500,
+    isAlive: () => !hasAppProcessExited(appInfo),
+    getUrlFromOutput: () => {
+      const out = readAppOutput(appInfo);
+      return extractUrlFromOutput(out);
+    },
+  });
+
+  const finalUrl = url || `http://localhost:${port}`;
+  const isServing = await isUrlServing(finalUrl, 2000);
+  if (isServing) {
+    saveAppRuntime({
+      workspaceRoot: authRoot,
+      pid: appInfo.pid,
+      port,
+      url: finalUrl,
+      startedAt: Date.now(),
+      outputPath: appInfo.outputPath,
+    });
+    if (authRoot !== workspaceRoot) {
+      saveAppRuntime({
+        workspaceRoot,
+        pid: appInfo.pid,
+        port,
+        url: finalUrl,
+        startedAt: Date.now(),
+        outputPath: appInfo.outputPath,
+      });
+    }
+    return finalUrl;
+  }
+
+  return null;
+}
