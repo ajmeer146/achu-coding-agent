@@ -3,6 +3,8 @@ import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Workspace, validateWorkspaceDirectory, getDefaultProjectsBaseDir, deriveProjectSlug, shouldIsolateNewProject } from "./tools/workspace.js";
 import { listDirectory } from "./tools/list-directory.js";
@@ -21,17 +23,53 @@ import { SessionData, SessionMetadata } from "./session/session-types.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function getOrCreatePairingToken(): string {
+  try {
+    const tokenDir = path.join(os.homedir(), ".achu");
+    const tokenFile = path.join(tokenDir, "companion-token.txt");
+    if (fs.existsSync(tokenFile)) {
+      const existing = fs.readFileSync(tokenFile, "utf8").trim();
+      if (existing.length >= 16) return existing;
+    }
+    fs.mkdirSync(tokenDir, { recursive: true });
+    const newToken = crypto.randomBytes(16).toString("hex");
+    fs.writeFileSync(tokenFile, newToken, { mode: 0o600 });
+    return newToken;
+  } catch {
+    return "achu_local_token_default";
+  }
+}
+
+export const COMPANION_TOKEN = process.env.ACHU_COMPANION_TOKEN || getOrCreatePairingToken();
+
+function isAllowedOrigin(origin?: string): boolean {
+  if (!origin) return true;
+  try {
+    const u = new URL(origin);
+    const host = u.hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+    const allowed = (process.env.ACHU_ALLOWED_ORIGINS || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+    if (allowed.includes(origin.toLowerCase()) || allowed.includes(u.origin.toLowerCase()) || allowed.includes(host)) return true;
+    if (host.endsWith(".vercel.app") || host.includes("works-with-achu")) return true;
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
 app.use(express.json());
-app.use((_req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  res.header("Access-Control-Allow-Origin", origin || "*");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-achu-companion-token");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Private-Network", "true");
-  if (_req.method === "OPTIONS") {
+  res.header("Access-Control-Allow-Credentials", "true");
+  if (req.method === "OPTIONS") {
     res.sendStatus(200);
     return;
   }
@@ -44,6 +82,7 @@ app.get("/health", (_req, res) => {
     status: "ok",
     service: "achu-coding-agent",
     version: "1.0.0",
+    companionMode: "local",
     timestamp: Date.now(),
     uptime: process.uptime(),
   });
@@ -54,12 +93,181 @@ app.get("/api/health", (_req, res) => {
     status: "ok",
     service: "achu-coding-agent",
     version: "1.0.0",
+    companionMode: "local",
     timestamp: Date.now(),
     uptime: process.uptime(),
   });
 });
 
-app.use(express.static(path.join(__dirname, "../public")));
+export interface LocalTaskRecord {
+  id: string;
+  sessionId: string;
+  task: string;
+  workspaceRoot: string;
+  status: "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
+  startTime: number;
+  endTime?: number;
+  childProcess: any | null;
+  outputBuffer: string;
+  outputEvents: Array<{ stream: "stdout" | "stderr"; content: string; timestamp: number }>;
+  changedFiles: ChangedFile[];
+  reviewState: "NOT_REQUIRED" | "REVIEW_AVAILABLE" | "APPROVED" | "REJECTED";
+  verificationStatus: "PENDING" | "PASSED" | "FAILED" | "NOT_REQUESTED";
+  buildStatus: "PENDING" | "PASSED" | "FAILED" | "NOT_RUN";
+  browserStatus: "PENDING" | "PASSED" | "FAILED" | "NOT_RUN";
+  appUrl: string | null;
+  error?: string;
+  baseline?: any;
+}
+
+export const activeTasks = new Map<string, LocalTaskRecord>();
+
+// Companion REST API endpoints
+app.get("/api/companion/status", (_req, res) => {
+  const runningTask = Array.from(activeTasks.values()).find(t => t.status === "RUNNING");
+  res.json({
+    status: "ok",
+    service: "achu-coding-agent",
+    version: "1.0.0",
+    companionMode: "local",
+    activeTaskId: runningTask?.id || null,
+    runningCount: Array.from(activeTasks.values()).filter(t => t.status === "RUNNING").length,
+    timestamp: Date.now(),
+    uptime: process.uptime(),
+  });
+});
+
+app.get("/api/companion/token", (req, res) => {
+  const ip = req.socket.remoteAddress;
+  if (ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1") {
+    res.json({ ok: true, token: COMPANION_TOKEN });
+  } else {
+    res.status(403).json({ ok: false, error: "Token retrieval is restricted to loopback" });
+  }
+});
+
+app.post("/api/companion/authorize-workspace", async (req, res) => {
+  const { path: requestedPath } = req.body || {};
+  if (!requestedPath || typeof requestedPath !== "string") {
+    res.status(400).json({ ok: false, error: "Path is required" });
+    return;
+  }
+  try {
+    const selection = await validateWorkspaceDirectory(requestedPath);
+    res.json({ ok: true, root: selection.root, realRoot: selection.realRoot, entries: selection.entries });
+  } catch (err: any) {
+    res.status(400).json({ ok: false, error: err.message || String(err) });
+  }
+});
+
+app.get("/api/companion/browse", async (req, res) => {
+  const targetPath = req.query.path ? String(req.query.path) : undefined;
+  try {
+    const result = await browseDirectory(targetPath);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    res.status(400).json({ ok: false, error: err.message || String(err) });
+  }
+});
+
+app.get("/api/companion/file-tree", async (req, res) => {
+  const targetPath = req.query.path ? String(req.query.path) : undefined;
+  if (!targetPath) {
+    res.status(400).json({ ok: false, error: "Path query param is required" });
+    return;
+  }
+  try {
+    const selection = await validateWorkspaceDirectory(targetPath);
+    const ws = new Workspace(selection.root);
+    const tree = await buildFileTree(ws);
+    res.json({ ok: true, root: selection.root, tree });
+  } catch (err: any) {
+    res.status(400).json({ ok: false, error: err.message || String(err) });
+  }
+});
+
+app.post("/api/companion/tasks", async (req, res) => {
+  const { task, workspaceRoot, taskId: clientTaskId } = req.body || {};
+  if (!task || typeof task !== "string" || !task.trim()) {
+    res.status(400).json({ ok: false, error: "Task description is required" });
+    return;
+  }
+  if (!workspaceRoot || typeof workspaceRoot !== "string") {
+    res.status(400).json({ ok: false, error: "Authorized workspaceRoot is required" });
+    return;
+  }
+  try {
+    const selection = await validateWorkspaceDirectory(workspaceRoot);
+    const effectiveRoot = selection.root;
+
+    // Check if task is already running in this workspace
+    const existing = Array.from(activeTasks.values()).find(
+      t => t.workspaceRoot === effectiveRoot && t.status === "RUNNING"
+    );
+    if (existing) {
+      res.status(409).json({ ok: false, error: "A task is already running in this workspace. Stop it first.", taskId: existing.id });
+      return;
+    }
+
+    const taskId = clientTaskId || `task_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const session = await sessionManager.createSession(effectiveRoot, task);
+    const sessionId = session.metadata.sessionId;
+
+    const ws = new Workspace(effectiveRoot);
+    const baseline = await captureWorkspaceBaseline(ws, taskId);
+
+    const dummyClient: ClientConnection = {
+      ws: null as any,
+      workspaceRoot: effectiveRoot,
+      currentTaskId: taskId,
+      currentSessionId: sessionId,
+      agentProcess: null,
+      baseline,
+      changedFiles: [],
+      reviewState: "NOT_REQUIRED",
+      verificationStatus: "NOT_REQUESTED",
+      buildStatus: "NOT_RUN",
+      browserStatus: "NOT_RUN",
+      sessionManager,
+      workspaceLockHeld: false,
+    };
+
+    runAgentWithWorkspace(dummyClient, effectiveRoot, task, taskId, sessionId, baseline).catch((err) => {
+      console.error("[companion_task] Background task error:", err);
+    });
+
+    res.status(202).json({ ok: true, taskId, sessionId, status: "RUNNING", workspaceRoot: effectiveRoot });
+  } catch (err: any) {
+    res.status(400).json({ ok: false, error: err.message || String(err) });
+  }
+});
+
+app.get("/api/companion/tasks/:taskId", (req, res) => {
+  const task = activeTasks.get(req.params.taskId);
+  if (!task) {
+    res.status(404).json({ ok: false, error: "Task not found" });
+    return;
+  }
+  res.json({
+    ok: true,
+    task: {
+      id: task.id,
+      sessionId: task.sessionId,
+      task: task.task,
+      workspaceRoot: task.workspaceRoot,
+      status: task.status,
+      startTime: task.startTime,
+      endTime: task.endTime,
+      output: task.outputBuffer,
+      changedFiles: task.changedFiles,
+      verificationStatus: task.verificationStatus,
+      buildStatus: task.buildStatus,
+      browserStatus: task.browserStatus,
+      appUrl: task.appUrl,
+      error: task.error,
+    },
+  });
+});
 
 interface ClientConnection {
   ws: WebSocket;
@@ -90,6 +298,61 @@ function sendEvent(ws: WebSocket, type: string, data: any) {
   broadcastToClient(ws, { type, timestamp: Date.now(), ...data });
 }
 
+function broadcastToAll(event: any) {
+  const payload = JSON.stringify({ timestamp: Date.now(), ...event });
+  for (const [ws] of clients.entries()) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(payload);
+    }
+  }
+}
+
+async function terminateTaskProcess(task: LocalTaskRecord): Promise<void> {
+  if (task.childProcess) {
+    const pid = task.childProcess.pid;
+    if (pid) {
+      if (process.platform === "win32") {
+        try {
+          spawn("taskkill", ["/pid", pid.toString(), "/t", "/f"], { windowsHide: true });
+        } catch {}
+      }
+      try {
+        task.childProcess.kill("SIGTERM");
+      } catch {}
+    }
+    task.childProcess = null;
+  }
+  task.status = "CANCELLED";
+  task.endTime = Date.now();
+  task.error = "Cancelled by user";
+  broadcastToAll({
+    type: "task_stopped",
+    taskId: task.id,
+    sessionId: task.sessionId,
+    status: "CANCELLED",
+    workspaceRoot: task.workspaceRoot,
+  });
+  broadcastToAll({
+    type: "task_status",
+    taskId: task.id,
+    status: "CANCELLED",
+    sessionId: task.sessionId,
+    workspaceRoot: task.workspaceRoot,
+  });
+}
+
+app.post("/api/companion/tasks/:taskId/stop", async (req, res) => {
+  const task = activeTasks.get(req.params.taskId);
+  if (!task) {
+    res.status(404).json({ ok: false, error: "Task not found" });
+    return;
+  }
+  await terminateTaskProcess(task);
+  res.json({ ok: true, status: "CANCELLED" });
+});
+
+app.use(express.static(path.join(__dirname, "../public")));
+
 wss.on("connection", (ws) => {
   const client: ClientConnection = {
     ws,
@@ -119,17 +382,28 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", async () => {
-    if (client.agentProcess) {
-      client.agentProcess.kill("SIGTERM");
-    }
-    if (client.workspaceLockHeld && client.workspaceRoot) {
-      await client.sessionManager.releaseLock(client.workspaceRoot);
-      client.workspaceLockHeld = false;
-    }
+    // Note: Active background tasks persist across client disconnects, page navigation, and reloads.
+    // They are ONLY stopped by an explicit stop_task command from the user.
     clients.delete(ws);
   });
 
-  sendEvent(ws, "connected", { message: "Connected to Achu Workspace" });
+  sendEvent(ws, "connected", {
+    message: "Connected to Achu Workspace",
+    companionVersion: "1.0.0",
+    mode: "local",
+  });
+
+  // If a task is currently running, notify the newly connected client
+  const runningTask = Array.from(activeTasks.values()).find(t => t.status === "RUNNING");
+  if (runningTask) {
+    sendEvent(ws, "task_status", {
+      taskId: runningTask.id,
+      status: "RUNNING",
+      sessionId: runningTask.sessionId,
+      workspaceRoot: runningTask.workspaceRoot,
+      task: runningTask.task,
+    });
+  }
 });
 
 async function handleMessage(client: ClientConnection, message: any) {
@@ -172,6 +446,7 @@ async function handleMessage(client: ClientConnection, message: any) {
       break;
     }
 
+    case "authorize_workspace":
     case "select_project": {
       const projectPath = payload.path;
       if (!projectPath || String(projectPath).trim().length === 0) {
@@ -204,6 +479,7 @@ async function handleMessage(client: ClientConnection, message: any) {
         sendEvent(client.ws, "project_selected", {
           path: selection.root,
           entryCount: selection.entries,
+          authorized: true,
         });
 
         // If an active app server exists for this workspace, send the live URL immediately
@@ -514,6 +790,45 @@ async function handleMessage(client: ClientConnection, message: any) {
       break;
     }
 
+    case "get_active_task":
+    case "reconnect_task": {
+      const targetTaskId = payload?.taskId;
+      let targetTask: LocalTaskRecord | undefined;
+      if (targetTaskId) {
+        targetTask = activeTasks.get(targetTaskId);
+      }
+      if (!targetTask && client.workspaceRoot) {
+        targetTask = Array.from(activeTasks.values()).reverse().find(t => t.workspaceRoot === client.workspaceRoot);
+      }
+      if (!targetTask) {
+        targetTask = Array.from(activeTasks.values()).reverse().find(t => t.status === "RUNNING");
+      }
+      if (targetTask) {
+        client.currentTaskId = targetTask.id;
+        client.currentSessionId = targetTask.sessionId;
+        if (!client.workspaceRoot && targetTask.workspaceRoot) {
+          client.workspaceRoot = targetTask.workspaceRoot;
+        }
+        sendEvent(client.ws, "task_restored", {
+          taskId: targetTask.id,
+          sessionId: targetTask.sessionId,
+          task: targetTask.task,
+          status: targetTask.status,
+          workspaceRoot: targetTask.workspaceRoot,
+          output: targetTask.outputBuffer,
+          changedFiles: targetTask.changedFiles,
+          verificationStatus: targetTask.verificationStatus,
+          buildStatus: targetTask.buildStatus,
+          browserStatus: targetTask.browserStatus,
+          appUrl: targetTask.appUrl,
+          error: targetTask.error,
+        });
+      } else {
+        sendEvent(client.ws, "task_restored", { taskId: null, status: "idle" });
+      }
+      break;
+    }
+
     case "run_task": {
       const task = payload.task;
       if (!task) {
@@ -521,14 +836,20 @@ async function handleMessage(client: ClientConnection, message: any) {
         return;
       }
 
-      // If client requests a new project, or no workspace is active, or the current workspace contains an unrelated project
-      const needsIsolation = Boolean(
-        payload.isNewProject ||
-        !client.workspaceRoot ||
-        (await shouldIsolateNewProject(task, client.workspaceRoot))
-      );
+      // Check if explicit workspace directory is provided in payload
+      const explicitWorkspace = (payload.workspaceRoot ? String(payload.workspaceRoot).trim() : null) || client.workspaceRoot;
+      if (explicitWorkspace) {
+        try {
+          const selection = await validateWorkspaceDirectory(explicitWorkspace);
+          client.workspaceRoot = selection.root;
+        } catch (err: any) {
+          sendEvent(client.ws, "error", { message: `Invalid workspace directory: ${err.message}` });
+          return;
+        }
+      }
 
-      if (needsIsolation) {
+      // Only isolate if client explicitly requested a new project or no workspace is active at all
+      if (!client.workspaceRoot) {
         const slug = deriveProjectSlug(payload.projectName || task);
         const baseDir = getDefaultProjectsBaseDir();
         let targetDir = path.join(baseDir, slug);
@@ -552,6 +873,7 @@ async function handleMessage(client: ClientConnection, message: any) {
           path: selection.root,
           entryCount: selection.entries,
           isNew: true,
+          authorized: true,
         });
         sendEvent(client.ws, "app_url", {
           url: null,
@@ -565,6 +887,18 @@ async function handleMessage(client: ClientConnection, message: any) {
 
       if (!client.workspaceRoot) {
         sendEvent(client.ws, "error", { message: "No project selected" });
+        return;
+      }
+
+      // Prevent duplicate tasks running in the same workspace
+      const alreadyRunning = Array.from(activeTasks.values()).find(
+        t => t.workspaceRoot === client.workspaceRoot && t.status === "RUNNING"
+      );
+      if (alreadyRunning) {
+        sendEvent(client.ws, "error", {
+          message: "A task is already running in this workspace. Stop it first.",
+          taskId: alreadyRunning.id,
+        });
         return;
       }
 
@@ -594,7 +928,7 @@ async function handleMessage(client: ClientConnection, message: any) {
         client.workspaceLockHeld = true;
         
         sessionId = session.metadata.sessionId;
-        taskId = session.metadata.taskId;
+        taskId = payload.taskId || session.metadata.taskId;
         client.currentSessionId = sessionId;
         client.currentTaskId = taskId;
         
@@ -618,7 +952,7 @@ async function handleMessage(client: ClientConnection, message: any) {
         
         const session = await client.sessionManager.createSession(client.workspaceRoot, task);
         sessionId = session.metadata.sessionId;
-        taskId = session.metadata.taskId;
+        taskId = payload.taskId || session.metadata.taskId;
         client.currentSessionId = sessionId;
         client.currentTaskId = taskId;
         
@@ -628,7 +962,7 @@ async function handleMessage(client: ClientConnection, message: any) {
         
         sendEvent(client.ws, "session_created", { 
           sessionId: session.metadata.sessionId,
-          taskId: session.metadata.taskId,
+          taskId,
           task: session.metadata.task,
           status: session.metadata.status,
         });
@@ -653,8 +987,24 @@ async function handleMessage(client: ClientConnection, message: any) {
     }
 
     case "stop_task": {
-      if (client.agentProcess) {
-        client.agentProcess.kill("SIGINT");
+      const taskIdToStop = payload?.taskId || client.currentTaskId;
+      let taskToStop: LocalTaskRecord | undefined;
+      if (taskIdToStop) {
+        taskToStop = activeTasks.get(taskIdToStop);
+      }
+      if (!taskToStop && client.workspaceRoot) {
+        taskToStop = Array.from(activeTasks.values()).find(t => t.workspaceRoot === client.workspaceRoot && t.status === "RUNNING");
+      }
+      if (taskToStop) {
+        await terminateTaskProcess(taskToStop);
+        sendEvent(client.ws, "task_stopped", { taskId: taskToStop.id });
+      } else if (client.agentProcess) {
+        try {
+          if (process.platform === "win32" && client.agentProcess.pid) {
+            spawn("taskkill", ["/pid", client.agentProcess.pid.toString(), "/t", "/f"], { windowsHide: true });
+          }
+          client.agentProcess.kill("SIGTERM");
+        } catch {}
         sendEvent(client.ws, "task_stopped", { taskId: client.currentTaskId });
         client.agentProcess = null;
       }
@@ -773,6 +1123,26 @@ async function runAgentWithWorkspace(
   console.log(`[run_task] env.ACHU_SESSION_ID: ${sessionId}`);
   console.log(`[run_task] env.ACHU_TASK_ID: ${taskId}`);
 
+  const taskRecord: LocalTaskRecord = {
+    id: taskId,
+    sessionId,
+    task,
+    workspaceRoot,
+    status: "RUNNING",
+    startTime: Date.now(),
+    childProcess: null,
+    outputBuffer: "",
+    outputEvents: [],
+    changedFiles: [],
+    reviewState: "NOT_REQUIRED",
+    verificationStatus: "NOT_REQUESTED",
+    buildStatus: "NOT_RUN",
+    browserStatus: "NOT_RUN",
+    appUrl: null,
+    baseline,
+  };
+  activeTasks.set(taskId, taskRecord);
+
   // Pass session info to CLI via env
   const child = spawn(nodeExec, spawnArgs, {
     cwd: mainProjectDir,
@@ -786,6 +1156,7 @@ async function runAgentWithWorkspace(
   });
 
   client.agentProcess = child;
+  taskRecord.childProcess = child;
 
   console.log(`[run_task] Child process spawned, PID: ${child.pid ?? "unknown"}`);
 
@@ -805,20 +1176,24 @@ async function runAgentWithWorkspace(
     await client.sessionManager.updateSession(client.workspaceRoot, sessionId, {
       phase: "execute",
     });
-    sendEvent(client.ws, "session_status", { sessionId, status: "RUNNING" });
+    broadcastToAll({ type: "session_status", sessionId, status: "RUNNING" });
   }
 
   child.stdout.on("data", (data: Buffer) => {
     const text = data.toString();
     stdoutBuffer += text;
+    taskRecord.outputBuffer += text;
+    taskRecord.outputEvents.push({ stream: "stdout", content: text, timestamp: Date.now() });
     console.log(`[run_task] stdout chunk (${text.length} chars): ${text.slice(0, 200).replace(/\n/g, "\\n")}`);
-    sendEvent(client.ws, "agent_output", { taskId, stream: "stdout", content: text, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
+    broadcastToAll({ type: "agent_output", taskId, stream: "stdout", content: text, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
     const m = text.match(/App started and ready at\s+(https?:\/\/[^\s"']+)/i);
     if (m?.[1]) {
-      sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
+      taskRecord.appUrl = m[1];
+      broadcastToAll({ type: "app_url", url: m[1], taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
     }
     if (text.includes("App process stopped.")) {
-      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
+      taskRecord.appUrl = null;
+      broadcastToAll({ type: "app_url", url: null, taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
     }
 
     // Synchronize workspace root if the CLI updated it to a child/application directory
@@ -828,11 +1203,12 @@ async function runAgentWithWorkspace(
       if (fs.existsSync(candidateRoot)) {
         console.log(`[run_task] Authoritative project root updated to: ${candidateRoot}`);
         client.workspaceRoot = candidateRoot;
-        sendEvent(client.ws, "project_selected", { path: candidateRoot, entryCount: 0 });
+        taskRecord.workspaceRoot = candidateRoot;
+        broadcastToAll({ type: "project_selected", path: candidateRoot, entryCount: 0, authorized: true });
         try {
           const wsObj = new Workspace(candidateRoot);
           buildFileTree(wsObj).then((tree) => {
-            sendEvent(client.ws, "file_tree", { path: candidateRoot, tree });
+            broadcastToAll({ type: "file_tree", path: candidateRoot, tree });
           }).catch(() => {});
         } catch {}
       }
@@ -842,37 +1218,51 @@ async function runAgentWithWorkspace(
   child.stderr.on("data", (data: Buffer) => {
     const text = data.toString();
     stderrBuffer += text;
+    taskRecord.outputBuffer += text;
+    taskRecord.outputEvents.push({ stream: "stderr", content: text, timestamp: Date.now() });
     console.log(`[run_task] stderr chunk (${text.length} chars): ${text.slice(0, 200).replace(/\n/g, "\\n")}`);
-    sendEvent(client.ws, "agent_output", { taskId, stream: "stderr", content: text, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
+    broadcastToAll({ type: "agent_output", taskId, stream: "stderr", content: text, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
     const m = text.match(/App started and ready at\s+(https?:\/\/[^\s"']+)/i);
     if (m?.[1]) {
-      sendEvent(client.ws, "app_url", { url: m[1], taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
+      taskRecord.appUrl = m[1];
+      broadcastToAll({ type: "app_url", url: m[1], taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
     }
     if (text.includes("App process stopped.")) {
-      sendEvent(client.ws, "app_url", { url: null, taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
+      taskRecord.appUrl = null;
+      broadcastToAll({ type: "app_url", url: null, taskId, sessionId, workspaceRoot: client.workspaceRoot || workspaceRoot });
     }
   });
 
   child.on("error", async (err) => {
     console.error(`[run_task] Child process 'error' event: ${err.message}`, err);
     client.agentProcess = null;
+    taskRecord.childProcess = null;
+    taskRecord.status = "FAILED";
+    taskRecord.error = `Spawn failed: ${err.message}`;
+    taskRecord.endTime = Date.now();
     await cleanupAndEmitFailure(client, client.workspaceRoot || workspaceRoot, sessionId, taskId, `Spawn failed: ${err.message}`);
   });
 
   child.on("close", async (code, signal) => {
     console.log(`[run_task] Child process 'close' event: exitCode=${code}, signal=${signal}`);
     client.agentProcess = null;
+    taskRecord.childProcess = null;
+    taskRecord.endTime = Date.now();
     const finalOutput = stdoutBuffer + stderrBuffer;
+    taskRecord.outputBuffer = finalOutput;
     
     const effectiveRoot = client.workspaceRoot || workspaceRoot;
     const workspace = new Workspace(effectiveRoot);
     const detectedChanges = baseline ? await detectChanges(workspace, baseline) : [];
     client.changedFiles = detectedChanges;
+    taskRecord.changedFiles = detectedChanges;
     
     const hasChanges = detectedChanges.length > 0;
     if (hasChanges) {
       client.reviewState = "REVIEW_AVAILABLE";
-      sendEvent(client.ws, "review_available", { 
+      taskRecord.reviewState = "REVIEW_AVAILABLE";
+      broadcastToAll({ 
+        type: "review_available",
         taskId, 
         sessionId,
         changedFiles: detectedChanges.map(f => ({ path: f.path, changeType: f.changeType, additions: f.additions, deletions: f.deletions, isBinary: f.isBinary })),
@@ -885,15 +1275,19 @@ async function runAgentWithWorkspace(
 
     if (verificationMatch) {
       client.verificationStatus = verificationMatch[1] === "PASSED" ? "PASSED" : "FAILED";
+      taskRecord.verificationStatus = client.verificationStatus;
     }
     if (buildMatch) {
       client.buildStatus = /PASSED|passed/i.test(buildMatch[1]) ? "PASSED" : "FAILED";
+      taskRecord.buildStatus = client.buildStatus;
     }
     if (browserMatch) {
       client.browserStatus = browserMatch[1].toUpperCase() === "PASSED" ? "PASSED" : "FAILED";
+      taskRecord.browserStatus = client.browserStatus;
     }
 
-    sendEvent(client.ws, "verification_status", { 
+    broadcastToAll({ 
+      type: "verification_status",
       taskId, 
       sessionId,
       verification: client.verificationStatus,
@@ -902,12 +1296,16 @@ async function runAgentWithWorkspace(
     });
 
     const success = code === 0 && signal === null;
+    if (taskRecord.status !== "CANCELLED") {
+      taskRecord.status = success ? "COMPLETED" : "FAILED";
+    }
     
     if (client.workspaceRoot) {
       const finalStatus = success ? "COMPLETED" : "FAILED";
       await client.sessionManager.completeSession(client.workspaceRoot, sessionId, success);
       
-      sendEvent(client.ws, "session_completed", { 
+      broadcastToAll({ 
+        type: "session_completed",
         sessionId, 
         success,
         status: finalStatus,
@@ -923,24 +1321,29 @@ async function runAgentWithWorkspace(
 
     if (success) {
       console.log(`[run_task] Task completed successfully`);
-      sendEvent(client.ws, "task_completed", { 
+      broadcastToAll({ 
+        type: "task_completed",
         taskId, 
         sessionId,
         output: finalOutput,
         changedFiles: detectedChanges.map(f => ({ path: f.path, changeType: f.changeType, additions: f.additions, deletions: f.deletions, isBinary: f.isBinary })),
+        workspaceRoot: effectiveRoot,
       });
-      sendEvent(client.ws, "task_status", { taskId, status: "COMPLETED", sessionId });
+      broadcastToAll({ type: "task_status", taskId, status: "COMPLETED", sessionId, workspaceRoot: effectiveRoot });
     } else {
       const errorMsg = signal ? `Process terminated by signal ${signal}` : `Process exited with code ${code}`;
       console.log(`[run_task] Task failed: ${errorMsg}`);
-      sendEvent(client.ws, "task_failed", { 
+      taskRecord.error = errorMsg;
+      broadcastToAll({ 
+        type: "task_failed",
         taskId, 
         sessionId,
         error: errorMsg,
         output: finalOutput,
         changedFiles: detectedChanges.map(f => ({ path: f.path, changeType: f.changeType, additions: f.additions, deletions: f.deletions, isBinary: f.isBinary })),
+        workspaceRoot: effectiveRoot,
       });
-      sendEvent(client.ws, "task_status", { taskId, status: "FAILED", sessionId });
+      broadcastToAll({ type: "task_status", taskId, status: "FAILED", sessionId, workspaceRoot: effectiveRoot });
     }
     client.currentTaskId = null;
   });
@@ -966,16 +1369,18 @@ async function cleanupAndEmitFailure(
   }
   
   // Send failure events
-  sendEvent(client.ws, "task_failed", { taskId, sessionId, error: errorMsg });
-  sendEvent(client.ws, "task_status", { taskId, status: "FAILED", sessionId });
-  sendEvent(client.ws, "session_completed", { sessionId, success: false, status: "FAILED" });
+  broadcastToAll({ type: "task_failed", taskId, sessionId, error: errorMsg, workspaceRoot });
+  broadcastToAll({ type: "task_status", taskId, status: "FAILED", sessionId, workspaceRoot });
+  broadcastToAll({ type: "session_completed", sessionId, success: false, status: "FAILED" });
   
   client.currentTaskId = null;
   client.agentProcess = null;
 }
 
 const PORT = process.env.PORT || 3001;
+const HOST = process.env.HOST || "127.0.0.1";
 
-server.listen(PORT, () => {
-  console.log(`Achu Workspace server running at http://localhost:${PORT}`);
+server.listen(Number(PORT), HOST, () => {
+  console.log(`Achu Workspace server running at http://${HOST}:${PORT}`);
+  console.log(`[Companion] Pairing Token: ${COMPANION_TOKEN}`);
 });
