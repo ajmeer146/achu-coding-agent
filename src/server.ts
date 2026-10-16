@@ -205,8 +205,20 @@ app.post("/api/companion/tasks", async (req, res) => {
       t => t.workspaceRoot === effectiveRoot && t.status === "RUNNING"
     );
     if (existing) {
-      res.status(409).json({ ok: false, error: "A task is already running in this workspace. Stop it first.", taskId: existing.id });
-      return;
+      if (existing.childProcess && existing.childProcess.pid) {
+        if (!isProcessAlive(existing.childProcess.pid)) {
+          console.log(`[companion_task] Process ${existing.childProcess.pid} exited. Cleaning stale task ${existing.id}`);
+          existing.status = "FAILED";
+          existing.childProcess = null;
+          existing.error = "Process exited unexpectedly";
+        }
+      } else if (!existing.childProcess) {
+        existing.status = "COMPLETED";
+      }
+      if (existing.status === "RUNNING") {
+        res.status(409).json({ ok: false, error: "A task is already running in this workspace. Stop it first.", taskId: existing.id });
+        return;
+      }
     }
 
     const taskId = clientTaskId || `task_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
@@ -361,13 +373,22 @@ async function terminateTaskProcess(task: LocalTaskRecord): Promise<void> {
 }
 
 app.post("/api/companion/tasks/:taskId/stop", async (req, res) => {
-  const task = activeTasks.get(req.params.taskId);
+  let task = activeTasks.get(req.params.taskId);
+  if (!task && (req.params.taskId === "active" || req.params.taskId === "current")) {
+    task = Array.from(activeTasks.values()).find(t => t.status === "RUNNING");
+  }
   if (!task) {
+    const running = Array.from(activeTasks.values()).find(t => t.status === "RUNNING");
+    if (running) {
+      await terminateTaskProcess(running);
+      res.json({ ok: true, status: "CANCELLED", taskId: running.id });
+      return;
+    }
     res.status(404).json({ ok: false, error: "Task not found" });
     return;
   }
   await terminateTaskProcess(task);
-  res.json({ ok: true, status: "CANCELLED" });
+  res.json({ ok: true, status: "CANCELLED", taskId: task.id });
 });
 
 app.use(express.static(path.join(__dirname, "../public")));
