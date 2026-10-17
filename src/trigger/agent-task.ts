@@ -1,5 +1,8 @@
 import { task } from "@trigger.dev/sdk";
 import { z } from "zod";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
 import { Workspace } from "../tools/workspace.js";
 import { WorkspaceRegistry } from "../tools/workspace-registry.js";
 import { GitWorkspace } from "../tools/git-workspace.js";
@@ -41,8 +44,13 @@ export const AgentTaskPayloadSchema = z.object({
   nvidiaApiKey: z.string().optional(),
   nvidiaBaseUrl: z.string().optional(),
   nvidiaModel: z.string().optional(),
-}).refine((data) => data.workspaceId || data.workspaceRoot || data.gitUrl, {
-  message: "Either workspaceId, workspaceRoot, or gitUrl must be provided",
+  // Attached files to populate into the workspace
+  files: z.array(z.object({
+    path: z.string(),
+    content: z.string(),
+  })).optional(),
+}).refine((data) => data.workspaceId || data.workspaceRoot || data.gitUrl || (data.files && data.files.length > 0), {
+  message: "Either workspaceId, workspaceRoot, gitUrl, or files must be provided",
 });
 
 type AgentTaskPayload = z.infer<typeof AgentTaskPayloadSchema>;
@@ -54,6 +62,12 @@ export const AgentTaskResultSchema = z.object({
   completedSteps: z.number(),
   totalSteps: z.number(),
   filesModified: z.array(z.string()),
+  artifacts: z.array(z.object({
+    path: z.string(),
+    content: z.string(),
+  })).optional(),
+  gitCommitted: z.boolean().optional(),
+  gitPushed: z.boolean().optional(),
   error: z.string().optional(),
 });
 
@@ -126,35 +140,37 @@ export const codingAgentTask = task({
         };
       }
     } else if (payload.workspaceId) {
-      // Production mode with registered workspace: resolve workspace ID through registry
+      // Production mode with workspace ID: resolve workspace ID through registry or create isolated cloud workspace
       console.log(`[Trigger.dev] Workspace ID: ${payload.workspaceId}`);
       try {
         const registry = getWorkspaceRegistry();
         const resolved = await registry.resolveWorkspace(payload.workspaceId);
         workspace = resolved.workspace;
-        console.log(`[Trigger.dev] Workspace resolved: ${resolved.root}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-          success: false,
-          stopReason: `Workspace authorization failed: ${message}`,
-          verificationPassed: false,
-          completedSteps: 0,
-          totalSteps: 0,
-          filesModified: [],
-          error: `Workspace authorization failed: ${message}`,
-        };
+        console.log(`[Trigger.dev] Workspace resolved from registry: ${resolved.root}`);
+      } catch (registryError) {
+        // Initialize an isolated cloud workspace on the worker
+        const sanitizedId = payload.workspaceId.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const cloudWorkspaceDir = path.join(os.tmpdir(), "achu-workspace", `ws-${sanitizedId}`);
+        await fs.promises.mkdir(cloudWorkspaceDir, { recursive: true });
+        workspace = new Workspace(cloudWorkspaceDir);
+        console.log(`[Trigger.dev] Isolated cloud workspace initialized at: ${cloudWorkspaceDir}`);
       }
+    } else if (payload.files && payload.files.length > 0) {
+      // Cloud task created from browser-uploaded project files
+      const tmpDir = path.join(os.tmpdir(), "achu-workspace", `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      await fs.promises.mkdir(tmpDir, { recursive: true });
+      workspace = new Workspace(tmpDir);
+      console.log(`[Trigger.dev] File-based workspace initialized at: ${tmpDir}`);
     } else {
       // Should not happen due to schema refinement
       return {
         success: false,
-        stopReason: "Either workspaceId, workspaceRoot, or gitUrl must be provided",
+        stopReason: "Either workspaceId, workspaceRoot, gitUrl, or files must be provided",
         verificationPassed: false,
         completedSteps: 0,
         totalSteps: 0,
         filesModified: [],
-        error: "Either workspaceId, workspaceRoot, or gitUrl must be provided",
+        error: "Either workspaceId, workspaceRoot, gitUrl, or files must be provided",
       };
     }
 
@@ -170,6 +186,19 @@ export const codingAgentTask = task({
     process.env.WORKSPACE_ROOT = getWorkspaceRoot(workspace);
     process.env.SESSION_ID = payload.sessionId || `trigger-${Date.now()}`;
     process.env.ACHU_SESSION_ID = payload.sessionId || `trigger-${Date.now()}`;
+
+    // Write any user-attached files into the workspace
+    if (payload.files && payload.files.length > 0) {
+      console.log(`[Trigger.dev] Writing ${payload.files.length} attached file(s) into workspace...`);
+      for (const file of payload.files) {
+        try {
+          await workspace.write(file.path, file.content);
+          console.log(`[Trigger.dev] Attached file written: ${file.path}`);
+        } catch (fileErr) {
+          console.warn(`[Trigger.dev] Could not write attached file ${file.path}:`, fileErr);
+        }
+      }
+    }
     // Ensure model configuration is available to the agent (priority: payload > env vars)
     if (payload.nvidiaApiKey) process.env.NVIDIA_API_KEY = payload.nvidiaApiKey;
     else if (originalNvidiaApiKey) process.env.NVIDIA_API_KEY = originalNvidiaApiKey;
@@ -193,6 +222,30 @@ export const codingAgentTask = task({
 
       console.log(`[Trigger.dev] Agent task completed`);
 
+      let gitCommitted = false;
+      let gitPushed = false;
+
+      const finalResult = result ?? {
+        success: false,
+        stopReason: "Agent did not return a result",
+        verificationPassed: false,
+        completedSteps: 0,
+        totalSteps: 0,
+        filesModified: [],
+        error: "Agent execution did not produce a result",
+      };
+
+      // Collect modified/created file artifacts to return to caller before cleanup
+      const artifacts: Array<{ path: string; content: string }> = [];
+      for (const filePath of finalResult.filesModified) {
+        try {
+          const fileContent = await workspace.read(filePath);
+          artifacts.push({ path: filePath, content: fileContent });
+        } catch {
+          // ignore if deleted
+        }
+      }
+
       // If using GitWorkspace, commit and push changes
       if (workspace instanceof GitWorkspace) {
         console.log(`[Trigger.dev] Committing and pushing changes...`);
@@ -200,6 +253,8 @@ export const codingAgentTask = task({
           // Use sanitized URL for logging (gitUrl is guaranteed to be defined for GitWorkspace)
           const { sanitizedUrl } = validateGitUrl(payload.gitUrl!);
           const pushResult = await workspace.commitAndPush(`chore: ${payload.task}`);
+          gitCommitted = Boolean(pushResult.committed);
+          gitPushed = Boolean(pushResult.pushed);
           if (pushResult.committed) {
             console.log(`[Trigger.dev] Changes pushed to ${sanitizedUrl}`);
           } else {
@@ -223,17 +278,15 @@ export const codingAgentTask = task({
           // Don't fail the task if push fails - the work was done locally
         }
         await workspace.cleanup();
+      } else {
+        // Temporary file-based workspace cleanup
+        try {
+          const rootPath = getWorkspaceRoot(workspace);
+          if (rootPath.includes("achu-workspace")) {
+            await fs.promises.rm(rootPath, { recursive: true, force: true });
+          }
+        } catch {}
       }
-
-      const finalResult = result ?? {
-        success: false,
-        stopReason: "Agent did not return a result",
-        verificationPassed: false,
-        completedSteps: 0,
-        totalSteps: 0,
-        filesModified: [],
-        error: "Agent execution did not produce a result",
-      };
 
       return {
         success: finalResult.success,
@@ -242,6 +295,9 @@ export const codingAgentTask = task({
         completedSteps: finalResult.completedSteps,
         totalSteps: finalResult.totalSteps,
         filesModified: finalResult.filesModified,
+        artifacts: artifacts.length > 0 ? artifacts : undefined,
+        gitCommitted,
+        gitPushed,
         error: finalResult.error,
       };
     } catch (error) {

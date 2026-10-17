@@ -5,5 +5,8 @@ export default defineConfig({
   project: "proj_saqtxqdgvbvazuqkwkdj",
   dirs: ["./src/trigger"],
   maxDuration: 300,
+  build: {
+    external: ["playwright", "playwright-core", "better-sqlite3"],
+  },
   extensions: [syncEnvVars()],
 });
