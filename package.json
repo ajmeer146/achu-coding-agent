@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "tsx --test tests/phase3.test.ts tests/app-lifecycle.test.ts tests/sandbox.test.ts tests/project-isolation-regression.test.ts tests/browser-verification-recovery-regression.test.ts tests/app-lifecycle-e2e-regression.test.ts tests/server-startup-recovery-regression.test.ts tests/phase-master-e2e.test.ts tests/achu-test-lab-regression.test.ts tests/achu-test-lab-real-e2e.test.ts",
+    "test": "tsx --test tests/phase3.test.ts tests/app-lifecycle.test.ts tests/sandbox.test.ts tests/project-isolation-regression.test.ts tests/browser-verification-recovery-regression.test.ts tests/browser-verification-selector-regression.test.ts tests/app-lifecycle-e2e-regression.test.ts tests/server-startup-recovery-regression.test.ts tests/phase-master-e2e.test.ts tests/achu-test-lab-regression.test.ts tests/achu-test-lab-real-e2e.test.ts",
     "test:phase3": "tsx --test tests/phase3.test.ts",
     "build": "tsc",
     "dev": "tsx src/cli.ts",

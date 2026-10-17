@@ -16,7 +16,7 @@ import { runCommand } from "./tools/terminal.js";
 import { navigate } from "./browser/browser-tools.js";
 import { BrowserSession } from "./browser/browser-session.js";
 import { detectStartCommand, spawnAppProcess, waitForReadiness, stopAppProcess, getAppUrl, readAppOutput, cleanupAppOutputFile, hasAppProcessExited, extractUrlFromOutput, extractPortFromOutput, AppProcessInfo, detachAppProcess, isServerStartupCommand, isUrlServing, probePortRange, discoverNewServerUrl, getAppRuntime, saveAppRuntime, clearAppRuntime, resolveProjectEntryUrl, isProcessAlive, allocateAvailablePort, isPortAvailable, replacePortInCommand, detectPackageManager } from "./tools/app-lifecycle.js";
-import { verifyTextExists as verify_text, verifyHeadingExists as verify_heading, verifyInputExists as verify_input, verifyLinkExists as verify_link, runVerificationSuite, generateVerificationTargetsFromTask, VerificationTarget } from "./browser/browser-verification.js";
+import { verifyTextExists as verify_text, verifyHeadingExists as verify_heading, verifyInputExists as verify_input, verifyLinkExists as verify_link, runVerificationSuite, generateVerificationTargetsFromTask, applyVerificationOutcome, isCriteriaDefectResult, VerificationTarget } from "./browser/browser-verification.js";
 import { open_browser, close_browser, inspect_page } from "./browser/browser-tools.js";
 import { loadSessionState, saveSessionState } from "./session/session-persistence.js";
 import { SessionState } from "./session/session-types.js";
@@ -112,6 +112,10 @@ export type AgentState = {
   maxBrowserVerificationAttempts: number;
   browserVerificationRequested: boolean;
   browserVerificationPassed: boolean;
+  // Persistent record of failed browser assertions (signature -> error message).
+  // A later verification run can only clear an entry by re-running the same
+  // assertion and having it pass — failures are never silently overwritten.
+  browserVerificationFailedTargets?: Map<string, string>;
   verificationIsStrong: boolean;
   recentToolCalls: { toolName: string; target: string; timestamp: number }[];
     // Phase 4: Project state for follow-up tasks
@@ -1015,6 +1019,7 @@ export function isToolResultFailure(toolName: string, result: string): boolean {
     if (result.includes("Exit code:") && !result.includes("Exit code: 0")) return true;
     if (result.includes("VERIFICATION FAILED")) return true;
     if (toolName === "browser_verify" && result.includes("Browser verification failed")) return true;
+    if (toolName === "browser_verify" && result.includes("Browser verification incomplete")) return true;
   }
   if (toolName === "navigate" && result.includes("Navigation failed:")) return true;
   if (toolName === "start_app" && (result.includes("failed to become ready") || result.includes("No start command found") || result.includes("App failed to become ready"))) return true;
@@ -1319,7 +1324,15 @@ export function generateRecoveryHint(state: AgentState): string | null {
     repeatedHint += `\n\nSERVER STARTUP RECOVERY GUIDANCE:\n- Server diagnostic error: ${err.errorMessage}\n- Do NOT run npm install serve or attempt to install static server packages.\n- Do NOT create or modify .env files.\n- The 'start_app' tool automatically handles port allocation and launches on an available port.\n- Verify that package.json scripts and entry files (index.html, src/main.jsx, src/App.jsx) exist.\n- If files are missing, use 'create_file' or 'scaffold_project'.\n- If dependencies are missing, install them with 'npm install'.\n- Do NOT run shell commands to kill node processes.`;
   }
   if (err.command === "browser_verify") {
-    repeatedHint += `\n\nBROWSER VERIFICATION GUIDANCE:\n- Ensure the application server is running and ready.\n- Verify page content matches the expected text or elements before claiming verification.\n- If elements are missing or styled incorrectly, edit the React/HTML files with 'edit_file'.`;
+    const failedAssertions = state.browserVerificationFailedTargets && state.browserVerificationFailedTargets.size > 0
+      ? `\n- Recorded failed assertion(s) that must be re-verified as passing:\n  - ${Array.from(state.browserVerificationFailedTargets.values()).slice(0, 5).join("\n  - ")}`
+      : "";
+    const isCriteriaDefect = (err.errorMessage ?? "").includes("Invalid input verification criteria")
+      || (err.errorMessage ?? "").includes("deterministic verification-criteria error");
+    const fixGuidance = isCriteriaDefect
+      ? `\n- This failure is a deterministic verification-criteria construction error (e.g. a semantic input type in the "selector" field, or a malformed selector), NOT a page defect. Do NOT edit or rewrite source files in response. Fix the target fields: "selector" takes CSS (#email, input[type="email"]), "inputType" takes semantic types (email, password), and label/placeholder/name take their literal values.`
+      : `\n- If elements are missing or styled incorrectly, edit the React/HTML files with 'edit_file'.`;
+    repeatedHint += `\n\nBROWSER VERIFICATION GUIDANCE:${failedAssertions}\n- Ensure the application server is running and ready.\n- Re-run browser_verify with target criteria that match the page's actual DOM.${fixGuidance}`;
   }
   if (err.command === "edit_file") {
     repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- To update the file, either read the latest content with 'read_file' first to get exact matching context, or specify 'oldText: "*"' with your new content in 'edit_file' to update the file directly.`;
@@ -1830,7 +1843,7 @@ async function callModelWithRetry(
     { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
     { type: "function", function: { name: "open_browser", description: "Open a browser session for live preview verification.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
     { type: "function", function: { name: "close_browser", description: "Close the browser session.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-    { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks for expected text, headings, buttons, inputs, links, or routes. Provide optional baseUrl and targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Array of verification targets (type: text|heading|button|input|link|route, text/url for expected content).", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string" }, required: { type: "boolean" } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
+    { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks for expected text, headings, buttons, inputs, links, or routes. Provide optional baseUrl and targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Array of verification targets (type: text|heading|button|input|link|route, text/url for expected content).", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
   ];
 
   const isRetriableError = (error: any): boolean => {
@@ -1912,7 +1925,7 @@ async function callModelWithRetry(
             { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
             { type: "function", function: { name: "open_browser", description: "Open a browser session for live preview verification.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
             { type: "function", function: { name: "close_browser", description: "Close the browser session.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-            { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks for expected text, headings, buttons, inputs, links, or routes. Provide optional baseUrl and targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Array of verification targets (type: text|heading|button|input|link|route, text/url for expected content).", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string" }, required: { type: "boolean" } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
+            { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks for expected text, headings, buttons, inputs, links, or routes. Provide optional baseUrl and targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Array of verification targets (type: text|heading|button|input|link|route, text/url for expected content).", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
           ],
         },
         { timeout: requestTimeoutMs }
@@ -2000,6 +2013,10 @@ const schemas = {
       text: z.string().optional(),
       url: z.string().optional(),
       selector: z.string().optional(),
+      inputType: z.string().optional(),
+      placeholder: z.string().optional(),
+      name: z.string().optional(),
+      label: z.string().optional(),
       required: z.boolean().optional()
     })).optional()
   })
@@ -2486,7 +2503,12 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         }
         const baseUrl = (args.baseUrl as string) || state.appUrl || (state.appProcess ? getAppUrl(state.appProcess) : null);
         if (!baseUrl) return "No base URL available. Start app first.";
-        const targets = (args.targets as VerificationTarget[]) || generateVerificationTargetsFromTask(state.currentPlan.map(s => s.description).join(" "));
+        // An explicitly provided empty targets array is treated the same as no
+        // targets: derive assertions from the plan instead of trivially passing.
+        const providedTargets = Array.isArray(args.targets) ? (args.targets as VerificationTarget[]) : null;
+        const targets = providedTargets && providedTargets.length > 0
+          ? providedTargets
+          : generateVerificationTargetsFromTask(state.currentPlan.map(s => s.description).join(" "));
         console.log(chalk.gray(`Running browser verification at ${baseUrl}...`));
         console.log(chalk.gray(`Navigating to ${baseUrl}...`));
         const navResult = await state.browserSession.navigate(baseUrl);
@@ -2500,21 +2522,51 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         console.log(chalk.gray(`Page loaded: ${navResult.title}`));
         const summary = await runVerificationSuite(state.browserSession, baseUrl, targets);
         state.browserVerificationAttempts++;
-          if (!summary.overallPassed) {
-            let errorText = "";
-            if (summary.pageInfo) {
-              const allErrors = [...summary.pageInfo.consoleErrors, ...summary.pageInfo.pageErrors];
-              if (allErrors.length > 0) {
-                errorText = `\nBrowser Errors:\n- ${allErrors.slice(0, 5).join("\n- ")}`;
-              }
+
+        const failedTargets = (state.browserVerificationFailedTargets ??= new Map<string, string>());
+        const priorFailures = new Map(failedTargets);
+        const outcome = applyVerificationOutcome(failedTargets, summary);
+        // Failures recorded before this attempt that are still not re-verified
+        // as passing (their entry survived in the map).
+        const priorStillFailed = [...priorFailures.entries()]
+          .filter(([signature]) => failedTargets.has(signature))
+          .map(([, message]) => message);
+
+        if (!outcome.overallPassed) {
+          let errorText = "";
+          if (summary.pageInfo) {
+            const allErrors = [...summary.pageInfo.consoleErrors, ...summary.pageInfo.pageErrors];
+            if (allErrors.length > 0) {
+              errorText = `\nBrowser Errors:\n- ${allErrors.slice(0, 5).join("\n- ")}`;
             }
-            if (state.browserVerificationAttempts >= state.maxBrowserVerificationAttempts) {
-              const lines = summary.results.map(r => r.passed ? `✓ ${r.target.type}: ${r.actual}` : `✗ ${r.target.type}: ${r.error || r.actual}`);
-              return `Browser verification failed after ${state.browserVerificationAttempts} attempts at ${baseUrl}:\n${lines.join("\n")}${errorText}`;
+            if (summary.pageInfo.inputs && summary.pageInfo.inputs.length > 0) {
+              const inputEvidence = summary.pageInfo.inputs.slice(0, 5)
+                .map(i => `input[type="${i.type}"${i.name ? ` name="${i.name}"` : ""}${i.placeholder ? ` placeholder="${i.placeholder}"` : ""}]`)
+                .join(", ");
+              errorText += `\nPage inputs: ${inputEvidence}`;
             }
-            const lines = summary.results.map(r => r.passed ? `✓ ${r.target.type}: ${r.actual}` : `✗ ${r.target.type}: ${r.error || r.actual}`);
-            return `Browser verification failed (attempt ${state.browserVerificationAttempts}/${state.maxBrowserVerificationAttempts}) at ${baseUrl}:\n${lines.join("\n")}${errorText}`;
           }
+          const lines = summary.results.map(r => r.passed ? `✓ ${r.target.type}: ${r.actual}` : `✗ ${r.target.type}: ${r.error || r.actual}`);
+
+          // This run's targets may all pass while earlier failures remain: a
+          // smaller later run must never overwrite a previous failure with a pass.
+          if (summary.overallPassed && priorStillFailed.length > 0) {
+            return `Browser verification incomplete at ${baseUrl}: this run's targets passed, but earlier failed assertion(s) were not re-verified as passing:\n- ${priorStillFailed.join("\n- ")}\nVerification cannot be marked as passed while previously failed assertions remain un-reverified. Re-run browser_verify including those targets.`;
+          }
+
+          const outstandingNote = priorStillFailed.length > 0
+            ? `\nOutstanding failed assertions from earlier attempts:\n- ${priorStillFailed.join("\n- ")}`
+            : "";
+          const criteriaNote = summary.results.some(r => !r.passed && isCriteriaDefectResult(r))
+            ? `\nThis is a deterministic verification-criteria error, not a page defect: do NOT edit or rewrite source files in response. Re-run browser_verify with corrected target fields (use "selector" for CSS like #email or input[type="email"]; use "inputType" for semantic types like email/password).`
+            : "";
+
+          if (state.browserVerificationAttempts >= state.maxBrowserVerificationAttempts) {
+            return `Browser verification failed after ${state.browserVerificationAttempts} attempts at ${baseUrl}:\n${lines.join("\n")}${errorText}${outstandingNote}${criteriaNote}`;
+          }
+          return `Browser verification failed (attempt ${state.browserVerificationAttempts}/${state.maxBrowserVerificationAttempts}) at ${baseUrl}:\n${lines.join("\n")}${errorText}${outstandingNote}${criteriaNote}`;
+        }
+
           state.browserVerificationAttempts = 0;
           state.browserVerificationPassed = true;
           if (state.browserVerificationRequested) state.verificationPassed = true;
@@ -2535,14 +2587,24 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
   } catch (error) { const message = error instanceof Error ? error.message : String(error); return `Tool error: ${message}`; }
 }
 
+/**
+ * True when a web-app lifecycle task must NOT be reported as complete:
+ * browser verification was required (or failed assertions are still recorded)
+ * but verification never actually passed.
+ */
+export function isBrowserVerificationIncomplete(state: AgentState): boolean {
+  const isWebAppLifecycle = state.currentPlan?.some(s => s.toolType === "start_app" || s.toolType === "browser_verify") ?? false;
+  const hasOutstandingFailures = (state.browserVerificationFailedTargets?.size ?? 0) > 0;
+  return isWebAppLifecycle && (state.browserVerificationRequested || hasOutstandingFailures) && !state.browserVerificationPassed;
+}
+
 function printFinalResult(state: AgentState): void {
   console.log(chalk.cyan("\n--- Agent Result ---"));
   if (state.currentPlan && state.currentPlan.length > 0) { console.log(chalk.cyan(getPlanSummary(state.currentPlan))); console.log(""); }
   // Truth check for web-app lifecycle tasks: browser verification was part of
-  // the plan but never actually passed -> the task is NOT complete, regardless
-  // of individual step counters.
-  const isWebAppLifecycle = state.currentPlan?.some(s => s.toolType === "start_app" || s.toolType === "browser_verify") ?? false;
-  const browserVerificationIncomplete = isWebAppLifecycle && state.browserVerificationRequested && !state.browserVerificationPassed;
+  // the plan but never actually passed, OR failed assertions are still
+  // outstanding -> the task is NOT complete, regardless of step counters.
+  const browserVerificationIncomplete = isBrowserVerificationIncomplete(state);
   if (state.stopReason) { console.log(chalk.yellow(state.stopReason)); }
   else if (browserVerificationIncomplete) { console.log(chalk.red("BROWSER VERIFICATION INCOMPLETE: browser verification was required but did not pass. The task is NOT fully complete.")); }
   else if (state.verificationPassed) { console.log(chalk.green("Verification PASSED.")); }
@@ -2668,6 +2730,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
       maxBrowserVerificationAttempts: sessionState.maxBrowserVerificationAttempts,
       browserVerificationRequested: sessionState.browserVerificationRequested,
       browserVerificationPassed: sessionState.browserVerificationPassed,
+      browserVerificationFailedTargets: new Map(),
       verificationIsStrong: sessionState.verificationIsStrong ?? false,
       recentToolCalls: [],
       projectState: sessionProjectState,
@@ -2702,6 +2765,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
       maxBrowserVerificationAttempts: 3,
       browserVerificationRequested: hasBrowserVerifyStep,
       browserVerificationPassed: false,
+      browserVerificationFailedTargets: new Map(),
       verificationIsStrong: isStrongVerification,
       recentToolCalls: [],
         projectState: {
