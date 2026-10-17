@@ -8,22 +8,30 @@ export async function createFile(
   overwrite = false,
 ): Promise<string> {
   const normalized = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
+  const fileName = normalized.split("/").pop() || normalized;
 
-  if (isProtectedFile(filePath)) {
-    const alreadyExists = await workspace.exists(filePath);
-    if (alreadyExists) {
-      throw new Error(
-        `Protected file cannot be created automatically: ${filePath}. ` +
-          `Configuration changes require explicit user action.`,
-      );
+  // Never create or modify .env files automatically
+  if (fileName.startsWith(".env")) {
+    throw new Error(
+      `Forbidden: .env files cannot be created or modified automatically. ` +
+      `Preserve existing environment configuration.`,
+    );
+  }
+
+  if (normalized.endsWith("package.json")) {
+    try {
+      const parsed = JSON.parse(content);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("package.json must be a valid JSON object.");
+      }
+    } catch (err: any) {
+      throw new Error(`Invalid package.json content: ${err.message}`);
     }
-    // Scaffolding a brand-new project manifest is allowed
-    if (normalized !== "package.json") {
-      throw new Error(
-        `Protected file cannot be created automatically: ${filePath}. ` +
-          `Configuration changes require explicit user action.`,
-      );
-    }
+  } else if (isProtectedFile(filePath)) {
+    throw new Error(
+      `Protected file cannot be created automatically: ${filePath}. ` +
+      `Configuration changes require explicit user action.`,
+    );
   }
 
   const alreadyExists = await workspace.exists(filePath);

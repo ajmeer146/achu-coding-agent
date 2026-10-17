@@ -183,10 +183,27 @@ describe("Browser Verification, Server Readiness & Recovery Rollback Regression 
   test("7. Browser navigation timeout or connection refusal", async () => {
     const closedPort = await findFreePort(51700);
     const session = new BrowserSession();
-    // Navigate without calling init returns clear error
-    const result = await session.navigate(`http://localhost:${closedPort}`);
-    assert.equal(result.success, false);
-    assert.ok(result.error.includes("not initialized") || result.isConnectivityError);
+    try {
+      // Navigate to a port with no listener: navigation must fail with a clear,
+      // recoverable connectivity error (not a browser-infra error), so the agent
+      // can restart/retry the app instead of treating the tool as unavailable.
+      const result = await session.navigate(`http://localhost:${closedPort}`);
+      if (result.success) assert.fail("Navigation to a closed port must fail");
+      assert.equal(result.recoverable, true);
+      assert.match(result.error, /ERR_CONNECTION_REFUSED|ECONNREFUSED|connection refused/i);
+
+      // A session whose browser cannot launch must be classified as a
+      // browser-infra (connectivity) failure so edits are preserved/reported.
+      const unavailableSession = new BrowserSession({
+        executablePath: "C:\\nonexistent\\chromium.exe",
+      });
+      const infraResult = await unavailableSession.navigate(`http://localhost:${closedPort}`);
+      if (infraResult.success) assert.fail("Navigation without a browser must fail");
+      assert.equal(infraResult.isConnectivityError, true);
+      assert.match(infraResult.error, /not initialized/i);
+    } finally {
+      await session.close();
+    }
   });
 
   // Test 8: Recovery does not repeatedly execute the same ineffective action

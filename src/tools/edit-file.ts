@@ -123,7 +123,17 @@ export async function editFile(
     throw new Error("Invalid edits argument provided to editFile");
   }
 
-  if (isProtectedFile(filePath)) {
+  const normalized = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
+  const fileName = normalized.split("/").pop() || normalized;
+
+  if (fileName.startsWith(".env")) {
+    throw new Error(
+      `Forbidden: .env files cannot be modified automatically. ` +
+      `Preserve existing environment configuration and secrets.`,
+    );
+  }
+
+  if (!normalized.endsWith("package.json") && isProtectedFile(filePath)) {
     throw new Error(
       `Protected file cannot be modified automatically: ${filePath}. ` +
         `Configuration changes require explicit user action.`,
@@ -229,6 +239,18 @@ export async function editFile(
   // Restore \r\n if the original file predominantly used them
   const isWindowsLineEndings = current.includes("\r\n");
   const finalContent = isWindowsLineEndings ? updatedNormalized.replace(/\n/g, "\r\n") : updatedNormalized;
+
+  // Validate package.json if it was edited
+  if (normalized.endsWith("package.json")) {
+    try {
+      const parsed = JSON.parse(finalContent);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("package.json must be a valid JSON object.");
+      }
+    } catch (err: any) {
+      throw new Error(`Invalid JSON in package.json after edit: ${err.message}`);
+    }
+  }
 
   await workspace.write(filePath, finalContent);
 

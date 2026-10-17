@@ -452,9 +452,9 @@ export async function scaffoldStaticProject(
       version: "0.1.0",
       private: true,
       scripts: {
-        dev: "npx serve . -l 3000",
+        dev: "npx --yes serve -l 3000 .",
         build: "echo 'Static site - no build needed'",
-        start: "npx serve . -l 3000",
+        start: "npx --yes serve -l 3000 .",
       },
     };
     await workspace.write("package.json", JSON.stringify(packageJson, null, 2) + "\n");

@@ -171,28 +171,128 @@ export async function allocateAvailablePort(preferredPort = 3000, maxAttempts = 
 }
 
 /**
+ * Update any port flags inside a script string (e.g. "npx serve . -l 3000", "vite --port 5173").
+ */
+export function updatePortInScriptString(script: string, newPort: number): string {
+  let updated = script;
+  if (/--\s+--port\s+\d+/i.test(updated)) {
+    updated = updated.replace(/(--\s+--port\s+)\d+/i, `$1${newPort}`);
+  } else if (/--\s+-p\s+\d+/i.test(updated)) {
+    updated = updated.replace(/(--\s+-p\s+)\d+/i, `$1${newPort}`);
+  } else if (/--\s+-l\s+\d+/i.test(updated)) {
+    updated = updated.replace(/(--\s+-l\s+)\d+/i, `$1${newPort}`);
+  } else if (/(?:-l|-p|--port)\s+\d+/i.test(updated)) {
+    updated = updated.replace(/((?:-l|-p|--port)\s+)\d+/i, `$1${newPort}`);
+  } else if (/--port=\d+/i.test(updated)) {
+    updated = updated.replace(/(--port=)\d+/i, `$1${newPort}`);
+  } else if (/PORT=\d+/i.test(updated)) {
+    updated = updated.replace(/(PORT=)\d+/i, `$1${newPort}`);
+  } else if (/\b(serve|http-server)\b/i.test(updated) && !/--port|-p|-l/.test(updated)) {
+    updated = `${updated} -l ${newPort}`;
+  } else if (/\bvite\b/i.test(updated) && !/--port/.test(updated)) {
+    updated = `${updated} --port ${newPort}`;
+  } else if (/\bnext\b/i.test(updated) && !/-p|--port/.test(updated)) {
+    updated = `${updated} -p ${newPort}`;
+  }
+  return updated;
+}
+
+/**
+ * Synchronize the allocated port to package.json scripts in the workspace.
+ * Replaces port arguments in scripts like 'serve', 'vite', 'next', 'http-server'.
+ * Does not overwrite unrelated scripts or configurations.
+ */
+export function syncPortToPackageJson(workspaceDir: string, newPort: number): boolean {
+  try {
+    const pkgPath = path.join(workspaceDir, "package.json");
+    if (!fs.existsSync(pkgPath)) return false;
+    const raw = fs.readFileSync(pkgPath, "utf8");
+    const pkg = JSON.parse(raw);
+    if (!pkg.scripts || typeof pkg.scripts !== "object") return false;
+
+    let changed = false;
+    for (const [scriptName, scriptVal] of Object.entries(pkg.scripts)) {
+      if (typeof scriptVal === "string" && ["dev", "start", "serve", "preview"].includes(scriptName)) {
+        const updated = updatePortInScriptString(scriptVal, newPort);
+        if (updated !== scriptVal) {
+          pkg.scripts[scriptName] = updated;
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf8");
+      return true;
+    }
+  } catch {
+    // Non-fatal if package.json cannot be parsed or updated
+  }
+  return false;
+}
+
+/**
  * Replace port flags in a server command with a new port number.
  */
-export function replacePortInCommand(command: string, newPort: number): string {
+export function replacePortInCommand(command: string, newPort: number, workspaceDir?: string): string {
+  if (workspaceDir) {
+    syncPortToPackageJson(workspaceDir, newPort);
+  }
+
   let replaced = command;
   if (/--\s+--port\s+\d+/i.test(replaced)) {
-    replaced = replaced.replace(/(--\s+--port\s+)\d+/i, `$1${newPort}`);
+    return replaced.replace(/(--\s+--port\s+)\d+/i, `$1${newPort}`);
   } else if (/--\s+-p\s+\d+/i.test(replaced)) {
-    replaced = replaced.replace(/(--\s+-p\s+)\d+/i, `$1${newPort}`);
+    return replaced.replace(/(--\s+-p\s+)\d+/i, `$1${newPort}`);
+  } else if (/--\s+-l\s+\d+/i.test(replaced)) {
+    return replaced.replace(/(--\s+-l\s+)\d+/i, `$1${newPort}`);
   } else if (/(?:-l|-p|--port)\s+\d+/i.test(replaced)) {
-    replaced = replaced.replace(/((?:-l|-p|--port)\s+)\d+/i, `$1${newPort}`);
+    return replaced.replace(/((?:-l|-p|--port)\s+)\d+/i, `$1${newPort}`);
   } else if (/--port=\d+/i.test(replaced)) {
-    replaced = replaced.replace(/(--port=)\d+/i, `$1${newPort}`);
+    return replaced.replace(/(--port=)\d+/i, `$1${newPort}`);
   } else if (/PORT=\d+/i.test(replaced)) {
-    replaced = replaced.replace(/(PORT=)\d+/i, `$1${newPort}`);
+    return replaced.replace(/(PORT=)\d+/i, `$1${newPort}`);
   } else if (/\b(serve|http-server)\b/i.test(replaced) && !/--port|-p|-l/.test(replaced)) {
-    replaced = `${replaced} -l ${newPort}`;
+    return `${replaced} -l ${newPort}`;
   } else if (/\bvite\b/i.test(replaced) && !/--port/.test(replaced)) {
-    replaced = `${replaced} --port ${newPort}`;
-  } else if (/^(?:npm|pnpm)\s+run\s+\w+/i.test(replaced)) {
-    replaced = `${replaced} -- --port ${newPort}`;
+    return `${replaced} --port ${newPort}`;
+  }
+
+  // Handle npm/pnpm/yarn commands:
+  if (workspaceDir && fs.existsSync(path.join(workspaceDir, "package.json"))) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(workspaceDir, "package.json"), "utf8"));
+      const scriptMatch = replaced.match(/^(?:npm|pnpm|yarn)\s+(?:run\s+)?([\w:.-]+)/i);
+      const scriptName = scriptMatch ? scriptMatch[1] : "dev";
+      const scriptVal = pkg.scripts?.[scriptName];
+      if (typeof scriptVal === "string") {
+        if (/\b(serve|http-server)\b/i.test(scriptVal)) {
+          // Serve uses -l, which is already synchronized into package.json!
+          // Never append --port to serve!
+          return replaced;
+        }
+        if (/\bvite\b|\bastro\b|\bparcel\b|webpack|vue-cli-service|\bng\s+serve\b/i.test(scriptVal)) {
+          if (!scriptVal.includes("--port")) return `${replaced} -- --port ${newPort}`;
+          return replaced;
+        }
+        if (/\bnext\b|\bnuxt\b/i.test(scriptVal)) {
+          if (!scriptVal.includes("-p") && !scriptVal.includes("--port")) return `${replaced} -- -p ${newPort}`;
+          return replaced;
+        }
+        // react-scripts and unknown/custom scripts: never append a port flag.
+        // The launcher sets the PORT environment variable for the spawned process.
+        return replaced;
+      }
+      return replaced;
+    } catch {}
+  }
+
+  if (/^(?:npm|pnpm)\s+run\s+\w+/i.test(replaced)) {
+    return `${replaced} -- --port ${newPort}`;
+  } else if (/^(?:npm|pnpm)\s+start\b/i.test(replaced)) {
+    return `${replaced} -- --port ${newPort}`;
   } else if (/^yarn\s+(?:run\s+)?\w+/i.test(replaced)) {
-    replaced = `${replaced} --port ${newPort}`;
+    return `${replaced} --port ${newPort}`;
   }
   return replaced;
 }
@@ -718,6 +818,70 @@ export function clearAppRuntime(workspaceRoot: string): void {
 }
 
 /**
+ * Tree-kill the app server previously recorded for `workspaceRoot` and remove
+ * its runtime record(s). Only the exact PID this agent spawned (and its
+ * descendants) is terminated — never a process discovered by port number or
+ * name — so unrelated listeners are untouched. Waits (bounded) until the
+ * process has exited so workspace file handles are released on Windows.
+ *
+ * Returns true when a record existed, false otherwise.
+ */
+export async function stopAppRuntime(workspaceRoot: string): Promise<boolean> {
+  const registry = loadRegistry();
+  const key = normalizeWorkspaceKey(workspaceRoot);
+  const record = registry[key];
+  if (!record) return false;
+
+  const targetPids = new Set<number>();
+  if (Number.isInteger(record.pid) && record.pid > 0) targetPids.add(record.pid);
+  // ensureAppServer persists the same pid under both the authoritative project
+  // root and the requested workspace root; collect all entries with that pid.
+  for (const rec of Object.values(registry)) {
+    if (Number.isInteger(rec.pid) && rec.pid > 0 && rec.pid === record.pid) {
+      targetPids.add(rec.pid);
+    }
+  }
+
+  for (const pid of targetPids) {
+    if (!isProcessAlive(pid)) continue;
+
+    if (process.platform === "win32") {
+      await new Promise<void>((resolve) => {
+        const killer = spawn("taskkill", ["/pid", pid.toString(), "/t", "/f"], {
+          windowsHide: true,
+          stdio: ["ignore", "ignore", "ignore"],
+        });
+        killer.on("close", () => resolve());
+        killer.on("error", () => resolve());
+        setTimeout(resolve, 3000);
+      });
+    } else {
+      // Detached wrappers are their own process-group leaders.
+      try { process.kill(-pid, "SIGTERM"); } catch { try { process.kill(pid, "SIGTERM"); } catch {} }
+    }
+
+    // Bounded wait until the process tree has fully exited (file handles released).
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && isProcessAlive(pid)) {
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    if (process.platform !== "win32" && isProcessAlive(pid)) {
+      try { process.kill(pid, "SIGKILL"); } catch {}
+    }
+  }
+
+  let changed = false;
+  for (const [k, rec] of Object.entries(registry)) {
+    if (k === key || (Number.isInteger(rec.pid) && targetPids.has(rec.pid))) {
+      delete registry[k];
+      changed = true;
+    }
+  }
+  if (changed) saveRegistry(registry);
+  return true;
+}
+
+/**
  * Probe a single URL. Returns true when ANY HTTP response is received (the
  * server is listening), regardless of status code.
  */
@@ -853,7 +1017,7 @@ export async function ensureAppServer(workspaceRoot: string): Promise<string | n
   let workingDir = startInfo.cwd || authRoot;
 
   if (!command && (fs.existsSync(path.join(authRoot, "index.html")) || fs.existsSync(path.join(workspaceRoot, "index.html")))) {
-    command = "npx serve . -l 3000";
+    command = "npx --yes serve -l 3000 .";
     port = 3000;
     workingDir = fs.existsSync(path.join(authRoot, "index.html")) ? authRoot : workspaceRoot;
   }
@@ -866,7 +1030,9 @@ export async function ensureAppServer(workspaceRoot: string): Promise<string | n
   const isPortBusy = (await isUrlServing(`http://localhost:${port}`, 300)) || !(await isPortAvailable(port));
   if (isPortBusy) {
     port = await allocateAvailablePort(port);
-    command = replacePortInCommand(command, port);
+    command = replacePortInCommand(command, port, workingDir);
+  } else {
+    syncPortToPackageJson(workingDir, port);
   }
 
   const spawnEnv: NodeJS.ProcessEnv = {

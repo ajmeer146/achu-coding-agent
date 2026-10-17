@@ -676,9 +676,11 @@ if (isAppOrGenericTask) {
         if (!hasSimilarStep("read_file", "script") && existingFiles.includes("script.js")) addStep("Read script.js to understand current behavior", "read_file", "script.js");
       }
 
-      const isReactIntent = (/\b(react|vite|component|jsx|tsx|spa)\b/i.test(lowerTask) ||
-        (/\b(portfolio|dashboard|saas|landing page|store|e-?commerc\w*|devshowcase)\b/i.test(lowerTask) && !/\b(plain|pure|vanilla)\s+html\b/i.test(lowerTask))) &&
-        !/\bindex\.html\b|styles?\.css|\bstatic\b/i.test(lowerTask);
+      const hasExplicitReact = /\b(react|vite|next|spa)\b/i.test(lowerTask);
+      const isReactIntent = hasExplicitReact || (
+        (/\b(portfolio|dashboard|saas|landing page|store|e-?commerc\w*|devshowcase)\b/i.test(lowerTask) && !/\b(plain|pure|vanilla)\s+html\b/i.test(lowerTask)) &&
+        !/\bindex\.html\b|styles?\.css|\bstatic\b/i.test(lowerTask)
+      );
 
       if (hasAppBuild || hasAppCreate || isGenericAppTask) {
         if (!isExistingProject) {
@@ -1314,7 +1316,7 @@ export function generateRecoveryHint(state: AgentState): string | null {
   }
   // Domain-specific recovery guidance
   if (err.command === "start_app") {
-    repeatedHint += `\n\nSERVER STARTUP RECOVERY GUIDANCE:\n- Verify that package.json and all entry points (index.html, src/main.jsx, src/App.jsx) exist.\n- If files are missing, use 'scaffold_project' or 'create_file' first.\n- If dependencies are missing, install them with 'npm install'.\n- If build errors occur, fix the source code with 'edit_file' and verify with build.\n- Do NOT run shell commands to inspect or kill node processes. The 'start_app' tool automatically handles ports and process lifecycle.`;
+    repeatedHint += `\n\nSERVER STARTUP RECOVERY GUIDANCE:\n- Server diagnostic error: ${err.errorMessage}\n- Do NOT run npm install serve or attempt to install static server packages.\n- Do NOT create or modify .env files.\n- The 'start_app' tool automatically handles port allocation and launches on an available port.\n- Verify that package.json scripts and entry files (index.html, src/main.jsx, src/App.jsx) exist.\n- If files are missing, use 'create_file' or 'scaffold_project'.\n- If dependencies are missing, install them with 'npm install'.\n- Do NOT run shell commands to kill node processes.`;
   }
   if (err.command === "browser_verify") {
     repeatedHint += `\n\nBROWSER VERIFICATION GUIDANCE:\n- Ensure the application server is running and ready.\n- Verify page content matches the expected text or elements before claiming verification.\n- If elements are missing or styled incorrectly, edit the React/HTML files with 'edit_file'.`;
@@ -1745,7 +1747,10 @@ APPLICATION SCAFFOLDING & PROJECT TYPES:
   - Valid JSX: Ensure JSX comments are properly closed with braces ({/* comment */}), CSS styles use valid values and closed quotes/parentheses.
 - FOR STATIC HTML SITES:
   - Create index.html at the workspace root! A root index.html is MANDATORY so the server renders the page rather than a directory listing.
-  - Scripts: "dev": "npx serve . -l 3000", "build": "echo 'Static site - no build needed'", "start": "npx serve . -l 3000".
+  - Scripts: "dev": "npx --yes serve -l 3000 .", "build": "echo 'Static site - no build needed'", "start": "npx --yes serve -l 3000 .".
+  - NEVER run 'npm install serve' or attempt to install static server packages.
+- ENVIRONMENT SECRETS SAFETY:
+  - NEVER create, modify, read, or overwrite .env files. Existing environment configuration and secrets must always be preserved.
 - PROCESS MANAGEMENT SAFETY:
   - NEVER run commands to kill processes (Stop-Process, taskkill, kill-port). Direct process killing is BLOCKED.
   - The start_app tool automatically allocates a clean, free port if a port conflict occurs.
@@ -2014,13 +2019,26 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
 
   try {
     switch (toolCall.function.name) {
-      case "read_file": { const filePath = args.path; console.log(chalk.gray(`Reading: ${filePath}`)); const content = await readFile(workspace, filePath); return truncateToolResult(content); }
+      case "read_file": {
+        const filePath = args.path;
+        const normRead = filePath.replaceAll("\\", "/").toLowerCase();
+        if (normRead.split("/").pop()?.startsWith(".env")) {
+          return "BLOCKED: Reading .env files is not permitted to protect environment secrets.";
+        }
+        console.log(chalk.gray(`Reading: ${filePath}`));
+        const content = await readFile(workspace, filePath);
+        return truncateToolResult(content);
+      }
       case "search_code": { const query = args.query; const searchType = args.type || "text"; console.log(chalk.gray(`Searching (${searchType}): ${query}`)); const results = await searchCode(workspace, query, searchType); return truncateToolResult(results); }
       case "edit_file": {
         const filePath = args.path;
         const edits = args.edits || [{ oldText: args.oldText !== undefined ? args.oldText : "*", newText: args.newText || "" }];
-        const protectedFiles = ["tsconfig.json", "package.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"];
         const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
+        const fileName = normalizedPath.split("/").pop() || normalizedPath;
+        if (fileName.startsWith(".env")) {
+          return `BLOCKED: ${filePath} is an environment configuration file and cannot be modified automatically.`;
+        }
+        const protectedFiles = ["tsconfig.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"];
         if (protectedFiles.includes(normalizedPath)) return `BLOCKED: ${filePath} is a protected configuration file and cannot be modified automatically.`;
         console.log(chalk.cyan(`Editing: ${filePath}`));
         await state.snapshotManager.captureBefore(filePath, "edit");
@@ -2114,8 +2132,14 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
       case "list_directory": { const directoryPath = args.directoryPath; console.log(chalk.gray(`Listing: ${directoryPath}`)); const result = await listDirectory(workspace, directoryPath); return truncate(result); }
       case "create_file": {
         const filePath = args.path; const content = args.content;
-        const protectedFiles = ["tsconfig.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"];
         const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
+        const fileName = normalizedPath.split("/").pop() || normalizedPath;
+        if (fileName.startsWith(".env")) {
+          const blockMsg = `BLOCKED: ${filePath} is an environment configuration file and cannot be created automatically.`;
+          console.error(chalk.red(blockMsg));
+          return blockMsg;
+        }
+        const protectedFiles = ["tsconfig.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"];
         if (protectedFiles.includes(normalizedPath)) {
           const blockMsg = `BLOCKED: ${filePath} is a protected configuration file and cannot be created automatically.`;
           console.error(chalk.red(blockMsg));
@@ -2325,8 +2349,10 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           console.log(chalk.yellow(`Candidate port ${candidatePort} is occupied. Allocating alternative available port...`));
           effectivePort = await allocateAvailablePort(candidatePort);
           console.log(chalk.gray(`Allocated port ${effectivePort} for application server.`));
-          commandToRun = replacePortInCommand(commandToRun, effectivePort);
+          commandToRun = replacePortInCommand(commandToRun, effectivePort, workingDir);
           startInfo.port = effectivePort;
+        } else {
+          commandToRun = replacePortInCommand(commandToRun, effectivePort, workingDir);
         }
 
         console.log(chalk.gray(`Starting app: ${commandToRun}${effectivePort ? ` (port: ${effectivePort}, cwd: ${workingDir})` : ""}`));
@@ -2928,7 +2954,7 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
           const errorLine = lines.find(l => /error|failed|exception/i.test(l) && !l.startsWith("Exit code:"));
           extractedError = (stderrLine ? stderrLine.replace(/^STDERR:\s*/, "") : null) || errorLine || lines[0];
         } else {
-          extractedError = result.split("\n")[0];
+          extractedError = result.slice(0, 500).trim();
         }
 
         state.lastError = {

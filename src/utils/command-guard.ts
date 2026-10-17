@@ -470,8 +470,6 @@ export function normalizeUnixCommand(command: string): { normalized: string; was
 
 const BLOCKED_CONFIG_FILES = new Set([
   "tsconfig.json",
-  "package.json",
-  "package-lock.json",
   ".env",
   ".env.local",
   ".env.production",
@@ -480,8 +478,6 @@ const BLOCKED_CONFIG_FILES = new Set([
 
 const PROTECTED_CONFIG_NAMES = [
   "tsconfig.json",
-  "package.json",
-  "package-lock.json",
   ".npmrc",
   ".env",
   ".env.local",
@@ -520,6 +516,20 @@ export function validateCommand(
       allowed: false,
       reason:
         "Blocked protected configuration-file overwrite through shell redirection.",
+    };
+  }
+
+  if (/\b(?:touch|echo|set-content|add-content|out-file)\b.*\.env/i.test(normalized) || />\s*.*\.env/i.test(normalized)) {
+    return {
+      allowed: false,
+      reason: "Modifying or creating .env files is blocked. Environment configuration and secrets must be preserved.",
+    };
+  }
+
+  if (/\bnpm\s+(?:install|i|add)\s+(?:--save-dev\s+|--save\s+|-D\s+)?(?:-g\s+)?serve\b/i.test(normalized)) {
+    return {
+      allowed: false,
+      reason: "Installing 'serve' packages is not permitted. The application development server launcher manages static serving automatically without package changes.",
     };
   }
 
@@ -622,6 +632,11 @@ export function isProtectedFile(
     .replaceAll("\\", "/")
     .toLowerCase()
     .replace(/^\.\/+/, "");
+
+  const fileName = normalized.split("/").pop() || normalized;
+  if (fileName.startsWith(".env") || fileName === ".npmrc" || fileName === "tsconfig.json") {
+    return true;
+  }
 
   return BLOCKED_CONFIG_FILES.has(
     normalized,
