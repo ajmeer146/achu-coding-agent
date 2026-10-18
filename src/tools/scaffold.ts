@@ -271,14 +271,21 @@ export async function scaffoldReactViteProject(
   const title = projectName.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   const filesCreated: string[] = [];
 
-  // If workspace already contains files and is not named after this project, scaffold into child folder
-  const currentDirName = path.basename(workspace.root).toLowerCase();
-  let entries: string[] = [];
+  // Only scaffold into a child folder if workspace already contains existing files or an existing project
+  // AND the directory does not already match the project name
+  // AND the requested projectName is a distinct custom project name (not default "app", "react-app", or "static-website").
+  const defaultProjectNames = new Set(["app", "react-app", "static-website"]);
+  let existingEntries: string[] = [];
   try {
-    entries = fs.readdirSync(workspace.root).filter((e) => !e.startsWith(".") && e !== "node_modules");
+    existingEntries = fs.readdirSync(workspace.root).filter(
+      (e) => !e.startsWith(".") && e !== "node_modules"
+    );
   } catch {}
+  const hasExistingContent = existingEntries.length > 0;
+  const currentDirName = path.basename(workspace.root).toLowerCase();
+  const isMatchingDirectory = currentDirName === slug || currentDirName === projectName.toLowerCase();
 
-  if (entries.length > 0 && currentDirName !== slug.toLowerCase()) {
+  if (hasExistingContent && !isMatchingDirectory && !defaultProjectNames.has(slug) && !defaultProjectNames.has(projectName.toLowerCase())) {
     const childPath = path.join(workspace.root, projectName);
     fs.mkdirSync(childPath, { recursive: true });
     workspace.setRoot(childPath);
@@ -432,14 +439,21 @@ export async function scaffoldStaticProject(
   const title = projectName.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   const filesCreated: string[] = [];
 
-  // If workspace already contains files and is not named after this project, scaffold into child folder
-  const currentDirName = path.basename(workspace.root).toLowerCase();
-  let entries: string[] = [];
+  // Only scaffold into a child folder if workspace already contains existing files or an existing project
+  // AND the directory does not already match the project name
+  // AND the requested projectName is a distinct custom project name (not default "app", "react-app", or "static-website").
+  const defaultProjectNames = new Set(["app", "react-app", "static-website"]);
+  let existingEntries: string[] = [];
   try {
-    entries = fs.readdirSync(workspace.root).filter((e) => !e.startsWith(".") && e !== "node_modules");
+    existingEntries = fs.readdirSync(workspace.root).filter(
+      (e) => !e.startsWith(".") && e !== "node_modules"
+    );
   } catch {}
+  const hasExistingContent = existingEntries.length > 0;
+  const currentDirName = path.basename(workspace.root).toLowerCase();
+  const isMatchingDirectory = currentDirName === slug || currentDirName === projectName.toLowerCase();
 
-  if (entries.length > 0 && currentDirName !== slug.toLowerCase()) {
+  if (hasExistingContent && !isMatchingDirectory && !defaultProjectNames.has(slug) && !defaultProjectNames.has(projectName.toLowerCase())) {
     const childPath = path.join(workspace.root, projectName);
     fs.mkdirSync(childPath, { recursive: true });
     workspace.setRoot(childPath);

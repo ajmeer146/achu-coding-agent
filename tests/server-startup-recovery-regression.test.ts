@@ -40,13 +40,13 @@ function closeServer(server: http.Server): Promise<void> {
  * transient Windows handle-release races (AV, delayed close) can fail; retry
  * those a bounded number of times and surface persistent failures.
  */
-async function rmDirWithRetry(dir: string, attempts = 8, delayMs = 250): Promise<void> {
+async function rmDirWithRetry(dir: string, attempts = 25, delayMs = 250): Promise<void> {
   for (let i = 1; i <= attempts; i++) {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
       return;
     } catch (err: any) {
-      const transient = err && (err.code === "EPERM" || err.code === "EBUSY" || err.code === "ENOTEMPTY");
+      const transient = err && (err.code === "EPERM" || err.code === "EBUSY" || err.code === "ENOTEMPTY" || err.code === "EACCES");
       if (!transient || i === attempts) throw err;
       await new Promise((r) => setTimeout(r, delayMs));
     }

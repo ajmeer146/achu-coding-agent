@@ -1,0 +1,57 @@
+name: Release Achu Local Agent Installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Test Suite
+        run: npm test
+
+      - name: Build Windows Installer (AchuLocalAgentSetup.exe)
+        run: node scripts/build-windows-installer.mjs
+
+      - name: Upload Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AchuLocalAgentSetup
+          path: dist-installer/AchuLocalAgentSetup.exe
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-installer/AchuLocalAgentSetup.exe
+          name: Achu Local Agent ${{ github.ref_name }}
+          body: |
+            ## Achu Local Agent Windows Installer
+
+            ### Installation:
+            1. Download `AchuLocalAgentSetup.exe`.
+            2. Run the installer (no admin permissions required; installs to `%LOCALAPPDATA%\Programs\AchuLocalAgent`).
+            3. Start Achu Local Agent from the Start Menu or Desktop shortcut.
+            4. Return to [Work with Achu](https://www.workswithachu.me/workspace/coding-agent) and click Connect.
+          draft: false
+          prerelease: false

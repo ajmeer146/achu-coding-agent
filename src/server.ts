@@ -6,7 +6,8 @@ import fs from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { Workspace, validateWorkspaceDirectory, getDefaultProjectsBaseDir, deriveProjectSlug, shouldIsolateNewProject } from "./tools/workspace.js";
+import { Workspace, validateWorkspaceDirectory, isInsideRoot, getDefaultProjectsBaseDir, deriveProjectSlug, shouldIsolateNewProject } from "./tools/workspace.js";
+import { exportWorkspaceFiles, DEFAULT_WORKSPACE_EXPORT_LIMITS } from "./tools/workspace-export.js";
 import { listDirectory } from "./tools/list-directory.js";
 import { readFile } from "./tools/read-file.js";
 import { createFile } from "./tools/create-file.js";
@@ -42,7 +43,7 @@ function getOrCreatePairingToken(): string {
 
 export const COMPANION_TOKEN = process.env.ACHU_COMPANION_TOKEN || getOrCreatePairingToken();
 
-function isAllowedOrigin(origin?: string): boolean {
+export function isAllowedOrigin(origin?: string): boolean {
   if (!origin) return true;
   try {
     const u = new URL(origin);
@@ -50,9 +51,44 @@ function isAllowedOrigin(origin?: string): boolean {
     if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
     const allowed = (process.env.ACHU_ALLOWED_ORIGINS || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
     if (allowed.includes(origin.toLowerCase()) || allowed.includes(u.origin.toLowerCase()) || allowed.includes(host)) return true;
-    if (host.endsWith(".vercel.app") || host.includes("works-with-achu")) return true;
+    if (host === "workswithachu.me" || host.endsWith(".workswithachu.me")) return true;
+    if (host === "works-with-achu.me" || host.endsWith(".works-with-achu.me")) return true;
+    if (host.includes("workswithachu") || host.includes("works-with-achu")) return true;
+    if (host.endsWith(".vercel.app")) return true;
   } catch {
     return false;
+  }
+  return false;
+}
+
+/**
+ * Workspace roots the user has explicitly authorized in this companion session.
+ * `export-workspace` only exports from these roots, so a webpage can never read
+ * arbitrary directories even if it has the pairing token.
+ */
+const authorizedWorkspaceRoots = new Set<string>();
+
+function registerAuthorizedRoots(root: string, realRoot?: string): void {
+  for (const candidate of [root, realRoot]) {
+    if (!candidate || typeof candidate !== "string") continue;
+    try {
+      authorizedWorkspaceRoots.add(path.resolve(candidate));
+    } catch {}
+  }
+}
+
+function isAuthorizedForExport(candidateRoot: string, realRoot?: string): boolean {
+  for (const candidate of [candidateRoot, realRoot]) {
+    if (!candidate || typeof candidate !== "string") continue;
+    let resolved: string;
+    try {
+      resolved = path.resolve(candidate);
+    } catch {
+      continue;
+    }
+    for (const authorized of authorizedWorkspaceRoots) {
+      if (isInsideRoot(authorized, resolved)) return true;
+    }
   }
   return false;
 }
@@ -64,7 +100,15 @@ const wss = new WebSocketServer({ server });
 app.use(express.json());
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  res.header("Access-Control-Allow-Origin", origin || "*");
+  if (origin && !isAllowedOrigin(origin)) {
+    res.status(403).json({ ok: false, error: "Forbidden: Origin not authorized to access local companion" });
+    return;
+  }
+  if (origin) {
+    res.header("Access-Control-Allow-Origin", origin);
+  } else {
+    res.header("Access-Control-Allow-Origin", "*");
+  }
   res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-achu-companion-token");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Private-Network", "true");
@@ -139,14 +183,25 @@ app.get("/api/companion/status", (_req, res) => {
 
 app.get("/api/companion/token", (req, res) => {
   const ip = req.socket.remoteAddress;
-  if (ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1") {
-    res.json({ ok: true, token: COMPANION_TOKEN });
-  } else {
+  const isLoopback = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+  if (!isLoopback) {
     res.status(403).json({ ok: false, error: "Token retrieval is restricted to loopback" });
+    return;
   }
+  const origin = req.headers.origin;
+  if (origin && !isAllowedOrigin(origin)) {
+    res.status(403).json({ ok: false, error: "Origin not allowed to retrieve companion token" });
+    return;
+  }
+  res.json({ ok: true, token: COMPANION_TOKEN });
 });
 
 app.post("/api/companion/authorize-workspace", async (req, res) => {
+  const tokenHeader = req.headers["x-achu-companion-token"];
+  if (COMPANION_TOKEN && tokenHeader && tokenHeader !== COMPANION_TOKEN) {
+    res.status(401).json({ ok: false, error: "Unauthorized: Invalid companion token" });
+    return;
+  }
   const { path: requestedPath } = req.body || {};
   if (!requestedPath || typeof requestedPath !== "string") {
     res.status(400).json({ ok: false, error: "Path is required" });
@@ -154,7 +209,58 @@ app.post("/api/companion/authorize-workspace", async (req, res) => {
   }
   try {
     const selection = await validateWorkspaceDirectory(requestedPath);
+    registerAuthorizedRoots(selection.root, selection.realRoot);
     res.json({ ok: true, root: selection.root, realRoot: selection.realRoot, entries: selection.entries });
+  } catch (err: any) {
+    res.status(400).json({ ok: false, error: err.message || String(err) });
+  }
+});
+
+app.post("/api/companion/export-workspace", async (req, res) => {
+  const tokenHeader = req.headers["x-achu-companion-token"];
+  if (!COMPANION_TOKEN || !tokenHeader || tokenHeader !== COMPANION_TOKEN) {
+    res.status(401).json({ ok: false, error: "Unauthorized: a valid companion token is required to export workspace files" });
+    return;
+  }
+
+  const { workspaceRoot, maxFiles, maxFileBytes, maxTotalBytes } = req.body || {};
+  if (!workspaceRoot || typeof workspaceRoot !== "string") {
+    res.status(400).json({ ok: false, error: "Authorized workspaceRoot is required" });
+    return;
+  }
+
+  try {
+    const selection = await validateWorkspaceDirectory(workspaceRoot);
+    if (!isAuthorizedForExport(selection.root, selection.realRoot)) {
+      res.status(403).json({
+        ok: false,
+        error: "Workspace has not been authorized in this companion session. Select the folder again in the web app, then retry the import.",
+      });
+      return;
+    }
+
+    const ws = new Workspace(selection.root);
+    const result = await exportWorkspaceFiles(ws, {
+      maxFiles: typeof maxFiles === "number" ? maxFiles : undefined,
+      maxFileBytes: typeof maxFileBytes === "number" ? maxFileBytes : undefined,
+      maxTotalBytes: typeof maxTotalBytes === "number" ? maxTotalBytes : undefined,
+    });
+
+    console.log(
+      `[companion_export] Exported ${result.files.length} file(s) (${result.totalBytes} bytes) from authorized workspace: ${selection.root}` +
+      `${result.truncated ? " [truncated at limits]" : ""}`,
+    );
+
+    res.json({
+      ok: true,
+      root: selection.root,
+      realRoot: selection.realRoot,
+      files: result.files,
+      totalBytes: result.totalBytes,
+      truncated: result.truncated,
+      skipped: result.skipped,
+      limits: { ...DEFAULT_WORKSPACE_EXPORT_LIMITS },
+    });
   } catch (err: any) {
     res.status(400).json({ ok: false, error: err.message || String(err) });
   }
@@ -237,6 +343,11 @@ app.get("/api/companion/file-tree", async (req, res) => {
 });
 
 app.post("/api/companion/tasks", async (req, res) => {
+  const tokenHeader = req.headers["x-achu-companion-token"];
+  if (COMPANION_TOKEN && tokenHeader && tokenHeader !== COMPANION_TOKEN) {
+    res.status(401).json({ ok: false, error: "Unauthorized: Invalid companion token" });
+    return;
+  }
   const { task, workspaceRoot, taskId: clientTaskId } = req.body || {};
   if (!task || typeof task !== "string" || !task.trim()) {
     res.status(400).json({ ok: false, error: "Task description is required" });
@@ -249,6 +360,7 @@ app.post("/api/companion/tasks", async (req, res) => {
   try {
     const selection = await validateWorkspaceDirectory(workspaceRoot);
     const effectiveRoot = selection.root;
+    registerAuthorizedRoots(selection.root, selection.realRoot);
 
     // Check if task is already running in this workspace
     const existing = Array.from(activeTasks.values()).find(
@@ -423,6 +535,11 @@ async function terminateTaskProcess(task: LocalTaskRecord): Promise<void> {
 }
 
 app.post("/api/companion/tasks/:taskId/stop", async (req, res) => {
+  const tokenHeader = req.headers["x-achu-companion-token"];
+  if (COMPANION_TOKEN && tokenHeader && tokenHeader !== COMPANION_TOKEN) {
+    res.status(401).json({ ok: false, error: "Unauthorized: Invalid companion token" });
+    return;
+  }
   let task = activeTasks.get(req.params.taskId);
   if (!task && (req.params.taskId === "active" || req.params.taskId === "current")) {
     task = Array.from(activeTasks.values()).find(t => t.status === "RUNNING");
@@ -443,7 +560,13 @@ app.post("/api/companion/tasks/:taskId/stop", async (req, res) => {
 
 app.use(express.static(path.join(__dirname, "../public")));
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  const origin = req?.headers?.origin;
+  if (origin && !isAllowedOrigin(origin)) {
+    console.warn(`[companion_security] Rejected WebSocket connection from unauthorized origin: ${origin}`);
+    ws.close(1008, "Origin not allowed");
+    return;
+  }
   const client: ClientConnection = {
     ws,
     workspaceRoot: null,
@@ -510,6 +633,7 @@ async function handleMessage(client: ClientConnection, message: any) {
         }
         await fs.promises.mkdir(targetDir, { recursive: true });
         const selection = await validateWorkspaceDirectory(targetDir);
+        registerAuthorizedRoots(selection.root, selection.realRoot);
         client.workspaceRoot = selection.root;
         client.currentSessionId = null;
         client.currentTaskId = null;
@@ -560,6 +684,7 @@ async function handleMessage(client: ClientConnection, message: any) {
 
         // Never fall back to another directory: invalid selections fail loudly.
         const selection = await validateWorkspaceDirectory(String(projectPath));
+        registerAuthorizedRoots(selection.root, selection.realRoot);
         client.workspaceRoot = selection.root;
         client.currentSessionId = null;
         client.currentTaskId = null;
@@ -947,6 +1072,7 @@ async function handleMessage(client: ClientConnection, message: any) {
       if (explicitWorkspace) {
         try {
           const selection = await validateWorkspaceDirectory(explicitWorkspace);
+          registerAuthorizedRoots(selection.root, selection.realRoot);
           client.workspaceRoot = selection.root;
         } catch (err: any) {
           sendEvent(client.ws, "error", { message: `Invalid workspace directory: ${err.message}` });
@@ -969,6 +1095,7 @@ async function handleMessage(client: ClientConnection, message: any) {
         }
         await fs.promises.mkdir(targetDir, { recursive: true });
         const selection = await validateWorkspaceDirectory(targetDir);
+        registerAuthorizedRoots(selection.root, selection.realRoot);
         client.workspaceRoot = selection.root;
         client.currentSessionId = null;
         client.currentTaskId = null;
