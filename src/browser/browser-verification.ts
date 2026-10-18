@@ -709,7 +709,7 @@ export async function runVerificationSuite(
     });
   }
 
-  // If no specific targets were provided, verify page actually inspected and loaded cleanly
+  // If no specific targets were provided, verify page actually inspected, styled, and loaded cleanly
   if (targets.length === 0) {
     const loadedCleanly = Boolean(
       pageInfoResult.success &&
@@ -724,6 +724,45 @@ export async function runVerificationSuite(
         ? `Page loaded cleanly: "${pageInfo?.title || 'Untitled'}"`
         : (isDirectoryListing ? "Page served as a directory listing" : pageInfoResult.success ? "Page appears blank or failed to render" : pageInfoResult.error),
     });
+
+    // Visual and styling quality checks (only when styleAnalysis is available from live browser)
+    if (pageInfo && pageInfo.styleAnalysis) {
+      const { stylesheetCount, totalRules, fontFamily, semanticElementsCount } = pageInfo.styleAnalysis;
+
+      // Check if stylesheet is loaded and active
+      if (stylesheetCount === 0 && totalRules === 0) {
+        results.push({
+          passed: false,
+          target: { type: "text", text: "CSS Stylesheet Check" },
+          error: "Page is completely unstyled. No external stylesheets or active CSS rules were found. Link styles.css in index.html (<link rel=\"stylesheet\" href=\"styles.css\">) and implement modern CSS rules.",
+        });
+      } else if (totalRules < 8) {
+        results.push({
+          passed: false,
+          target: { type: "text", text: "CSS Styling Completeness" },
+          error: `Page styling is basic or minimal (only ${totalRules} CSS rule(s) found). Implement comprehensive modern styling in styles.css covering colors, layout, typography, cards, and responsive media queries.`,
+        });
+      }
+
+      // Check if body is using unstyled default serif
+      const isUnstyledSerif = !fontFamily || /^(times new roman|times|serif)$/i.test(fontFamily.trim().toLowerCase());
+      if (isUnstyledSerif && totalRules < 20) {
+        results.push({
+          passed: false,
+          target: { type: "text", text: "Typography Styling Check" },
+          error: `Page is using default unstyled browser serif typography ("${fontFamily || 'none'}"). Set a modern font family in styles.css (e.g. system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif).`,
+        });
+      }
+
+      // Check for semantic structural richness
+      if (pageInfo.visibleText && pageInfo.visibleText.trim().split(/\s+/).length < 15 && semanticElementsCount < 2) {
+        results.push({
+          passed: false,
+          target: { type: "text", text: "Page Content Completeness" },
+          error: "Page content appears incomplete or bare (fewer than 15 words of text and minimal semantic layout). Implement full content sections (header, hero, sections, footer) requested by the user.",
+        });
+      }
+    }
   }
 
   // Check for fatal console errors
@@ -775,7 +814,13 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
 
   // Helper to add target if not already present (avoid duplicates)
   const addTarget = (target: VerificationTarget) => {
-    const exists = targets.some(t => t.type === target.type && t.text === target.text && t.url === target.url);
+    const exists = targets.some(t =>
+      t.type === target.type &&
+      t.text === target.text &&
+      t.url === target.url &&
+      t.selector === target.selector &&
+      t.inputType === target.inputType
+    );
     if (!exists) targets.push(target);
   };
 
@@ -884,6 +929,27 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
         addTarget({ type: "route", url: route.toLowerCase(), required: true });
       }
     }
+  }
+
+  // Handle common natural-language web UI patterns
+  if (/\bemail\s+(input|field)\b/i.test(task)) {
+    addTarget({ type: "input", inputType: "email", selector: 'input[type="email"], #email', required: true });
+  }
+  if (/\bpassword\s+(input|field)\b/i.test(task)) {
+    addTarget({ type: "input", inputType: "password", selector: 'input[type="password"], #password', required: true });
+  }
+  if (/\b(login|sign[\s-]?in)\s+(button|btn)\b/i.test(task) || /\bbutton\s+to\s+(login|sign[\s-]?in)\b/i.test(task)) {
+    addTarget({ type: "button", text: "Login", required: true });
+  } else if (/\b(submit|send)\s+(button|btn)\b/i.test(task)) {
+    addTarget({ type: "button", text: "Submit", required: true });
+  }
+
+  // If user explicitly asks for a login page or form
+  if (/\b(login|sign[\s-]?in)\s+(page|form)\b/i.test(task)) {
+    addTarget({ type: "heading", text: "Login", required: true });
+    addTarget({ type: "input", inputType: "email", selector: 'input[type="email"], #email', required: true });
+    addTarget({ type: "input", inputType: "password", selector: 'input[type="password"], #password', required: true });
+    addTarget({ type: "button", text: "Login", required: true });
   }
 
   return targets;

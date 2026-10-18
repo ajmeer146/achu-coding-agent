@@ -128,6 +128,7 @@ export type AgentState = {
     };
     snapshotManager: SnapshotManager;
     rollbackRequested?: boolean;
+    taskPrompt?: string;
   };
 
 const DEFAULT_MAX_STEPS = 30;
@@ -681,10 +682,7 @@ if (isAppOrGenericTask) {
       }
 
       const hasExplicitReact = /\b(react|vite|next|spa)\b/i.test(lowerTask);
-      const isReactIntent = hasExplicitReact || (
-        (/\b(portfolio|dashboard|saas|landing page|store|e-?commerc\w*|devshowcase)\b/i.test(lowerTask) && !/\b(plain|pure|vanilla)\s+html\b/i.test(lowerTask)) &&
-        !/\bindex\.html\b|styles?\.css|\bstatic\b/i.test(lowerTask)
-      );
+      const isReactIntent = hasExplicitReact;
 
       if (hasAppBuild || hasAppCreate || isGenericAppTask) {
         if (!isExistingProject) {
@@ -1551,19 +1549,30 @@ Your job:
 CREATIVE AND DISTINCTIVE UI GENERATION:
 - When asked to build a website, landing page, login page, dashboard, portfolio, or web application:
   1. ALWAYS link styles.css in index.html (<link rel="stylesheet" href="styles.css">) and script.js (<script src="script.js" defer></script>).
-  2. Implement polished, production-grade styling in styles.css:
+  2. Implement rich, complete semantic HTML in index.html:
+     - Navigation header (<header><nav>): Brand/logo, navigation links, and call-to-action button.
+     - Hero section: Bold headline, clear subtitle/tagline, primary and secondary action buttons, and visual highlights.
+     - Substantive content sections: For portfolios (projects showcase cards with tags/links, skills grid, about, contact); for landing pages (features grid with icons, stats/metrics, testimonials/social proof, pricing/CTA); for dashboards (sidebar/topbar nav, KPI stats cards, data table/cards, filter controls); for login/signup (centered card, input fields with labels and validation message containers, action buttons).
+     - Semantic footer (<footer>): Links, branding, and copyright.
+     - Never output bare skeletons with 1 card and 1 sentence. Deliver substantive, realistic content matching the user request.
+  3. Implement polished, production-grade styling in styles.css:
      - Comprehensive box-sizing reset (*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }).
      - Modern typography stack (system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif) with clear hierarchy and comfortable line-height.
+     - Design tokens at :root (--bg, --card-bg, --text-primary, --text-secondary, --accent, --accent-hover, --border, --shadow).
      - Cohesive modern color palette: dark slate aesthetic (e.g. #0b0f19 background, #1e293b card, #38bdf8 / #3b82f6 accent) or crisp clean light theme.
-     - Responsive container: centered card layout (flexbox/grid, min-height: 100vh), subtle borders, soft box-shadows, and smooth border-radius.
+     - Responsive layouts: Flexbox for navigation and toolbars; CSS Grid (grid-template-columns: repeat(auto-fit, minmax(280px, 1fr))) for cards and features.
+     - Card design: subtle borders, soft shadows, rounded corners (8-12px), and smooth hover lift transitions (transform: translateY(-4px)).
      - Form design: full-width inputs with comfortable padding, visible focus rings with transitions (outline: none; border-color: accent; box-shadow: 0 0 0 3px rgba(accent, 0.2)).
      - Action buttons: prominent primary buttons with hover/active transitions, cursor: pointer, and accessible contrast.
-     - Mobile responsiveness: media queries ensuring touch targets and layouts fit mobile screens (<480px).
-  3. Implement functional, clean client-side logic in script.js:
+     - Mobile responsiveness: media queries ensuring touch targets (min 44px) and stacked layouts for mobile screens (@media (max-width: 768px)).
+     - Stylesheet must contain comprehensive rules covering all page elements (at least 25-50 CSS rules).
+  4. Implement functional, clean client-side logic in script.js:
      - Form submit handlers preventing default reload (e.preventDefault()) and demonstrating interactive validation feedback.
+     - Interactive toggles: theme toggle (dark/light mode), mobile menu toggle, or filter tabs.
      - Password visibility toggles where password inputs exist (toggling type="password" <-> "text" with eye icon update).
      - Clear visual feedback for errors or successful actions.
-  4. Ensure all files are correctly interconnected before concluding execution.
+  5. Browser verification inspects CSS rules, typography, computed styles, semantic elements, and content richness. An unstyled page or bare skeleton will FAIL verification.
+  6. Ensure all files are correctly interconnected before concluding execution.
 - Understand the product purpose, audience, and required features before starting.
 - Make deliberate design decisions: vary layout composition, typography/font pairings, color palette, and spacing.
 - Use distinct visual directions matching the brief.
@@ -2532,9 +2541,10 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         // An explicitly provided empty targets array is treated the same as no
         // targets: derive assertions from the plan instead of trivially passing.
         const providedTargets = Array.isArray(args.targets) ? (args.targets as VerificationTarget[]) : null;
+        const promptForTargets = [state.taskPrompt, state.currentPlan.map(s => s.description).join(" ")].filter(Boolean).join(" ");
         const targets = providedTargets && providedTargets.length > 0
           ? providedTargets
-          : generateVerificationTargetsFromTask(state.currentPlan.map(s => s.description).join(" "));
+          : generateVerificationTargetsFromTask(promptForTargets);
         console.log(chalk.gray(`Running browser verification at ${baseUrl}...`));
         console.log(chalk.gray(`Navigating to ${baseUrl}...`));
         const navResult = await state.browserSession.navigate(baseUrl);
@@ -2784,6 +2794,7 @@ export async function runAgent(
       recentToolCalls: [],
       projectState: sessionProjectState,
       snapshotManager,
+      taskPrompt: task,
     };
   } else {
     initialPlan = initializePlan(task, existingProjectInfo);
@@ -2825,6 +2836,7 @@ export async function runAgent(
           isFollowUpTask: existingProjectInfo.hasProject && isFollowUpTask,
         },
         snapshotManager,
+        taskPrompt: task,
       };
   }
 

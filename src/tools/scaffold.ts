@@ -470,17 +470,84 @@ export async function scaffoldStaticProject(
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header>
-    <h1>${title}</h1>
-    <p>A modern, interactive web application</p>
+  <header class="navbar">
+    <div class="nav-container">
+      <a href="#" class="brand-logo">${title}</a>
+      <nav class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#about">About</a>
+        <a href="#contact">Contact</a>
+        <a href="#contact" class="btn btn-primary btn-sm">Get Started</a>
+      </nav>
+    </div>
   </header>
+
   <main>
-    <section class="card">
-      <h2>Overview</h2>
-      <p>Welcome to ${title}.</p>
+    <section class="hero-section">
+      <div class="hero-badge">Modern Web Application</div>
+      <h1 class="hero-title">${title}</h1>
+      <p class="hero-subtitle">A high-performance, beautifully designed, and responsive web application built with modern standards.</p>
+      <div class="hero-actions">
+        <a href="#features" class="btn btn-primary">Explore Features</a>
+        <a href="#contact" class="btn btn-secondary">Contact Us</a>
+      </div>
+    </section>
+
+    <section id="features" class="features-section">
+      <div class="section-header">
+        <h2>Key Features</h2>
+        <p>Everything you need for a fast, responsive user experience.</p>
+      </div>
+      <div class="cards-grid">
+        <article class="feature-card">
+          <div class="card-icon">⚡</div>
+          <h3>High Performance</h3>
+          <p>Optimized for lightning-fast load times and smooth client-side interactions.</p>
+        </article>
+        <article class="feature-card">
+          <div class="card-icon">🎨</div>
+          <h3>Polished Design</h3>
+          <p>Clean modern aesthetic, balanced typography, and responsive layouts across all devices.</p>
+        </article>
+        <article class="feature-card">
+          <div class="card-icon">🔒</div>
+          <h3>Secure &amp; Reliable</h3>
+          <p>Built with robust validation, semantic structure, and accessible components.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="contact" class="contact-section">
+      <div class="contact-card">
+        <h2>Get in Touch</h2>
+        <p>Send a message and we'll respond promptly.</p>
+        <form id="contact-form" class="contact-form">
+          <div class="form-group">
+            <label for="name">Your Name</label>
+            <input type="text" id="name" name="name" placeholder="Jane Doe" required>
+          </div>
+          <div class="form-group">
+            <label for="email">Email Address</label>
+            <input type="email" id="email" name="email" placeholder="jane@example.com" required>
+          </div>
+          <div class="form-group">
+            <label for="message">Message</label>
+            <textarea id="message" name="message" rows="3" placeholder="Tell us about your project..." required></textarea>
+          </div>
+          <button type="submit" id="submit-btn" class="btn btn-primary btn-block">Send Message</button>
+          <div id="form-feedback" class="form-feedback" role="alert" style="display:none;"></div>
+        </form>
+      </div>
     </section>
   </main>
-  <script src="script.js"></script>
+
+  <footer class="footer">
+    <div class="footer-container">
+      <p>&copy; ${new Date().getFullYear()} ${title}. All rights reserved.</p>
+    </div>
+  </footer>
+
+  <script src="script.js" defer></script>
 </body>
 </html>
 `;
@@ -488,33 +555,317 @@ export async function scaffoldStaticProject(
     filesCreated.push("index.html");
 
     // 3. styles.css
-    const stylesCss = `body {
+    const stylesCss = `/* Design Tokens */
+:root {
+  --bg-primary: #0b0f19;
+  --bg-surface: #131c2e;
+  --bg-card: #1e293b;
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --accent-primary: #38bdf8;
+  --accent-hover: #0ea5e9;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --shadow-card: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
+  --radius-md: 12px;
+  --radius-sm: 8px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
   margin: 0;
-  font-family: system-ui, -apple-system, sans-serif;
-  background-color: #0f172a;
-  color: #f8fafc;
+  padding: 0;
 }
-header {
-  padding: 3rem 2rem;
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.6;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Navigation */
+.navbar {
+  background: rgba(11, 15, 25, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-subtle);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.nav-container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.brand-logo {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+.nav-links a:not(.btn) {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.95rem;
+  transition: color 0.2s ease;
+}
+.nav-links a:not(.btn):hover {
+  color: var(--accent-primary);
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.5rem;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 0.95rem;
+  text-decoration: none;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-primary {
+  background-color: var(--accent-primary);
+  color: #0b0f19;
+}
+.btn-primary:hover {
+  background-color: var(--accent-hover);
+  transform: translateY(-2px);
+}
+.btn-secondary {
+  background-color: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+}
+.btn-secondary:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  transform: translateY(-2px);
+}
+.btn-sm {
+  padding: 0.4rem 1rem;
+  font-size: 0.85rem;
+}
+.btn-block {
+  width: 100%;
+}
+
+/* Hero Section */
+.hero-section {
   text-align: center;
-  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  padding: 5rem 1.5rem 3.5rem;
+  max-width: 800px;
+  margin: 0 auto;
 }
-main {
-  max-width: 900px;
-  margin: 2rem auto;
+.hero-badge {
+  display: inline-block;
+  padding: 0.35rem 0.85rem;
+  border-radius: 9999px;
+  background: rgba(56, 189, 248, 0.1);
+  color: var(--accent-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 1.5rem;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+.hero-title {
+  font-size: 2.75rem;
+  line-height: 1.2;
+  font-weight: 800;
+  margin-bottom: 1.25rem;
+  letter-spacing: -0.02em;
+}
+.hero-subtitle {
+  font-size: 1.15rem;
+  color: var(--text-secondary);
+  margin-bottom: 2rem;
+}
+.hero-actions {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+/* Features Section */
+.features-section {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 4rem 1.5rem;
+}
+.section-header {
+  text-align: center;
+  margin-bottom: 3rem;
+}
+.section-header h2 {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+}
+.section-header p {
+  color: var(--text-secondary);
+}
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+}
+.feature-card {
+  background: var(--bg-card);
+  padding: 2rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-card);
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+.feature-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(56, 189, 248, 0.3);
+}
+.card-icon {
+  font-size: 2rem;
+  margin-bottom: 1rem;
+}
+.feature-card h3 {
+  font-size: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+.feature-card p {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+/* Contact Section */
+.contact-section {
+  max-width: 540px;
+  margin: 2rem auto 5rem;
   padding: 0 1.5rem;
 }
-.card {
-  background: #1e293b;
-  padding: 2rem;
-  border-radius: 12px;
+.contact-card {
+  background: var(--bg-surface);
+  padding: 2.5rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-card);
+}
+.contact-card h2 {
+  margin-bottom: 0.5rem;
+}
+.contact-card > p {
+  color: var(--text-secondary);
+  margin-bottom: 1.75rem;
+  font-size: 0.95rem;
+}
+.contact-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.form-group label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.form-group input,
+.form-group textarea {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.95rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.form-group input:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
+}
+.form-feedback {
+  padding: 0.75rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  text-align: center;
+}
+.form-feedback.success {
+  background: rgba(34, 197, 94, 0.1);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+/* Footer */
+.footer {
+  margin-top: auto;
+  border-top: 1px solid var(--border-subtle);
+  padding: 2rem 1.5rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+  .hero-title {
+    font-size: 2.1rem;
+  }
+  .nav-links a:not(.btn) {
+    display: none;
+  }
 }
 `;
     await workspace.write("styles.css", stylesCss);
     filesCreated.push("styles.css");
 
     // 4. script.js
-    const scriptJs = `console.log("${title} loaded successfully.");\n`;
+    const scriptJs = `document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('contact-form');
+  const feedback = document.getElementById('form-feedback');
+
+  if (form) {
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const name = document.getElementById('name')?.value.trim();
+      const email = document.getElementById('email')?.value.trim();
+      const message = document.getElementById('message')?.value.trim();
+
+      if (!name || !email || !message) {
+        if (feedback) {
+          feedback.style.display = 'block';
+          feedback.className = 'form-feedback error';
+          feedback.textContent = 'Please complete all required fields.';
+        }
+        return;
+      }
+
+      if (feedback) {
+        feedback.style.display = 'block';
+        feedback.className = 'form-feedback success';
+        feedback.textContent = \`Thank you, \${name}! Your message has been received.\`;
+      }
+      form.reset();
+    });
+  }
+});
+`;
     await workspace.write("script.js", scriptJs);
     filesCreated.push("script.js");
 

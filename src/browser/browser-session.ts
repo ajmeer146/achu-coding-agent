@@ -148,8 +148,8 @@ export class BrowserSession {
         return document.body.innerText;
       });
 
-      // Get interactive elements: buttons, inputs, links, selects, textareas
-      const [buttons, inputs, links, selects, textareas] = await Promise.all([
+      // Get interactive elements: buttons, inputs, links, selects, textareas, styles
+      const evalResults = await Promise.all([
         // Buttons: button elements and elements with role="button"
         this.page.$$eval('button, [role="button"]', els => els.map(el => el.textContent?.trim() ?? '').filter(t => t.length > 0)),
         // Inputs: input elements and elements with role="textbox"
@@ -179,8 +179,56 @@ export class BrowserSession {
             placeholder: textarea.placeholder ?? '',
             name: textarea.name ?? ''
           };
-        }))
+        })),
+        // Style and structural analysis
+        this.page.evaluate(() => {
+          let totalRules = 0;
+          let stylesheetCount = document.styleSheets ? document.styleSheets.length : 0;
+          try {
+            for (let i = 0; i < stylesheetCount; i++) {
+              try {
+                const sheet = document.styleSheets[i];
+                if (sheet && sheet.cssRules) {
+                  totalRules += sheet.cssRules.length;
+                }
+              } catch {
+                // cross-origin access limitation
+              }
+            }
+          } catch {}
+
+          let fontFamily = "";
+          let backgroundColor = "";
+          let color = "";
+          try {
+            if (document.body) {
+              const cs = window.getComputedStyle(document.body);
+              fontFamily = cs.fontFamily || "";
+              backgroundColor = cs.backgroundColor || "";
+              color = cs.color || "";
+            }
+          } catch {}
+
+          const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4'))
+            .map(h => (h.textContent || '').trim())
+            .filter(Boolean);
+
+          const semanticTags = Array.from(document.querySelectorAll('header, nav, main, section, article, footer, form, .card, [class*="hero"], [class*="container"]'))
+            .map(el => el.tagName.toLowerCase());
+
+          return {
+            stylesheetCount,
+            totalRules,
+            fontFamily,
+            backgroundColor,
+            color,
+            headings: headings.slice(0, 15),
+            semanticElementsCount: semanticTags.length,
+          };
+        })
       ]);
+
+      const [buttons, inputs, links, selects, textareas, styleAnalysis] = evalResults;
 
       const info: PageInfo = {
         url,
@@ -192,7 +240,8 @@ export class BrowserSession {
         selects: selects.slice(0, 20),
         textareas: textareas.slice(0, 20),
         consoleErrors: [...this.consoleErrors],
-        pageErrors: [...this.pageErrors]
+        pageErrors: [...this.pageErrors],
+        styleAnalysis,
       };
 
       return { success: true, info };
@@ -370,4 +419,13 @@ export interface PageInfo {
   textareas: Array<{ placeholder: string; name: string }>;
   consoleErrors: string[];
   pageErrors: string[];
+  styleAnalysis?: {
+    stylesheetCount: number;
+    totalRules: number;
+    fontFamily: string;
+    backgroundColor: string;
+    color: string;
+    headings: string[];
+    semanticElementsCount: number;
+  };
 }
