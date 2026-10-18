@@ -1548,10 +1548,24 @@ Your job:
 7. Continue fixing source-code errors when the exact verification fails for a source-code reason.
 
 CREATIVE AND DISTINCTIVE UI GENERATION:
-- When asked to build a website, landing page, dashboard, portfolio, or e-commerce interface, do NOT generate generic layouts.
+- When asked to build a website, landing page, login page, dashboard, portfolio, or web application:
+  1. ALWAYS link styles.css in index.html (<link rel="stylesheet" href="styles.css">) and script.js (<script src="script.js" defer></script>).
+  2. Implement polished, production-grade styling in styles.css:
+     - Comprehensive box-sizing reset (*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }).
+     - Modern typography stack (system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif) with clear hierarchy and comfortable line-height.
+     - Cohesive modern color palette: dark slate aesthetic (e.g. #0b0f19 background, #1e293b card, #38bdf8 / #3b82f6 accent) or crisp clean light theme.
+     - Responsive container: centered card layout (flexbox/grid, min-height: 100vh), subtle borders, soft box-shadows, and smooth border-radius.
+     - Form design: full-width inputs with comfortable padding, visible focus rings with transitions (outline: none; border-color: accent; box-shadow: 0 0 0 3px rgba(accent, 0.2)).
+     - Action buttons: prominent primary buttons with hover/active transitions, cursor: pointer, and accessible contrast.
+     - Mobile responsiveness: media queries ensuring touch targets and layouts fit mobile screens (<480px).
+  3. Implement functional, clean client-side logic in script.js:
+     - Form submit handlers preventing default reload (e.preventDefault()) and demonstrating interactive validation feedback.
+     - Password visibility toggles where password inputs exist (toggling type="password" <-> "text" with eye icon update).
+     - Clear visual feedback for errors or successful actions.
+  4. Ensure all files are correctly interconnected before concluding execution.
 - Understand the product purpose, audience, and required features before starting.
 - Make deliberate design decisions: vary layout composition, typography/font pairings, color palette, and spacing.
-- Use distinct visual directions (e.g. premium minimalism, expressive typography, enterprise SaaS) matching the brief.
+- Use distinct visual directions matching the brief.
 - Deliver functional and responsive websites with accessible buttons, forms, and interactions.
 - Avoid random gradients, unnecessary decorative elements, and generic placeholder text unless appropriate for the design.
 

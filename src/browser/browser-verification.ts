@@ -735,6 +735,18 @@ export async function runVerificationSuite(
     });
   }
 
+  // Check for asset loading failures (missing styles.css, script.js, images)
+  if (pageInfo && Array.isArray((pageInfo as any).pageErrors) && (pageInfo as any).pageErrors.length > 0) {
+    const failedAssets = ((pageInfo as any).pageErrors as string[]).filter(e => /Failed request|404|net::ERR/i.test(e));
+    if (failedAssets.length > 0) {
+      results.push({
+        passed: false,
+        target: { type: "text", text: "Asset loading check" },
+        error: `Required project assets failed to load: ${failedAssets.slice(0, 3).join("; ")}`,
+      });
+    }
+  }
+
   const overallPassed = results.length > 0 && !isDirectoryListing && results.every(r => r.passed);
 
   return {

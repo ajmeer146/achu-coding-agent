@@ -160,6 +160,56 @@ app.post("/api/companion/authorize-workspace", async (req, res) => {
   }
 });
 
+app.post("/api/companion/sync-artifacts", async (req, res) => {
+  const tokenHeader = req.headers["x-achu-companion-token"];
+  if (COMPANION_TOKEN && tokenHeader && tokenHeader !== COMPANION_TOKEN) {
+    res.status(401).json({ ok: false, error: "Unauthorized: Invalid companion token" });
+    return;
+  }
+
+  const { workspaceRoot, artifacts } = req.body || {};
+  if (!workspaceRoot || typeof workspaceRoot !== "string") {
+    res.status(400).json({ ok: false, error: "Authorized workspaceRoot is required" });
+    return;
+  }
+  if (!Array.isArray(artifacts) || artifacts.length === 0) {
+    res.status(400).json({ ok: false, error: "Artifacts array is required and must not be empty" });
+    return;
+  }
+
+  try {
+    const selection = await validateWorkspaceDirectory(workspaceRoot);
+    const ws = new Workspace(selection.root);
+    const writtenFiles: string[] = [];
+
+    for (const artifact of artifacts) {
+      if (!artifact || typeof artifact.path !== "string" || typeof artifact.content !== "string") {
+        continue;
+      }
+
+      // Safe relative path normalization
+      const cleanRel = artifact.path.replace(/\\/g, "/").replace(/^\/+/, "").trim();
+      if (cleanRel.includes("..") || /^[a-zA-Z]:[/\\]/.test(cleanRel)) {
+        res.status(400).json({ ok: false, error: `Invalid path traversal or absolute path escape: ${artifact.path}` });
+        return;
+      }
+
+      await ws.write(cleanRel, artifact.content);
+      writtenFiles.push(cleanRel);
+    }
+
+    console.log(`[companion_sync] Synchronized ${writtenFiles.length} files into authorized workspace: ${selection.root}`);
+    res.json({
+      ok: true,
+      root: selection.root,
+      syncedCount: writtenFiles.length,
+      files: writtenFiles,
+    });
+  } catch (err: any) {
+    res.status(400).json({ ok: false, error: err.message || String(err) });
+  }
+});
+
 app.get("/api/companion/browse", async (req, res) => {
   const targetPath = req.query.path ? String(req.query.path) : undefined;
   try {
