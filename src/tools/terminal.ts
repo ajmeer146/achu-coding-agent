@@ -68,8 +68,12 @@ export async function runCommand(
     throw new Error(validation.reason);
   }
 
-  // Normalize Unix commands to platform-appropriate equivalents
-  const { normalized, wasChanged, warning } = normalizeUnixCommand(command);
+  const isWindows = process.platform === "win32";
+  // On Windows, normalize Unix commands to PowerShell cmdlets.
+  // On POSIX (Linux/macOS), commands run natively in bash without PowerShell translation.
+  const { normalized, wasChanged, warning } = isWindows
+    ? normalizeUnixCommand(command)
+    : { normalized: command, wasChanged: false, warning: undefined };
   if (wasChanged && warning) {
     console.log(`[Command Normalization] ${warning}`);
   }

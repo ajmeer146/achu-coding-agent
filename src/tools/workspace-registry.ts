@@ -2,6 +2,7 @@ import { Workspace } from "./workspace.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
 
@@ -16,7 +17,16 @@ export class WorkspaceRegistry {
   private workspaceVolumeRoot: string;
 
   private constructor(volumeRoot?: string) {
-    this.workspaceVolumeRoot = volumeRoot || process.env.WORKSPACE_VOLUME_ROOT || "/workspaces";
+    let root = volumeRoot || process.env.WORKSPACE_VOLUME_ROOT;
+    if (!root) {
+      try {
+        fsSync.accessSync("/workspaces", fsSync.constants.W_OK);
+        root = "/workspaces";
+      } catch {
+        root = path.join(os.tmpdir(), "achu-workspaces");
+      }
+    }
+    this.workspaceVolumeRoot = root;
     const dbPath = path.join(this.workspaceVolumeRoot, ".registry", "workspaces.db");
     
     // Ensure registry directory exists

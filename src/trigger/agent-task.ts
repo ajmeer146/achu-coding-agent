@@ -1,4 +1,4 @@
-import { task } from "@trigger.dev/sdk";
+import { task, metadata } from "@trigger.dev/sdk";
 import { z } from "zod";
 import os from "node:os";
 import path from "node:path";
@@ -80,6 +80,7 @@ function getWorkspaceRegistry(): WorkspaceRegistry {
 export const codingAgentTask = task({
   id: "coding-agent-run",
   maxDuration: 1800, // 30 minutes max
+  machine: "small-2x",
   retry: {
     maxAttempts: 2,
     minTimeoutInMs: 30000, // 30 seconds
@@ -89,6 +90,10 @@ export const codingAgentTask = task({
   run: async (payload: AgentTaskPayload): Promise<AgentTaskResult> => {
     console.log(`[Trigger.dev] Starting coding agent task`);
     console.log(`[Trigger.dev] Task: ${payload.task}`);
+
+    metadata.set("step", 1);
+    metadata.set("stepName", "Preparing isolated workspace");
+    metadata.set("progress", 10);
 
     let workspace: Workspace | GitWorkspace;
 
@@ -214,13 +219,28 @@ export const codingAgentTask = task({
       console.log(`[Trigger.dev] Running agent with task: ${payload.task}`);
       console.log(`[Trigger.dev] Session ID: ${process.env.SESSION_ID}`);
 
+      metadata.set("step", 2);
+      metadata.set("stepName", "Planning and executing coding task");
+      metadata.set("progress", 30);
+
       // Run the agent - this will execute the full agent loop
       const result = await runAgent(payload.task, {
         maxSteps: payload.maxSteps,
         maxRecoveryAttempts: payload.maxRecoveryAttempts,
+        onProgress: (stepNum, stepName, log) => {
+          metadata.set("step", stepNum);
+          metadata.set("stepName", stepName);
+          if (log) {
+            metadata.set("latestLog", log);
+          }
+        },
       }) as AgentResult;
 
       console.log(`[Trigger.dev] Agent task completed`);
+
+      metadata.set("step", 5);
+      metadata.set("stepName", "Collecting generated artifacts");
+      metadata.set("progress", 90);
 
       let gitCommitted = false;
       let gitPushed = false;
@@ -235,16 +255,58 @@ export const codingAgentTask = task({
         error: "Agent execution did not produce a result",
       };
 
-      // Collect modified/created file artifacts to return to caller before cleanup
-      const artifacts: Array<{ path: string; content: string }> = [];
+      // Collect all modified/created project files from workspace root
+      const rootPath = getWorkspaceRoot(workspace);
+      const IGNORE_SCAN = new Set(["node_modules", ".git", ".achu-sessions", "dist", ".turbo", ".cache", ".registry"]);
+      const artifactsMap = new Map<string, string>();
+
+      async function scanDirectory(dir: string, relPrefix = "") {
+        try {
+          const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (IGNORE_SCAN.has(entry.name)) continue;
+            const full = path.join(dir, entry.name);
+            const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) {
+              if (artifactsMap.size < 250) {
+                await scanDirectory(full, rel);
+              }
+            } else if (entry.isFile()) {
+              if (artifactsMap.size < 250) {
+                try {
+                  const stat = await fs.promises.stat(full);
+                  if (stat.size < 2 * 1024 * 1024) {
+                    const content = await fs.promises.readFile(full, "utf8");
+                    artifactsMap.set(rel.replace(/\\/g, "/"), content);
+                  }
+                } catch {}
+              }
+            }
+          }
+        } catch {}
+      }
+
+      await scanDirectory(rootPath);
+
+      // Also ensure any explicitly modified file is captured
       for (const filePath of finalResult.filesModified) {
         try {
-          const fileContent = await workspace.read(filePath);
-          artifacts.push({ path: filePath, content: fileContent });
-        } catch {
-          // ignore if deleted
-        }
+          const normalized = filePath.replace(/\\/g, "/");
+          if (!artifactsMap.has(normalized)) {
+            const content = await workspace.read(filePath);
+            artifactsMap.set(normalized, content);
+          }
+        } catch {}
       }
+
+      const artifacts: Array<{ path: string; content: string }> = Array.from(artifactsMap.entries()).map(([p, c]) => ({
+        path: p,
+        content: c,
+      }));
+
+      metadata.set("step", 6);
+      metadata.set("stepName", "Completed");
+      metadata.set("progress", 100);
 
       // If using GitWorkspace, commit and push changes
       if (workspace instanceof GitWorkspace) {

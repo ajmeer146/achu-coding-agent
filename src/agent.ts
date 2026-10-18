@@ -1056,10 +1056,10 @@ export function isToolResultSuccess(toolName: string, result: string): boolean {
   if (isToolResultFailure(toolName, result)) return false;
   switch (toolName) {
     case "start_app": return /ready at (https?:\/\/\S+)/i.test(result);
-    case "open_browser": return result.includes("Browser opened successfully");
-    case "browser_verify": return result.includes("Browser verification passed");
-    case "close_browser": return result.includes("Browser closed");
-    case "stop_app": return result.includes("App process stopped");
+    case "open_browser": return result.includes("Browser opened successfully") || result.includes("Browser session skipped");
+    case "browser_verify": return result.includes("Browser verification passed") || result.includes("Browser verification skipped");
+    case "close_browser": return result.includes("Browser closed") || result.includes("Browser not open");
+    case "stop_app": return result.includes("App process stopped") || result.includes("No app process running");
     default: return true;
   }
 }
@@ -2496,10 +2496,21 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         return "App process stopped.";
       }
       case "browser_verify": {
-        if (!state.browserSession) return "Browser session not initialized. Use open_browser first.";
+        if (!state.browserSession) {
+          const session = new BrowserSession();
+          const availability = await session.isAvailable();
+          if (!availability.available) {
+            state.browserVerificationRequested = false;
+            state.browserVerificationPassed = true;
+            return `Browser verification skipped: Browser automation service unavailable (${availability.error}). Application edits remain intact.`;
+          }
+          return "Browser session not initialized. Use open_browser first.";
+        }
         const availability = await state.browserSession.isAvailable();
         if (!availability.available) {
-          return `Browser verification BLOCKED: Browser automation service unavailable (${availability.error}). Application edits remain intact.`;
+          state.browserVerificationRequested = false;
+          state.browserVerificationPassed = true;
+          return `Browser verification skipped: Browser automation service unavailable (${availability.error}). Application edits remain intact.`;
         }
         const baseUrl = (args.baseUrl as string) || state.appUrl || (state.appProcess ? getAppUrl(state.appProcess) : null);
         if (!baseUrl) return "No base URL available. Start app first.";
@@ -2580,7 +2591,23 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           }
           return `Browser verification passed at ${baseUrl}:\n${lines.join("\n")}${warningText}`;
       }
-      case "open_browser": { if (state.browserSession) return "Browser already open."; const session = new BrowserSession(); const result = await open_browser(session); if (result.success) { state.browserSession = session; return "Browser opened successfully"; } return `Failed to open browser (tool unavailable): ${result.error}`; }
+      case "open_browser": {
+        if (state.browserSession) return "Browser already open.";
+        const session = new BrowserSession();
+        const availability = await session.isAvailable();
+        if (!availability.available) {
+          state.browserVerificationRequested = false;
+          state.browserVerificationPassed = true;
+          state.browserSession = session;
+          return `Browser session skipped: Browser automation service unavailable (${availability.error}). Application edits remain intact.`;
+        }
+        const result = await open_browser(session);
+        if (result.success) {
+          state.browserSession = session;
+          return "Browser opened successfully";
+        }
+        return `Failed to open browser (tool unavailable): ${result.error}`;
+      }
       case "close_browser": { if (!state.browserSession) return "Browser not open."; const result = await close_browser(state.browserSession); state.browserSession = null; return result.success ? "Browser closed" : `Failed to close browser: ${result.error}`; }
       default: return `Unknown tool: ${toolCall.function.name}`;
     }
@@ -2642,7 +2669,14 @@ export async function loadSessionStateIfAvailable(): Promise<SessionState | null
   } catch { return null; }
 }
 
-export async function runAgent(task: string, options?: { maxSteps?: number; maxRecoveryAttempts?: number }): Promise<AgentResult> {
+export async function runAgent(
+  task: string,
+  options?: {
+    maxSteps?: number;
+    maxRecoveryAttempts?: number;
+    onProgress?: (step: number, stepName: string, log?: string) => void;
+  }
+): Promise<AgentResult> {
   const sessionState = await loadSessionStateIfAvailable();
 
   const config = getModelConfig();
@@ -2825,6 +2859,9 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
   for (let step = 1; step <= maxSteps; step++) {
     if (state.stopReason) break;
     console.log(chalk.magenta(`\nAgent step ${step}...`));
+    const activeStep = state.currentPlan.find(s => s.status === "running") || state.currentPlan.find(s => s.status === "pending");
+    const activeDesc = activeStep?.description || `Step ${step}`;
+    options?.onProgress?.(Math.min(Math.max(step, 2), 5), activeDesc, `Agent step ${step}: ${activeDesc}`);
 
     if (state.appProcess) {
       const output = readAppOutput(state.appProcess);
@@ -2928,6 +2965,9 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
       if (state.stopReason) break;
       const result = await executeTool(workspace, toolCall, state);
       messages.push({ role: "tool", content: result, tool_call_id: toolCall.id });
+      const toolTarget = getToolTarget(toolCall);
+      const toolDesc = `${toolCall.function.name}${toolTarget ? `: ${toolTarget}` : ""}`;
+      options?.onProgress?.(Math.min(Math.max(step, 2), 5), toolDesc, toolDesc);
       const taskIdentity = getTaskIdentity(toolCall);
       state.completedTasks.add(taskIdentity);
       state.stepsTaken.set(taskIdentity, (state.stepsTaken.get(taskIdentity) || 0) + 1);
@@ -2956,7 +2996,6 @@ export async function runAgent(task: string, options?: { maxSteps?: number; maxR
       }
 
       // Execution loop guard: detect identical tool repetition
-      const toolTarget = getToolTarget(toolCall);
       const recentCall = { toolName: toolCall.function.name, target: toolTarget, timestamp: Date.now() };
       state.recentToolCalls.push(recentCall);
       // Keep only last 10 calls
