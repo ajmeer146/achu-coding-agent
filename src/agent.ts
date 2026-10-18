@@ -1183,6 +1183,7 @@ async function executePendingVerificationStep(
   };
 
   const result = await executeTool(workspace, toolCall, state);
+  messages.push({ role: "assistant", content: null, tool_calls: [toolCall] });
   messages.push({ role: "tool", content: result, tool_call_id: toolCall.id });
 
   const taskIdentity = getTaskIdentity(toolCall);
@@ -3037,16 +3038,42 @@ export async function runAgent(
       // trigger cleanup or complete lifecycle steps.
       if (toolCall.function.name === "browser_verify" && result.includes("Browser verification passed")) {
         const closeStep = state.currentPlan.find(s => s.toolType === "close_browser" && s.status !== "completed");
-        if (closeStep) { console.log(chalk.gray(`Auto-executing cleanup: close_browser`)); const closeResult = await executeTool(workspace, { id: `auto-${Date.now()}`, type: "function", function: { name: "close_browser", arguments: "{}" } }, state); messages.push({ role: "tool", content: closeResult, tool_call_id: `auto-${Date.now()}` }); state.currentPlan = updatePlanProgress(state.currentPlan, state.completedTasks, { id: `auto-${Date.now()}`, type: "function", function: { name: "close_browser", arguments: "{}" } }, closeResult); }
+        if (closeStep) {
+          console.log(chalk.gray(`Auto-executing cleanup: close_browser`));
+          if (state.browserSession) {
+            try {
+              await close_browser(state.browserSession);
+            } catch (err) {
+              console.warn("Failed to close browser during auto-cleanup:", err);
+            }
+            state.browserSession = null;
+          }
+          closeStep.status = "completed";
+          state.completedTasks.add("close_browser");
+        }
         // For web-app lifecycle tasks, keep the development server running for Live Preview.
         // Mark stop_app as completed (we intentionally don't run it) so plan completes.
         const isWebAppLifecycle = state.currentPlan.some(s => s.toolType === "start_app" || s.toolType === "browser_verify");
         if (isWebAppLifecycle) {
           const stopStep = state.currentPlan.find(s => s.toolType === "stop_app" && s.status !== "completed");
-          if (stopStep) { stopStep.status = "completed"; console.log(chalk.gray(`Web-app lifecycle: stop_app marked completed (server stays running for Live Preview)`)); }
+          if (stopStep) {
+            stopStep.status = "completed";
+            console.log(chalk.gray(`Web-app lifecycle: stop_app marked completed (server stays running for Live Preview)`));
+          }
         } else {
           const stopStep = state.currentPlan.find(s => s.toolType === "stop_app" && s.status !== "completed");
-          if (stopStep) { console.log(chalk.gray(`Auto-executing cleanup: stop_app`)); const stopResult = await executeTool(workspace, { id: `auto-${Date.now() + 1}`, type: "function", function: { name: "stop_app", arguments: "{}" } }, state); messages.push({ role: "tool", content: stopResult, tool_call_id: `auto-${Date.now() + 1}` }); state.currentPlan = updatePlanProgress(state.currentPlan, state.completedTasks, { id: `auto-${Date.now() + 1}`, type: "function", function: { name: "stop_app", arguments: "{}" } }, stopResult); }
+          if (stopStep) {
+            console.log(chalk.gray(`Auto-executing cleanup: stop_app`));
+            if (state.appProcess && state.appProcess.status !== "stopped") {
+              try {
+                await cleanupAppProcess();
+              } catch (err) {
+                console.warn("Failed to stop app during auto-cleanup:", err);
+              }
+            }
+            stopStep.status = "completed";
+            state.completedTasks.add("stop_app");
+          }
         }
       }
 
