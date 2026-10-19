@@ -15,7 +15,7 @@ export type FileTreeNode = {
  * Directories that are large, generated, or not part of the user's source and
  * therefore excluded from the file tree to keep it responsive.
  */
-const IGNORED_DIRECTORIES = new Set([
+export const IGNORED_DIRECTORIES = new Set([
   "node_modules",
   ".git",
   ".hg",

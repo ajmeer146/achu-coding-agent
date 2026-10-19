@@ -24,6 +24,76 @@ import { SessionData, SessionMetadata } from "./session/session-types.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function loadLocalEnv(): void {
+  const candidateEnvPaths = [
+    path.join(os.homedir(), ".achu", ".env"),
+    path.join(os.homedir(), ".achu", "agent.env"),
+    path.join(__dirname, ".env"),
+    path.join(__dirname, "..", ".env"),
+    path.resolve(process.cwd(), ".env"),
+    path.resolve(process.cwd(), "..", ".env"),
+    "C:\\Users\\Achu146\\achu-coding-agent\\.env",
+    "C:\\Users\\Achu146\\OneDrive\\Desktop\\works-with-achu-v2\\.env",
+  ];
+  for (const envPath of candidateEnvPaths) {
+    if (fs.existsSync(envPath)) {
+      try {
+        const content = fs.readFileSync(envPath, "utf8");
+        const lines = content.split(/\r?\n/);
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          const eqIdx = trimmed.indexOf("=");
+          if (eqIdx > 0) {
+            const key = trimmed.slice(0, eqIdx).trim();
+            const val = trimmed.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, "");
+            if (!process.env[key] && val) {
+              process.env[key] = val;
+            }
+          }
+        }
+        console.log(`[env] Loaded environment configurations from: ${envPath}`);
+      } catch {}
+    }
+  }
+}
+function initFileLogging(): void {
+  try {
+    const logDir = path.join(os.homedir(), ".achu");
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+    const logFilePath = path.join(logDir, "agent.log");
+    const logStream = fs.createWriteStream(logFilePath, { flags: "a" });
+    const originalLog = console.log;
+    const originalError = console.error;
+    const originalWarn = console.warn;
+
+    console.log = (...args: any[]) => {
+      originalLog(...args);
+      try {
+        logStream.write(`[${new Date().toISOString()}] [INFO] ${args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ")}\n`);
+      } catch {}
+    };
+
+    console.error = (...args: any[]) => {
+      originalError(...args);
+      try {
+        logStream.write(`[${new Date().toISOString()}] [ERROR] ${args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ")}\n`);
+      } catch {}
+    };
+
+    console.warn = (...args: any[]) => {
+      originalWarn(...args);
+      try {
+        logStream.write(`[${new Date().toISOString()}] [WARN] ${args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ")}\n`);
+      } catch {}
+    };
+  } catch {}
+}
+initFileLogging();
+loadLocalEnv();
+
 function getOrCreatePairingToken(): string {
   try {
     const tokenDir = path.join(os.homedir(), ".achu");
@@ -556,6 +626,93 @@ app.post("/api/companion/tasks/:taskId/stop", async (req, res) => {
   }
   await terminateTaskProcess(task);
   res.json({ ok: true, status: "CANCELLED", taskId: task.id });
+});
+
+export function compareSemver(v1: string, v2: string): number {
+  const parse = (v: string) => (v.replace(/[^0-9.]/g, "").split(".").map(n => parseInt(n, 10) || 0));
+  const p1 = parse(v1);
+  const p2 = parse(v2);
+  const len = Math.max(p1.length, p2.length);
+  for (let i = 0; i < len; i++) {
+    const n1 = p1[i] || 0;
+    const n2 = p2[i] || 0;
+    if (n1 > n2) return 1;
+    if (n1 < n2) return -1;
+  }
+  return 0;
+}
+
+app.get("/api/companion/update/check", async (_req, res) => {
+  const currentVersion = "1.0.0";
+  const updateUrl = process.env.ACHU_UPDATE_URL || "https://www.workswithachu.me/api/download/local-agent?info=true";
+  try {
+    const fetchRes = await fetch(updateUrl, {
+      signal: AbortSignal.timeout(5000),
+      headers: { Accept: "application/json" },
+    });
+    if (!fetchRes.ok) {
+      res.json({
+        ok: true,
+        currentVersion,
+        latestVersion: currentVersion,
+        updateAvailable: false,
+        note: `Update server responded with status ${fetchRes.status}`,
+      });
+      return;
+    }
+    const data = await fetchRes.json();
+    const latestVersion = data.version || currentVersion;
+    const isNewer = compareSemver(latestVersion, currentVersion) > 0;
+    res.json({
+      ok: true,
+      currentVersion,
+      latestVersion,
+      updateAvailable: isNewer,
+      downloadUrl: data.downloadUrl || "/api/download/local-agent",
+      sha256: data.sha256 || null,
+      sizeMB: data.sizeMB || null,
+      releaseDate: data.releaseDate || null,
+    });
+  } catch (err: any) {
+    res.json({
+      ok: true,
+      currentVersion,
+      latestVersion: currentVersion,
+      updateAvailable: false,
+      note: `Could not reach update server: ${err.message || String(err)}`,
+    });
+  }
+});
+
+app.post("/api/companion/update/apply", async (req, res) => {
+  const tokenHeader = req.headers["x-achu-companion-token"];
+  if (COMPANION_TOKEN && tokenHeader && tokenHeader !== COMPANION_TOKEN) {
+    res.status(401).json({ ok: false, error: "Unauthorized: Invalid companion token" });
+    return;
+  }
+
+  const scriptsDir = path.join(__dirname, "../scripts");
+  const updateScript = path.join(scriptsDir, "update-agent.ps1");
+  const templatesScript = path.join(__dirname, "../installer-templates", "update-agent.ps1");
+  const targetScript = fs.existsSync(updateScript) ? updateScript : templatesScript;
+
+  if (process.platform === "win32" && fs.existsSync(targetScript)) {
+    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", targetScript], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    res.json({
+      ok: true,
+      message: "Update process started in background. Achu Local Agent will update and restart automatically.",
+    });
+    return;
+  }
+
+  res.status(501).json({
+    ok: false,
+    error: "Automatic update script is only supported on Windows installations.",
+  });
 });
 
 app.use(express.static(path.join(__dirname, "../public")));
@@ -1329,33 +1486,6 @@ async function runAgentWithWorkspace(
   console.log(`[run_task] Received run_task for sessionId=${sessionId} taskId=${taskId}`);
   console.log(`[run_task] workspaceRoot=${workspaceRoot}`);
 
-  // Run the CLI from the main project directory (where dist/cli.js exists)
-  // while passing the target workspace via WORKSPACE_ROOT env
-  const mainProjectDir = path.resolve(__dirname, "..");
-  const cliPath = path.resolve(mainProjectDir, "dist", "cli.js");
-
-  console.log(`[run_task] mainProjectDir=${mainProjectDir}`);
-  console.log(`[run_task] CLI absolute path=${cliPath}`);
-
-  // Verify the executable exists before spawning
-  const cliExists = fs.existsSync(cliPath);
-  console.log(`[run_task] CLI exists check: ${cliExists}`);
-  if (!cliExists) {
-    const errorMsg = `CLI executable not found at: ${cliPath}. Please run 'npm run build' first.`;
-    console.error(`[run_task] ${errorMsg}`);
-    
-    await cleanupAndEmitFailure(client, workspaceRoot, sessionId, taskId, errorMsg);
-    return;
-  }
-
-  const nodeExec = process.execPath;
-  const spawnArgs = [cliPath, task];
-  console.log(`[run_task] Spawning: ${nodeExec} ${spawnArgs.join(" ")}`);
-  console.log(`[run_task] cwd: ${mainProjectDir}`);
-  console.log(`[run_task] env.WORKSPACE_ROOT: ${workspaceRoot}`);
-  console.log(`[run_task] env.ACHU_SESSION_ID: ${sessionId}`);
-  console.log(`[run_task] env.ACHU_TASK_ID: ${taskId}`);
-
   const taskRecord: LocalTaskRecord = {
     id: taskId,
     sessionId,
@@ -1364,7 +1494,7 @@ async function runAgentWithWorkspace(
     status: "RUNNING",
     startTime: Date.now(),
     childProcess: null,
-    outputBuffer: "",
+    outputBuffer: `[Local Agent] Initializing local execution engine...\n[Local Agent] Task: ${task}\n[Local Agent] Workspace: ${workspaceRoot}\n`,
     outputEvents: [],
     changedFiles: [],
     reviewState: "NOT_REQUIRED",
@@ -1375,6 +1505,48 @@ async function runAgentWithWorkspace(
     baseline,
   };
   activeTasks.set(taskId, taskRecord);
+
+  // Locate the CLI runner (cli.mjs in installed distribution or dist/cli.js in dev)
+  const candidateCliPaths = [
+    path.join(__dirname, "cli.mjs"),
+    path.join(__dirname, "dist", "cli.js"),
+    path.join(__dirname, "cli.js"),
+    path.resolve(__dirname, "..", "dist", "cli.js"),
+    path.resolve(__dirname, "..", "cli.mjs"),
+    path.resolve(process.cwd(), "dist", "cli.js"),
+    path.resolve(process.cwd(), "cli.mjs"),
+    "C:\\Users\\Achu146\\achu-coding-agent\\dist\\cli.js",
+  ];
+  const cliPath = candidateCliPaths.find((p) => fs.existsSync(p));
+
+  console.log(`[run_task] CLI candidate paths: ${candidateCliPaths.join(", ")}`);
+  console.log(`[run_task] Resolved CLI path: ${cliPath || "NOT FOUND"}`);
+
+  if (!cliPath) {
+    const errorMsg = `Achu agent runner (cli.mjs or dist/cli.js) not found. Checked: ${candidateCliPaths.join(", ")}`;
+    console.error(`[run_task] ${errorMsg}`);
+    taskRecord.status = "FAILED";
+    taskRecord.error = errorMsg;
+    taskRecord.outputBuffer += `\n[Fatal Error] ${errorMsg}\n`;
+    await cleanupAndEmitFailure(client, workspaceRoot, sessionId, taskId, errorMsg);
+    return;
+  }
+
+  // Locate bundled node runtime if available
+  const candidateNodePaths = [
+    path.join(__dirname, "bin", "node.exe"),
+    path.resolve(__dirname, "..", "bin", "node.exe"),
+    process.execPath,
+  ];
+  const nodeExec = candidateNodePaths.find((p) => fs.existsSync(p)) || process.execPath;
+  const mainProjectDir = fs.existsSync(path.join(__dirname, "package.json")) ? __dirname : path.resolve(__dirname, "..");
+  const spawnArgs = [cliPath, task];
+
+  console.log(`[run_task] Spawning: ${nodeExec} ${spawnArgs.join(" ")}`);
+  console.log(`[run_task] cwd: ${mainProjectDir}`);
+  console.log(`[run_task] env.WORKSPACE_ROOT: ${workspaceRoot}`);
+  console.log(`[run_task] env.ACHU_SESSION_ID: ${sessionId}`);
+  console.log(`[run_task] env.ACHU_TASK_ID: ${taskId}`);
 
   // Pass session info to CLI via env
   const child = spawn(nodeExec, spawnArgs, {
@@ -1529,18 +1701,29 @@ async function runAgentWithWorkspace(
     });
 
     const success = code === 0 && signal === null;
+    const entriesNow = await workspace.listDetailed(".").catch(() => []);
+    const hadNoFiles = (!baseline?.files || Object.keys(baseline.files).length === 0);
+    let effectiveSuccess = success;
+    if (success && hadNoFiles && entriesNow.length === 0) {
+      effectiveSuccess = false;
+      const deliverableError = "Execution ended without writing any files to the project folder.";
+      console.warn(`[run_task] ${deliverableError}`);
+      taskRecord.error = deliverableError;
+      taskRecord.outputBuffer += `\n[Verification Error] ${deliverableError}\n`;
+    }
+
     if (taskRecord.status !== "CANCELLED") {
-      taskRecord.status = success ? "COMPLETED" : "FAILED";
+      taskRecord.status = effectiveSuccess ? "COMPLETED" : "FAILED";
     }
     
     if (client.workspaceRoot) {
-      const finalStatus = success ? "COMPLETED" : "FAILED";
-      await client.sessionManager.completeSession(client.workspaceRoot, sessionId, success);
+      const finalStatus = effectiveSuccess ? "COMPLETED" : "FAILED";
+      await client.sessionManager.completeSession(client.workspaceRoot, sessionId, effectiveSuccess);
       
       broadcastToAll({ 
         type: "session_completed",
         sessionId, 
-        success,
+        success: effectiveSuccess,
         status: finalStatus,
       });
       
@@ -1552,7 +1735,7 @@ async function runAgentWithWorkspace(
       }
     }
 
-    if (success) {
+    if (effectiveSuccess) {
       console.log(`[run_task] Task completed successfully`);
       
       // Ensure app server is active for live preview if project became runnable

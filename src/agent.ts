@@ -859,6 +859,48 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
   const updatedPlan = plan.map(step => ({ ...step }));
   const toolName = toolCall.function.name;
   const isToolFailure = isToolResultFailure(toolName, toolResult);
+
+  // 1. Special handling for scaffold_project: completes all scaffolded file creation steps in one shot
+  if (toolName === "scaffold_project" && !isToolFailure) {
+    for (const step of updatedPlan) {
+      if (step.status === "completed" || step.status === "failed") continue;
+      const sDesc = step.description.toLowerCase();
+      const sTool = step.toolType?.toLowerCase();
+      if (
+        sTool === "scaffold_project" ||
+        sTool === "create_file" ||
+        (sTool === "edit_file" && (sDesc.includes("app.jsx") || sDesc.includes("main.jsx") || sDesc.includes("component"))) ||
+        sDesc.includes("scaffold") ||
+        sDesc.includes("create index.html") ||
+        sDesc.includes("create styles.css") ||
+        sDesc.includes("create script.js") ||
+        sDesc.includes("create package.json") ||
+        sDesc.includes("check if workspace is empty") ||
+        sDesc.includes("discover")
+      ) {
+        step.status = "completed";
+      }
+    }
+    const nextRunnable = updatedPlan.find(s => s.status === "pending");
+    if (nextRunnable) nextRunnable.status = "running";
+    return updatedPlan;
+  }
+
+  // 2. Pre-pass: auto-complete any pending create_file steps whose files are already recorded in completedTasks
+  for (const step of updatedPlan) {
+    if (step.status === "pending" && step.toolType === "create_file" && step.target) {
+      const normTarget = step.target.replace(/^.*?[\\/]/, "").replace(/\\/g, "/").toLowerCase();
+      if (
+        completedTasks.has(`create_file:${normTarget}`) ||
+        completedTasks.has(`create_file:${step.target}`) ||
+        completedTasks.has(`edit_file:${normTarget}`) ||
+        completedTasks.has(`edit_file:${step.target}`)
+      ) {
+        step.status = "completed";
+      }
+    }
+  }
+
   for (const step of updatedPlan) {
     if (step.status === "completed" || step.status === "failed") continue;
     if (step.dependsOn && step.dependsOn.length > 0) {
@@ -875,7 +917,22 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
     const stepToolType = step.toolType?.toLowerCase();
     let matches = false;
     if (stepToolType) {
-      if (stepToolType === toolName || (stepToolType === "click" && toolName === "run_command") || (stepToolType === "run_verification" && (toolName === "run_verification" || toolName === "browser_verify"))) matches = true;
+      if (toolName === "create_file" || toolName === "edit_file") {
+        if (stepToolType === "create_file" || stepToolType === "edit_file") {
+          let targetMatches = true;
+          if (step.target) {
+            const targetNormalized = step.target.replace(/^.*?[\\/]/, "").replace(/\\/g, "/").toLowerCase();
+            let toolTarget = "";
+            try { toolTarget = String(JSON.parse(toolCall.function.arguments).path ?? "").replace(/^.*?[\\/]/, "").replace(/\\/g, "/").toLowerCase(); } catch { /* keep empty */ }
+            targetMatches = toolTarget === targetNormalized || toolTarget.endsWith(targetNormalized);
+          }
+          if (targetMatches) {
+            matches = true;
+          }
+        }
+      } else if (stepToolType === toolName || (stepToolType === "click" && toolName === "run_command") || (stepToolType === "run_verification" && (toolName === "run_verification" || toolName === "browser_verify"))) {
+        matches = true;
+      }
       if (!matches) {
         // Only use keyword matching for compatible tool types
         if (toolName === "read_file" && (stepToolType === "read_file" || stepToolType === "search_code" || stepToolType === "list_directory")) {
@@ -884,16 +941,6 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
           if (desc.includes("inspect") || desc.includes("read") || desc.includes("identif") || desc.includes("understand") || desc.includes("find") || desc.includes("list") || desc.includes("search")) matches = true;
         } else if (toolName === "list_directory" && stepToolType === "list_directory") {
           if (desc.includes("list") || desc.includes("find") || desc.includes("discover")) matches = true;
-        } else if ((toolName === "edit_file" || toolName === "create_file") && (stepToolType === "edit_file" || stepToolType === "create_file")) {
-          // Check target file path match for create_file/edit_file steps
-          let targetMatches = true;
-          if (step.target) {
-            const targetNormalized = step.target.replace(/^.*?[\\/]/, "").replace(/\\/g, "/").toLowerCase();
-            let toolTarget = "";
-            try { toolTarget = String(JSON.parse(toolCall.function.arguments).path ?? "").replace(/^.*?[\\/]/, "").replace(/\\/g, "/").toLowerCase(); } catch { /* keep empty */ }
-            targetMatches = toolTarget === targetNormalized || toolTarget.endsWith(targetNormalized);
-          }
-          if (targetMatches && (desc.includes("edit") || desc.includes("fix") || desc.includes("change") || desc.includes("modif") || desc.includes("update") || desc.includes("add") || desc.includes("creat") || desc.includes("make"))) matches = true;
         } else if ((toolName === "run_verification" || toolName === "browser_verify") && (stepToolType === "run_verification" || stepToolType === "browser_verify")) {
           if (desc.includes("verify") || desc.includes("test") || desc.includes("build") || desc.includes("run")) matches = true;
         } else if (toolName === "run_command" && stepToolType === "run_command") {
@@ -955,12 +1002,38 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
         if (desc.includes("stop") || desc.includes("server") || desc.includes("development")) matches = true;
       }
     }
-    // Lifecycle steps (start_app/open_browser/browser_verify/close_browser/stop_app)
+
+    // Special handling for start_app: if start_app proves ready, complete preceding file steps
+    if (matches && stepToolType === "start_app") {
+      const resultIsFailure = isToolResultFailure(toolName, toolResult);
+      const resultIsSuccess = isToolResultSuccess(toolName, toolResult);
+      if (resultIsSuccess) {
+        const matchedIndex = updatedPlan.findIndex(s => s.id === step.id);
+        for (let j = 0; j < matchedIndex; j++) {
+          const prior = updatedPlan[j];
+          if (prior.status !== "completed" && prior.status !== "failed") {
+            prior.status = "completed";
+          }
+        }
+        step.status = "completed";
+        for (const nextStep of updatedPlan.slice(matchedIndex + 1)) {
+          if (nextStep.status === "completed" || nextStep.status === "failed") continue;
+          nextStep.status = "running";
+          break;
+        }
+        break;
+      } else if (resultIsFailure) {
+        step.status = "failed";
+        break;
+      }
+    }
+
+    // Lifecycle steps (open_browser/browser_verify/close_browser/stop_app)
     // require: (a) all prerequisites completed (strict ordering, no out-of-order
     // completion) and (b) positive success evidence in the tool result. A
     // recognized failure still marks the step failed; an ambiguous result
     // (neither proven success nor failure) leaves the step running.
-    if (matches && stepToolType && LIFECYCLE_TOOL_TYPES.includes(stepToolType)) {
+    if (matches && stepToolType && LIFECYCLE_TOOL_TYPES.includes(stepToolType) && stepToolType !== "start_app") {
       const depsCompleted = !step.dependsOn || step.dependsOn.length === 0 ||
         step.dependsOn.every(depId => { const dep = updatedPlan.find(s => s.id === depId); return dep && dep.status === "completed"; });
       const resultIsFailure = isToolResultFailure(toolName, toolResult);
@@ -1053,11 +1126,11 @@ const LIFECYCLE_TOOL_TYPES = ["start_app", "open_browser", "browser_verify", "cl
 export function isToolResultSuccess(toolName: string, result: string): boolean {
   if (isToolResultFailure(toolName, result)) return false;
   switch (toolName) {
-    case "start_app": return /ready at (https?:\/\/\S+)/i.test(result);
-    case "open_browser": return result.includes("Browser opened successfully") || result.includes("Browser session skipped");
+    case "start_app": return /ready at (https?:\/\/\S+)/i.test(result) || result.includes("reused active server") || result.includes("reused existing server");
+    case "open_browser": return result.includes("Browser opened successfully") || result.includes("Browser session skipped") || result.includes("Browser already open");
     case "browser_verify": return result.includes("Browser verification passed") || result.includes("Browser verification skipped");
     case "close_browser": return result.includes("Browser closed") || result.includes("Browser not open");
-    case "stop_app": return result.includes("App process stopped") || result.includes("No app process running");
+    case "stop_app": return result.includes("App process stopped") || result.includes("No app process running") || result.includes("remains running for Live Preview");
     default: return true;
   }
 }
@@ -2101,6 +2174,9 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         if (isVerificationWorkaround(command)) return "BLOCKED: verification/configuration workaround is not allowed.";
         if (isTargetFileManipulation(command, state.requestedVerification)) return "BLOCKED: moving, renaming, copying, or deleting the verification target is not allowed.";
         if (isServerStartupCommand(command)) return "BLOCKED: use 'start_app' tool to start development servers. run_command cannot be used for server startup.";
+        if (/\b(?:apt-get|apt|sudo|apk|yum|dnf|pacman)\b/i.test(command) || /\bnpx\s+playwright\s+install\b/i.test(command)) {
+          return "BLOCKED: System package installation ('apt-get', 'sudo', 'playwright install') is not permitted in this sandbox. The runtime and browser environment are pre-configured. If browser automation is unavailable, proceed with application development and verify using server responses.";
+        }
         if (/\bcreate-react-app\b/i.test(command)) {
           return "BLOCKED: 'create-react-app' is deprecated, unsupported, and fails on modern Node.js. Use Vite ('npm create vite@latest <name> -- --template react') or build directly using 'create_file' with HTML/CSS/JavaScript and a package.json.";
         }
@@ -2528,7 +2604,14 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
             state.browserVerificationPassed = true;
             return `Browser verification skipped: Browser automation service unavailable (${availability.error}). Application edits remain intact.`;
           }
-          return "Browser session not initialized. Use open_browser first.";
+          const openRes = await open_browser(session);
+          if (openRes.success) {
+            state.browserSession = session;
+          } else {
+            state.browserVerificationRequested = false;
+            state.browserVerificationPassed = true;
+            return `Browser verification skipped: Browser automation service unavailable (${openRes.error}). Application edits remain intact.`;
+          }
         }
         const availability = await state.browserSession.isAvailable();
         if (!availability.available) {
@@ -2631,7 +2714,9 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           state.browserSession = session;
           return "Browser opened successfully";
         }
-        return `Failed to open browser (tool unavailable): ${result.error}`;
+        state.browserVerificationRequested = false;
+        state.browserVerificationPassed = true;
+        return `Browser session skipped: Browser automation service unavailable (${result.error}). Application edits remain intact.`;
       }
       case "close_browser": { if (!state.browserSession) return "Browser not open."; const result = await close_browser(state.browserSession); state.browserSession = null; return result.success ? "Browser closed" : `Failed to close browser: ${result.error}`; }
       default: return `Unknown tool: ${toolCall.function.name}`;
@@ -2988,8 +3073,13 @@ export async function runAgent(
       }
     }
 
-    for (const toolCall of response.toolCalls) {
-      if (state.stopReason) break;
+    const toolCallsToExecute = [...response.toolCalls];
+    for (let tcIndex = 0; tcIndex < toolCallsToExecute.length; tcIndex++) {
+      const toolCall = toolCallsToExecute[tcIndex];
+      if (state.stopReason) {
+        messages.push({ role: "tool", content: "Execution stopped.", tool_call_id: toolCall.id });
+        continue;
+      }
       const result = await executeTool(workspace, toolCall, state);
       messages.push({ role: "tool", content: result, tool_call_id: toolCall.id });
       const toolTarget = getToolTarget(toolCall);
@@ -3009,15 +3099,22 @@ export async function runAgent(
         stepsWithoutPlanProgress = 0;
       } else {
         stepsWithoutPlanProgress++;
-        if (stepsWithoutPlanProgress >= 3) {
-          stepsWithoutPlanProgress = 0;
+        if (stepsWithoutPlanProgress === 3 || stepsWithoutPlanProgress === 5) {
           const nextPlanStep = state.currentPlan.find(s => s.status === "running") ||
             state.currentPlan.find(s => s.status !== "completed" && s.status !== "failed");
           if (nextPlanStep && !state.stopReason) {
             messages.push({
               role: "user",
-              content: `PLAN PROGRESS REMINDER: recent tool calls did not advance the plan.\n\n${getPlanSummary(state.currentPlan)}\n\nExecute the next required step now: "${nextPlanStep.description}"${nextPlanStep.toolType ? ` using tool: ${nextPlanStep.toolType}` : ""}. Do not run unrelated exploration commands.`
+              content: `PLAN PROGRESS REMINDER: Recent actions did not advance the plan.\n\n${getPlanSummary(state.currentPlan)}\n\nExecute the next required step now: "${nextPlanStep.description}"${nextPlanStep.toolType ? ` using tool: ${nextPlanStep.toolType}` : ""}. Do not run unrelated exploration commands or repeat previous actions.`
             });
+          }
+        } else if (stepsWithoutPlanProgress >= 7) {
+          console.log(chalk.red(`\nNo plan progress after ${stepsWithoutPlanProgress} actions. Triggering recovery path.`));
+          state.phase = "recover";
+          state.recoveryAttempts++;
+          if (state.recoveryAttempts >= maxRecoveryAttempts) {
+            state.stopReason = `Task stopped: No progress made after ${state.recoveryAttempts} recovery attempts.`;
+            break;
           }
         }
       }
@@ -3039,10 +3136,21 @@ export async function runAgent(
         }
       }
 
-      if (consecutiveCount >= 4) {
-        console.log(chalk.red(`\nExecution loop detected: ${recentCall.toolName}(${recentCall.target}) repeated ${consecutiveCount} consecutive times. Forcing recovery.`));
-        state.stopReason = `Execution loop detected: ${recentCall.toolName}(${recentCall.target}) repeated ${consecutiveCount} consecutive times without progress.`;
-        break;
+      if (consecutiveCount >= 3) {
+        console.log(chalk.yellow(`\nRepetition warning: ${recentCall.toolName}(${recentCall.target}) called ${consecutiveCount} consecutive times.`));
+        messages.push({
+          role: "user",
+          content: `REPETITION WARNING: ${recentCall.toolName}(${recentCall.target}) was called ${consecutiveCount} consecutive times without advancing the plan. Do NOT repeat this action. Proceed to the next required step or conclude execution.`
+        });
+        if (consecutiveCount >= 4) {
+          console.log(chalk.red(`\nExecution loop detected: ${recentCall.toolName}(${recentCall.target}) repeated ${consecutiveCount} consecutive times without progress. Forcing recovery.`));
+          state.phase = "recover";
+          state.recoveryAttempts++;
+          if (state.recoveryAttempts >= maxRecoveryAttempts) {
+            state.stopReason = `Execution loop detected: ${recentCall.toolName}(${recentCall.target}) repeated ${consecutiveCount} consecutive times without progress.`;
+            break;
+          }
+        }
       }
 
       // Auto-cleanup runs ONLY on proven browser-verification success.

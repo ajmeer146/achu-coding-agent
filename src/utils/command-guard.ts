@@ -533,6 +533,13 @@ export function validateCommand(
     };
   }
 
+  if (/\b(?:apt-get|apt|sudo|apk|yum|dnf|pacman)\b/i.test(normalized) || /\bnpx\s+playwright\s+install\b/i.test(normalized)) {
+    return {
+      allowed: false,
+      reason: "System package installation ('apt-get', 'sudo', 'playwright install') is not permitted in this sandbox. The runtime and browser environment are pre-configured. If browser automation is unavailable, proceed with application development and verify using server responses.",
+    };
+  }
+
   for (
     const pattern of BLOCKED_COMMAND_PATTERNS
   ) {

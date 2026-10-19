@@ -1,0 +1,138 @@
+name: Release Achu Local Agent Windows Installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release Tag (e.g. v1.0.1)'
+        required: false
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-and-release:
+    name: Build, Sign & Release Windows Installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run verification test suite
+        run: npm test
+
+      # 1. Build Windows Installer (with standard Authenticode PFX signing if PFX credentials are set)
+      - name: Build Windows Installer
+        env:
+          SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+          TIMESTAMP_SERVER_URL: 'http://timestamp.digicert.com'
+        run: node scripts/build-windows-installer.mjs
+
+      # 2. Microsoft Trusted Signing (if Azure Trusted Signing secrets are configured)
+      - name: Azure Login for Microsoft Trusted Signing
+        if: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Sign Installer with Microsoft Trusted Signing
+        if: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME != '' }}
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          endpoint: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT || 'https://eus.codesigning.azure.net/' }}
+          trusted-signing-account-name: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+          files: |
+            dist-installer/AchuLocalAgentSetup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # 3. Always update version manifest with the final post-signing SHA256 checksum and Authenticode status
+      - name: Sync Manifest and Checksums from Post-Signing Binary
+        shell: pwsh
+        run: |
+          node scripts/build-windows-installer.mjs --manifest-only
+
+      - name: Verify Authenticode Signature and Release Integrity
+        shell: pwsh
+        run: |
+          $installer = "dist-installer/AchuLocalAgentSetup.exe"
+          if (-not (Test-Path $installer)) {
+            Write-Error "Installer binary not found at $installer"
+            exit 1
+          }
+          
+          # Inspect Authenticode signature
+          $sig = Get-AuthenticodeSignature -LiteralPath $installer
+          Write-Host "Authenticode Status: $($sig.Status)"
+          Write-Host "Status Message:      $($sig.StatusMessage)"
+          if ($sig.SignerCertificate) {
+            Write-Host "Signer Subject:      $($sig.SignerCertificate.Subject)"
+            Write-Host "Thumbprint:          $($sig.SignerCertificate.Thumbprint)"
+          } else {
+            Write-Warning "Binary is unsigned. Note: Edge SmartScreen warnings will appear until signed and reputation is built."
+          }
+
+          # Verify SHA-256 matches version.json
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLower()
+          Write-Host "Calculated SHA-256: $hash"
+          $manifest = "dist-installer/version.json"
+          if (Test-Path $manifest) {
+            $meta = Get-Content $manifest -Raw | ConvertFrom-Json
+            if ($hash -ne $meta.sha256.ToLower()) {
+              Write-Error "Checksum mismatch! Computed: $hash vs Manifest: $($meta.sha256)"
+              exit 1
+            }
+            Write-Host "Manifest checksum verified successfully!"
+          }
+
+      - name: Upload Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AchuLocalAgentSetup
+          path: |
+            dist-installer/AchuLocalAgentSetup.exe
+            dist-installer/version.json
+            dist-installer/AchuLocalAgent.iss
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: Achu Local Agent ${{ github.ref_name }}
+          files: |
+            dist-installer/AchuLocalAgentSetup.exe
+            dist-installer/version.json
+          draft: false
+          prerelease: false
+          body: |
+            ## Achu Local Agent Windows Distribution
+
+            ### Verification & Integrity
+            - **Binary:** `AchuLocalAgentSetup.exe`
+            - **Platform:** Windows 10 / Windows 11 (64-bit)
+            - **Privileges:** Current User (No administrator elevation required)
+            - **Bundled Runtime:** Node.js v26.x + better-sqlite3 native binaries
+
+            ### SmartScreen Guidance
+            - If downloaded via Microsoft Edge: Choose `...` -> `Keep` -> `Show more` -> `Keep anyway`.
+            - In Windows: Click `More info` -> `Run anyway`.

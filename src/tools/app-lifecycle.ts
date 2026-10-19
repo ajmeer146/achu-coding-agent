@@ -157,17 +157,18 @@ export async function isPortAvailable(port: number): Promise<boolean> {
  */
 export async function allocateAvailablePort(preferredPort = 3000, maxAttempts = 100): Promise<number> {
   const start = preferredPort > 0 && preferredPort <= 65535 ? preferredPort : 3000;
-  if ((await isPortAvailable(start)) && !(await isUrlServing(`http://localhost:${start}`, 200))) {
+  if (start !== 3001 && (await isPortAvailable(start)) && !(await isUrlServing(`http://localhost:${start}`, 200))) {
     return start;
   }
   for (let offset = 1; offset <= maxAttempts; offset++) {
     const candidate = start + offset;
     if (candidate > 65535) break;
+    if (candidate === 3001) continue;
     if ((await isPortAvailable(candidate)) && !(await isUrlServing(`http://localhost:${candidate}`, 200))) {
       return candidate;
     }
   }
-  return start + 1;
+  return 3002;
 }
 
 /**

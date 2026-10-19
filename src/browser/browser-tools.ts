@@ -1,5 +1,5 @@
 import { BrowserSession } from './browser-session.js';
-import { LaunchOptions } from 'playwright';
+import type { LaunchOptions } from 'playwright';
 import { checkActionSafety } from './browser-safety.js';
 
 /**

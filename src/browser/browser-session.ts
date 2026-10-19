@@ -1,7 +1,25 @@
 ﻿// Reference the DOM library for DOM types in the evaluate function
 /// <reference lib="dom" />
 
-import { chromium, Browser, Page, LaunchOptions } from 'playwright';
+import type { Browser, Page, LaunchOptions } from 'playwright';
+
+let cachedPlaywright: any = null;
+async function loadPlaywright() {
+  if (cachedPlaywright) return cachedPlaywright;
+  try {
+    const pw = await import("playwright");
+    cachedPlaywright = pw.default || pw;
+    return cachedPlaywright;
+  } catch {
+    try {
+      const pw = await import("playwright-core");
+      cachedPlaywright = pw.default || pw;
+      return cachedPlaywright;
+    } catch {
+      return null;
+    }
+  }
+}
 
 /**
  * BrowserSession manages a Playwright browser instance and a page.
@@ -24,7 +42,27 @@ export class BrowserSession {
    */
   async init(): Promise<void> {
     if (this.browser === null) {
-      this.browser = await chromium.launch(this.launchOptions);
+      const pw = await loadPlaywright();
+      if (!pw || !pw.chromium) {
+        throw new Error("Browser automation service is not available in this environment.");
+      }
+      const chromium = pw.chromium;
+      const defaultArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-zygote',
+        '--single-process',
+      ];
+      const mergedArgs = Array.from(new Set([...defaultArgs, ...(this.launchOptions.args || [])]));
+      const launchOptions: LaunchOptions = {
+        headless: true,
+        timeout: 15000,
+        ...this.launchOptions,
+        args: mergedArgs,
+      };
+      this.browser = await chromium.launch(launchOptions);
     }
     if (this.page === null && this.browser !== null) {
       this.page = await this.browser.newPage();
@@ -65,7 +103,10 @@ export class BrowserSession {
   async isAvailable(): Promise<{ available: boolean; error?: string }> {
     try {
       if (this.browser === null) {
-        await this.init();
+        await Promise.race([
+          this.init(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Browser launch timed out")), 10000)),
+        ]);
       }
       return { available: true };
     } catch (err: any) {

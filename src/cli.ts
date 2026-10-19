@@ -10,9 +10,11 @@ program
   .name("achu-agent")
   .description("A general-purpose autonomous AI coding agent")
   .version("0.1.0")
-  .argument("[task]", "Task for the coding agent")
-  .action(async (task?: string) => {
+  .argument("[task...]", "Task for the coding agent")
+  .action(async (taskParts?: string | string[]) => {
     console.log(chalk.cyan("\n? Achu Coding Agent\n"));
+
+    const task = Array.isArray(taskParts) ? taskParts.join(" ").trim() : (taskParts?.trim() || "");
 
     if (!task) {
       console.log(chalk.yellow("No task provided."));
@@ -35,4 +37,4 @@ program
     }
   });
 
-await program.parseAsync();
+void program.parseAsync();

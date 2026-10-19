@@ -257,7 +257,23 @@ export const codingAgentTask = task({
 
       // Collect all modified/created project files from workspace root
       const rootPath = getWorkspaceRoot(workspace);
-      const IGNORE_SCAN = new Set(["node_modules", ".git", ".achu-sessions", "dist", ".turbo", ".cache", ".registry"]);
+
+      // If project has a build script and dist/ does not exist, run build to generate production artifacts
+      try {
+        const pkgPath = path.join(rootPath, "package.json");
+        if (fs.existsSync(pkgPath)) {
+          const pkg = JSON.parse(await fs.promises.readFile(pkgPath, "utf8"));
+          if (pkg.scripts?.build && !pkg.scripts.build.includes("echo") && !fs.existsSync(path.join(rootPath, "dist"))) {
+            console.log(`[Trigger.dev] Running project build script for production artifacts...`);
+            const { runCommand } = await import("../tools/terminal.js");
+            await runCommand("npm run build", rootPath, 120000);
+          }
+        }
+      } catch (buildErr) {
+        console.warn(`[Trigger.dev] Optional build step skipped or failed:`, buildErr);
+      }
+
+      const IGNORE_SCAN = new Set(["node_modules", ".git", ".achu-sessions", ".turbo", ".cache", ".registry"]);
       const artifactsMap = new Map<string, string>();
 
       async function scanDirectory(dir: string, relPrefix = "") {
