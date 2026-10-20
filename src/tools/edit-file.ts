@@ -1,5 +1,6 @@
 import { Workspace } from "./workspace.js";
 import { isProtectedFile } from "../utils/command-guard.js";
+import { assertFileSyntaxValid } from "../utils/file-syntax-validator.js";
 
 export interface FileEdit {
   oldText?: string;
@@ -201,23 +202,12 @@ export async function editFile(
       continue;
     }
 
-    // 4. Component body match for React/JS components:
-    // If replacing the main export/component and both contain export default function
-    const oldTrimmed = oldText.trim();
-    if (
-      oldTrimmed.includes("export default") &&
-      updatedNormalized.includes("export default") &&
-      newText.includes("export default")
-    ) {
-      updatedNormalized = newText;
-      successes.push(`Updated main component in ${filePath}.`);
-      continue;
-    }
-
-    // 5. Full HTML document replacement:
+    // 4. Full HTML document replacement: ONLY when oldText also targeted the whole document
+    const oldTrimmed = oldText.trim().toLowerCase();
     if (
       filePath.toLowerCase().endsWith(".html") &&
-      (newText.trim().startsWith("<!DOCTYPE html") || newText.trim().startsWith("<html"))
+      (oldTrimmed.startsWith("<!doctype") || oldTrimmed.startsWith("<html")) &&
+      (newText.trim().toLowerCase().startsWith("<!doctype") || newText.trim().toLowerCase().startsWith("<html"))
     ) {
       updatedNormalized = newText;
       successes.push(`Replaced HTML document in ${filePath}.`);
@@ -251,6 +241,9 @@ export async function editFile(
       throw new Error(`Invalid JSON in package.json after edit: ${err.message}`);
     }
   }
+
+  // Validate file syntax and check for truncated/incomplete code after edit
+  assertFileSyntaxValid(filePath, finalContent);
 
   await workspace.write(filePath, finalContent);
 

@@ -1,5 +1,6 @@
 import { Workspace } from "./workspace.js";
 import { isProtectedFile } from "../utils/command-guard.js";
+import { assertFileSyntaxValid } from "../utils/file-syntax-validator.js";
 
 export async function createFile(
   workspace: Workspace,
@@ -17,6 +18,9 @@ export async function createFile(
       `Preserve existing environment configuration.`,
     );
   }
+
+  // Validate syntax and check for truncated/incomplete code before writing
+  assertFileSyntaxValid(filePath, content);
 
   if (normalized.endsWith("package.json")) {
     try {

@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { Workspace } from "./workspace.js";
+import type { DesignSpec } from "./design-planner.js";
 
 export type ProjectTemplate = "react-vite" | "static";
 
@@ -262,10 +263,13 @@ export async function autoRepairProjectStructure(workspace: Workspace): Promise<
 
 /**
  * Scaffolds a complete, valid Vite + React application.
+ * When a DesignSpec is provided the CSS variables and typography are
+ * driven by the spec rather than hardcoded defaults.
  */
 export async function scaffoldReactViteProject(
   workspace: Workspace,
-  projectName = "react-app"
+  projectName = "react-app",
+  designSpec?: DesignSpec
 ): Promise<ScaffoldResult> {
   const slug = projectName.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "react-app";
   const title = projectName.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -347,8 +351,46 @@ export default defineConfig({
     await workspace.write("index.html", indexHtml);
     filesCreated.push("index.html");
 
-    // 4. src/index.css
-    const indexCss = `*, *::before, *::after {
+    // 4. src/index.css — driven by DesignSpec when provided
+    const rt = designSpec?.tokens;
+    const rty = designSpec?.typography;
+    const indexCss = rt
+      ? `/* Phase 13 Design Tokens */
+:root {
+  --bg-primary:    ${rt.bgPrimary};
+  --bg-surface:    ${rt.bgSurface};
+  --bg-card:       ${rt.bgCard};
+  --text-primary:  ${rt.textPrimary};
+  --text-secondary:${rt.textSecondary};
+  --accent-primary:${rt.accentPrimary};
+  --accent-hover:  ${rt.accentHover};
+  --border-subtle: ${rt.borderSubtle};
+  --shadow-card:   ${rt.shadowCard};
+  --radius-md:     ${rt.radiusMd};
+  --radius-sm:     ${rt.radiusSm};
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: ${rty?.fontStack ?? 'system-ui, sans-serif'};
+  -webkit-font-smoothing: antialiased;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+`
+      : `*, *::before, *::after {
   box-sizing: border-box;
 }
 
@@ -430,10 +472,13 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 
 /**
  * Scaffolds a complete, valid static HTML5/CSS3/JavaScript project.
+ * When a DesignSpec is provided the CSS tokens, typography, and spacing
+ * are driven by the spec rather than hardcoded defaults.
  */
 export async function scaffoldStaticProject(
   workspace: Workspace,
-  projectName = "static-website"
+  projectName = "static-website",
+  designSpec?: DesignSpec
 ): Promise<ScaffoldResult> {
   const slug = projectName.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "static-website";
   const title = projectName.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -568,21 +613,59 @@ export async function scaffoldStaticProject(
     await workspace.write("index.html", indexHtml);
     filesCreated.push("index.html");
 
-    // 3. styles.css
-    const stylesCss = `/* Design Tokens */
+    // 3. styles.css — tokens driven by DesignSpec when provided
+    const t = designSpec?.tokens;
+    const ty = designSpec?.typography;
+    const sp = designSpec?.spacing;
+
+    const cssTokens = t
+      ? `/* Design Tokens — Phase 13 Design Intelligence */
 :root {
-  --bg-primary: #0b0f19;
-  --bg-surface: #131c2e;
-  --bg-card: #1e293b;
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --accent-primary: #38bdf8;
-  --accent-hover: #0ea5e9;
+  --bg-primary:    ${t.bgPrimary};
+  --bg-surface:    ${t.bgSurface};
+  --bg-card:       ${t.bgCard};
+  --text-primary:  ${t.textPrimary};
+  --text-secondary:${t.textSecondary};
+  --accent-primary:${t.accentPrimary};
+  --accent-hover:  ${t.accentHover};
+  --border-subtle: ${t.borderSubtle};
+  --shadow-card:   ${t.shadowCard};
+  --radius-md:     ${t.radiusMd};
+  --radius-sm:     ${t.radiusSm};
+}`
+      : `/* Design Tokens */
+:root {
+  --bg-primary:    #0b0f19;
+  --bg-surface:    #131c2e;
+  --bg-card:       #1e293b;
+  --text-primary:  #f8fafc;
+  --text-secondary:#94a3b8;
+  --accent-primary:#38bdf8;
+  --accent-hover:  #0ea5e9;
   --border-subtle: rgba(255, 255, 255, 0.08);
-  --shadow-card: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
-  --radius-md: 12px;
-  --radius-sm: 8px;
-}
+  --shadow-card:   0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
+  --radius-md:     12px;
+  --radius-sm:     8px;
+}`;
+
+    const heroFontSize = ty?.heroSize ?? "2.75rem";
+    const h2FontSize   = ty?.h2Size   ?? "2rem";
+    const bodyFont     = ty?.fontStack ?? "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif";
+    const heroV        = sp?.heroVertical    ?? "5rem";
+    const sectionV     = sp?.sectionVertical ?? "4rem";
+    const cardPad      = sp?.cardPadding     ?? "2rem";
+
+    const reducedMotionBlock = designSpec?.useAnimations !== false
+      ? `\n/* Accessibility — Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}`
+      : "";
+
+    const stylesCss = `${cssTokens}
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -591,7 +674,7 @@ export async function scaffoldStaticProject(
 }
 
 body {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  font-family: ${bodyFont};
   background-color: var(--bg-primary);
   color: var(--text-primary);
   line-height: 1.6;
@@ -602,7 +685,7 @@ body {
 
 /* Navigation */
 .navbar {
-  background: rgba(11, 15, 25, 0.85);
+  background: var(--bg-surface);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border-subtle);
   position: sticky;
@@ -654,19 +737,19 @@ body {
 }
 .btn-primary {
   background-color: var(--accent-primary);
-  color: #0b0f19;
+  color: var(--bg-primary);
 }
 .btn-primary:hover {
   background-color: var(--accent-hover);
   transform: translateY(-2px);
 }
 .btn-secondary {
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: transparent;
   color: var(--text-primary);
   border: 1px solid var(--border-subtle);
 }
 .btn-secondary:hover {
-  background-color: rgba(255, 255, 255, 0.1);
+  background-color: var(--bg-card);
   transform: translateY(-2px);
 }
 .btn-sm {
@@ -680,7 +763,7 @@ body {
 /* Hero Section */
 .hero-section {
   text-align: center;
-  padding: 5rem 1.5rem 3.5rem;
+  padding: ${heroV} 1.5rem 3.5rem;
   max-width: 800px;
   margin: 0 auto;
 }
@@ -688,16 +771,16 @@ body {
   display: inline-block;
   padding: 0.35rem 0.85rem;
   border-radius: 9999px;
-  background: rgba(56, 189, 248, 0.1);
+  background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
   color: var(--accent-primary);
   font-size: 0.85rem;
   font-weight: 600;
   margin-bottom: 1.5rem;
-  border: 1px solid rgba(56, 189, 248, 0.2);
+  border: 1px solid var(--border-subtle);
 }
 .hero-title {
-  font-size: 2.75rem;
-  line-height: 1.2;
+  font-size: ${heroFontSize};
+  line-height: 1.15;
   font-weight: 800;
   margin-bottom: 1.25rem;
   letter-spacing: -0.02em;
@@ -718,14 +801,14 @@ body {
 .features-section {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 4rem 1.5rem;
+  padding: ${sectionV} 1.5rem;
 }
 .section-header {
   text-align: center;
   margin-bottom: 3rem;
 }
 .section-header h2 {
-  font-size: 2rem;
+  font-size: ${h2FontSize};
   margin-bottom: 0.5rem;
 }
 .section-header p {
@@ -738,7 +821,7 @@ body {
 }
 .feature-card {
   background: var(--bg-card);
-  padding: 2rem;
+  padding: ${cardPad};
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-card);
@@ -746,7 +829,7 @@ body {
 }
 .feature-card:hover {
   transform: translateY(-4px);
-  border-color: rgba(56, 189, 248, 0.3);
+  border-color: var(--accent-primary);
 }
 .card-icon {
   font-size: 2rem;
@@ -769,7 +852,7 @@ body {
 }
 .contact-card {
   background: var(--bg-surface);
-  padding: 2.5rem;
+  padding: ${cardPad};
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-card);
@@ -812,7 +895,7 @@ body {
 .form-group textarea:focus {
   outline: none;
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-primary) 20%, transparent);
 }
 .form-feedback {
   padding: 0.75rem;
@@ -824,6 +907,11 @@ body {
   background: rgba(34, 197, 94, 0.1);
   color: #4ade80;
   border: 1px solid rgba(34, 197, 94, 0.3);
+}
+.form-feedback.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
 /* Footer */
@@ -839,12 +927,19 @@ body {
 /* Mobile Responsiveness */
 @media (max-width: 768px) {
   .hero-title {
-    font-size: 2.1rem;
+    font-size: calc(${heroFontSize} * 0.72);
   }
   .nav-links a:not(.btn) {
     display: none;
   }
+  .hero-section {
+    padding: calc(${heroV} * 0.6) 1rem 2.5rem;
+  }
+  .features-section {
+    padding: calc(${sectionV} * 0.6) 1rem;
+  }
 }
+${reducedMotionBlock}
 `;
     await workspace.write("styles.css", stylesCss);
     filesCreated.push("styles.css");

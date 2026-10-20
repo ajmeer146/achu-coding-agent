@@ -388,14 +388,33 @@ export class BrowserSession {
   }
 
   /**
+   * Sets the browser viewport dimensions (e.g. desktop: 1280x800, mobile: 375x667).
+   */
+  async setViewport(viewport: "desktop" | "mobile" | { width: number; height: number }): Promise<void> {
+    if (!this.page) throw new Error("Browser page not initialized. Call init() first.");
+    if (viewport === "mobile") {
+      await this.page.setViewportSize({ width: 375, height: 667 });
+    } else if (viewport === "desktop") {
+      await this.page.setViewportSize({ width: 1280, height: 800 });
+    } else {
+      await this.page.setViewportSize(viewport);
+    }
+  }
+
+  /**
    * Takes a screenshot of the current page.
+   * @param {Object} [options]
+   * @param {"desktop"|"mobile"|{width:number, height:number}} [options.viewport]
    * @returns {Promise<{ success: true; screenshot: string (base64) } | { success: false; error: string; recoverable: boolean }>}
    */
-  async screenshot(): Promise<{ success: true; screenshot: string } | { success: false; error: string; recoverable: boolean }> {
+  async screenshot(options?: { viewport?: "desktop" | "mobile" | { width: number; height: number } }): Promise<{ success: true; screenshot: string } | { success: false; error: string; recoverable: boolean }> {
     if (!this.page) {
       return { success: false, error: 'Browser page not initialized. Call init() first.', recoverable: true };
     }
     try {
+      if (options?.viewport) {
+        await this.setViewport(options.viewport);
+      }
       const screenshotBuffer = await this.page.screenshot();
       const base64 = screenshotBuffer.toString('base64');
       return { success: true, screenshot: base64 };
@@ -403,6 +422,145 @@ export class BrowserSession {
       return {
         success: false,
         error: err.message ?? 'Failed to take screenshot',
+        recoverable: true
+      };
+    }
+  }
+
+  /**
+   * Runs measurable layout checks against the current page at the requested
+   * viewport. These checks are DOM-measurement based only; they do not attempt
+   * to interpret screenshot pixels.
+   */
+  async analyzeLayout(viewport: "desktop" | "mobile" = "desktop"): Promise<
+    | { success: true; analysis: LayoutAnalysis }
+    | { success: false; error: string; recoverable: boolean }
+  > {
+    if (!this.page) {
+      return { success: false, error: 'Browser page not initialized. Call init() first.', recoverable: true };
+    }
+    try {
+      await this.setViewport(viewport);
+      await this.page.evaluate(() => window.scrollTo(0, 0));
+      const layoutScript = `
+(function () {
+  var vp = ${JSON.stringify(viewport)};
+  var defects = [];
+  var seen = {};
+  function push(severity, type, message) {
+    var key = type + "|" + message;
+    if (seen[key] || defects.length >= 12) return;
+    seen[key] = true;
+    defects.push({ severity: severity, type: type, message: message });
+  }
+  function describe(el) {
+    var tag = el.tagName.toLowerCase();
+    var id = el.id ? "#" + el.id : "";
+    var classes = el.classList ? Array.prototype.slice.call(el.classList, 0, 2) : [];
+    var cls = classes.length > 0 ? "." + classes.join(".") : "";
+    var text = (el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 40);
+    return tag + id + cls + (text ? ' ("' + text + '")' : "");
+  }
+  function isVisible(el) {
+    var rect = el.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return false;
+    var cs = window.getComputedStyle(el);
+    return cs.display !== "none" && cs.visibility !== "hidden" && parseFloat(cs.opacity || "1") > 0.05;
+  }
+  function contentRect(el) {
+    var r = el.getBoundingClientRect();
+    var cs = window.getComputedStyle(el);
+    var pl = parseFloat(cs.paddingLeft) || 0;
+    var pr = parseFloat(cs.paddingRight) || 0;
+    var pt = parseFloat(cs.paddingTop) || 0;
+    var pb = parseFloat(cs.paddingBottom) || 0;
+    var bl = parseFloat(cs.borderLeftWidth) || 0;
+    var br = parseFloat(cs.borderRightWidth) || 0;
+    var bt = parseFloat(cs.borderTopWidth) || 0;
+    var bb = parseFloat(cs.borderBottomWidth) || 0;
+    return {
+      left: r.left + pl + bl,
+      right: r.right - pr - br,
+      top: r.top + pt + bt,
+      bottom: r.bottom - pb - bb,
+      width: Math.max(0, r.width - pl - pr - bl - br),
+      height: Math.max(0, r.height - pt - pb - bt - bb)
+    };
+  }
+  var root = document.documentElement;
+  var width = root.clientWidth;
+  var height = root.clientHeight;
+  var overflowPx = Math.max(0, Math.round(root.scrollWidth - width));
+  if (overflowPx > 1) {
+    var offenders = Array.prototype.slice.call(document.body.querySelectorAll("*"))
+      .filter(isVisible)
+      .map(function (el) { return { el: el, rect: el.getBoundingClientRect() }; })
+      .filter(function (entry) { return entry.rect.right > width + 2 && entry.rect.width > 8; })
+      .slice(0, 3)
+      .map(function (entry) { return describe(entry.el); });
+    push("critical", "horizontal_overflow", "Page content is " + overflowPx + "px wider than the " + width + "px viewport (horizontal scrolling is required)." + (offenders.length > 0 ? " Widest offenders: " + offenders.join(", ") + "." : ""));
+  }
+  var controls = Array.prototype.slice.call(document.querySelectorAll("a[href], button, input, select, textarea, [role='button']"));
+  for (var i = 0; i < controls.length; i++) {
+    var el = controls[i];
+    if (!isVisible(el)) continue;
+    var rect = el.getBoundingClientRect();
+    if (rect.right > width + 2 && rect.left < width) {
+      push("critical", "clipped_interactive", "Interactive element " + describe(el) + " is clipped at the right edge of the " + width + "px viewport (extends " + Math.round(rect.right - width) + "px off-screen).");
+    } else if (rect.left >= width + 2) {
+      push("warning", "offscreen_interactive", "Interactive element " + describe(el) + " is positioned entirely off-screen to the right.");
+    }
+    if (vp === "mobile" && ["BUTTON", "INPUT", "SELECT", "TEXTAREA"].indexOf(el.tagName) !== -1) {
+      if (rect.width < 28 || rect.height < 28) {
+        push("warning", "small_touch_target", "Touch target " + describe(el) + " is " + Math.round(rect.width) + "x" + Math.round(rect.height) + "px; the recommended minimum is 44x44px (28x28px hard floor).");
+      }
+    }
+  }
+  var textSelector = "nav a, aside a, aside span, .sidebar *, .nav-link, .nav-links a, header a, button, .btn, .logo";
+  var textCandidates = Array.prototype.slice.call(document.querySelectorAll(textSelector));
+  for (var j = 0; j < textCandidates.length; j++) {
+    var tel = textCandidates[j];
+    if (!isVisible(tel) || tel.children.length > 0) continue;
+    var text = (tel.textContent || "").replace(/\\s+/g, " ").trim();
+    if (!text) continue;
+    var tcs = window.getComputedStyle(tel);
+    if (tcs.display === "inline" || tcs.overflowX !== "visible") continue;
+    if (tel.clientWidth > 0 && tel.scrollWidth > tel.clientWidth + 4) {
+      var inNav = Boolean(tel.closest("nav, aside, header, .sidebar, .nav-links, .navbar, .nav-container"));
+      push(inNav ? "critical" : "warning", "text_overflow", 'Text "' + text.slice(0, 40) + '" in ' + describe(tel) + " overflows its " + tel.clientWidth + "px container by " + (tel.scrollWidth - tel.clientWidth) + "px" + (inNav ? " and can overlap adjacent content" : "") + ".");
+    }
+  }
+  var navElements = Array.prototype.slice.call(document.querySelectorAll("nav, aside, [role='navigation'], .sidebar, .navbar, .nav-container"));
+  var mainElements = Array.prototype.slice.call(document.querySelectorAll("main, [role='main'], .main-content, .content"));
+  for (var n = 0; n < navElements.length; n++) {
+    var nav = navElements[n];
+    if (!isVisible(nav)) continue;
+    var navRect = nav.getBoundingClientRect();
+    if (navRect.width * navRect.height < 1) continue;
+    for (var m = 0; m < mainElements.length; m++) {
+      var main = mainElements[m];
+      if (!isVisible(main) || nav.contains(main) || main.contains(nav)) continue;
+      var mainRect = contentRect(main);
+      var overlapWidth = Math.min(navRect.right, mainRect.right) - Math.max(navRect.left, mainRect.left);
+      var overlapHeight = Math.min(navRect.bottom, mainRect.bottom) - Math.max(navRect.top, mainRect.top);
+      if (overlapWidth <= 2 || overlapHeight <= 2) continue;
+      var widthRatio = overlapWidth / navRect.width;
+      var heightRatio = overlapHeight / Math.max(1, mainRect.height);
+      if (widthRatio >= 0.2 && heightRatio >= 0.2) {
+        push("critical", "navigation_overlap", "Navigation/sidebar " + describe(nav) + " overlaps " + describe(main) + " by " + Math.round(overlapWidth) + "x" + Math.round(overlapHeight) + "px.");
+      }
+    }
+  }
+  return { viewport: vp, width: width, height: height, horizontalOverflow: overflowPx > 1, overflowPx: overflowPx, defects: defects };
+})()
+`;
+      const analysis = await this.page.evaluate(layoutScript) as LayoutAnalysis;
+
+      return { success: true, analysis };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message ?? 'Failed to analyze page layout',
         recoverable: true
       };
     }
@@ -444,6 +602,32 @@ export class BrowserSession {
       this.page = null;
     }
   }
+}
+
+/**
+ * A measurable layout defect found through DOM geometry and computed styles.
+ * Severity "critical" means the page is visibly broken or unusable at that
+ * viewport; "warning" means a quality concern.
+ */
+export interface LayoutDefect {
+  severity: "critical" | "warning";
+  type:
+    | "horizontal_overflow"
+    | "clipped_interactive"
+    | "offscreen_interactive"
+    | "small_touch_target"
+    | "text_overflow"
+    | "navigation_overlap";
+  message: string;
+}
+
+export interface LayoutAnalysis {
+  viewport: "desktop" | "mobile";
+  width: number;
+  height: number;
+  horizontalOverflow: boolean;
+  overflowPx: number;
+  defects: LayoutDefect[];
 }
 
 /**

@@ -1041,10 +1041,11 @@ export async function ensureAppServer(workspaceRoot: string): Promise<string | n
     PORT: String(port),
   };
 
+  const preexistingPorts = await probePortRange(port, 20, 300);
   const appInfo = spawnAppProcess(command, workingDir, spawnEnv);
   const url = await discoverNewServerUrl({
     candidatePort: port,
-    preexistingPorts: new Set<number>(),
+    preexistingPorts,
     maxProbes: 20,
     timeoutMs: 12000,
     pollMs: 500,

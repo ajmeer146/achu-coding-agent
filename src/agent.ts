@@ -13,8 +13,9 @@ import { editFile } from "./tools/edit-file.js";
 import { listDirectory } from "./tools/list-directory.js";
 import { createFile } from "./tools/create-file.js";
 import { runCommand } from "./tools/terminal.js";
+import { isUITask, generateDesignSpec, formatDesignSpecForPrompt, type DesignSpec } from "./tools/design-planner.js";
 import { navigate } from "./browser/browser-tools.js";
-import { BrowserSession } from "./browser/browser-session.js";
+import { BrowserSession, type LayoutAnalysis, type LayoutDefect } from "./browser/browser-session.js";
 import { detectStartCommand, spawnAppProcess, waitForReadiness, stopAppProcess, getAppUrl, readAppOutput, cleanupAppOutputFile, hasAppProcessExited, extractUrlFromOutput, extractPortFromOutput, AppProcessInfo, detachAppProcess, isServerStartupCommand, isUrlServing, probePortRange, discoverNewServerUrl, getAppRuntime, saveAppRuntime, clearAppRuntime, resolveProjectEntryUrl, isProcessAlive, allocateAvailablePort, isPortAvailable, replacePortInCommand, detectPackageManager } from "./tools/app-lifecycle.js";
 import { verifyTextExists as verify_text, verifyHeadingExists as verify_heading, verifyInputExists as verify_input, verifyLinkExists as verify_link, runVerificationSuite, generateVerificationTargetsFromTask, applyVerificationOutcome, isCriteriaDefectResult, VerificationTarget } from "./browser/browser-verification.js";
 import { open_browser, close_browser, inspect_page } from "./browser/browser-tools.js";
@@ -129,7 +130,49 @@ export type AgentState = {
     snapshotManager: SnapshotManager;
     rollbackRequested?: boolean;
     taskPrompt?: string;
+    taskScope?: TaskScope;
+    scopedTargetFiles?: string[];
+    executionLedger?: ExecutionLedger;
   };
+
+export type TaskClassification = 
+  | "new_project" 
+  | "feature_addition" 
+  | "targeted_edit" 
+  | "bug_fix" 
+  | "refactor" 
+  | "investigation";
+
+export interface TaskScope {
+  classification: TaskClassification;
+  targetFiles: string[];
+  isTargetedEdit: boolean;
+  confidence: number;
+  reason: string;
+}
+
+export interface ChangeVerificationRecord {
+  file: string;
+  tool: string;
+  step: number;
+  verifiedPassed: boolean;
+  error?: string;
+}
+
+export interface ExecutionLedger {
+  taskClassification?: TaskClassification;
+  filesInspected: Set<string>;
+  filesModified: Set<string>;
+  scopedTargetFiles: string[];
+  commandsExecuted: Array<{ cmd: string; exitCode: number | null; step: number }>;
+  verificationResults: Array<{ command: string; passed: boolean; step: number }>;
+  changeVerifications: ChangeVerificationRecord[];
+  serverStartAttempts: number;
+  browserChecks: number;
+  recoveryAttempts: number;
+  consecutiveFailuresWithSameError: number;
+  lastBlocker: string | null;
+}
 
 const DEFAULT_MAX_STEPS = 30;
 const DEFAULT_MAX_RECOVERY_ATTEMPTS = 3;
@@ -143,6 +186,27 @@ const DEFAULT_NVIDIA_RETRY_BASE_DELAY_MS = 1000; // 1 second base delay
 const DEFAULT_NVIDIA_RETRY_MAX_DELAY_MS = 30000; // 30 seconds max delay
 const DEFAULT_NVIDIA_RETRY_BACKOFF_FACTOR = 2;
 
+// Unified tool definitions used in the chat completions API call.
+// Defined once at module level to avoid duplication (C1).
+const AGENT_TOOLS: Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }> = [
+  { type: "function", function: { name: "read_file", description: "Read a file from the workspace.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } } },
+  { type: "function", function: { name: "search_code", description: "Search source files in the workspace.", parameters: { type: "object", properties: { query: { type: "string" }, type: { type: "string", enum: ["text", "symbol", "path", "imports"], description: "Type of search: 'text' (default) for substring, 'symbol' for functions/classes, 'path' for file path, 'imports' to find what imports a module." } }, required: ["query"], additionalProperties: false } } },
+  { type: "function", function: { name: "edit_file", description: "Edit a source file. Use oldText and newText for targeted replacement, or set oldText: '*' (or omit oldText) to replace the entire file content. Use 'edits' array for multiple replacements.", parameters: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" }, edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } }, required: ["newText"] } } }, required: ["path"], additionalProperties: false } } },
+  { type: "function", function: { name: "run_command", description: "Run a safe non-verification terminal command.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
+  { type: "function", function: { name: "run_verification", description: "Run the exact verification command requested by the user.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
+  { type: "function", function: { name: "list_directory", description: "List the contents of a directory in the workspace.", parameters: { type: "object", properties: { directoryPath: { type: "string", description: "Path of directory to list (relative to workspace root)." } }, required: [], additionalProperties: false } } },
+  { type: "function", function: { name: "create_file", description: "Create a new file in the workspace with the given content.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"], additionalProperties: false } } },
+  { type: "function", function: { name: "scaffold_project", description: "Scaffold a complete, runnable modern application structure with valid files and configurations. Templates: 'react-vite' (React 18 + Vite), 'static' (HTML5/CSS3/JS).", parameters: { type: "object", properties: { template: { type: "string", enum: ["react-vite", "static"], description: "Template to scaffold: 'react-vite' or 'static'." }, name: { type: "string", description: "Project name (optional)." } }, required: ["template"], additionalProperties: false } } },
+  { type: "function", function: { name: "navigate", description: "Navigate to a URL in the browser.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
+  { type: "function", function: { name: "start_app", description: "Start the development server for the current project. Detects the start command from package.json and waits for the application to be ready.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
+  { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
+  { type: "function", function: { name: "open_browser", description: "Open a browser session for live preview verification.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
+  { type: "function", function: { name: "close_browser", description: "Close the browser session.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
+  { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks for expected text, headings, buttons, inputs, links, or routes. Provide optional baseUrl and targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Array of verification targets (type: text|heading|button|input|link|route, text/url for expected content).", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
+  { type: "function", function: { name: "take_screenshot", description: "Captures a PNG screenshot of the current browser page for human review. Returns only the image size; the agent cannot visually interpret screenshot pixels. Use inspect_visual_quality for measurable layout checks.", parameters: { type: "object", properties: { viewport: { type: "string", enum: ["desktop", "mobile"], description: "Optional viewport to capture: 'desktop' (1280x800) or 'mobile' (375x667)." } }, required: [], additionalProperties: false } } },
+  { type: "function", function: { name: "inspect_visual_quality", description: "Runs measurable layout checks (horizontal overflow, clipped interactive elements, navigation overlap, text overflow, small touch targets) at desktop and mobile viewports. Use after browser_verify to find real layout defects. Does not interpret screenshot pixels.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
+];
+
 function truncate(value: string, max = MAX_OUTPUT): string {
   if (value.length <= max) return value;
   return `${value.slice(0, max)}\n...[output truncated]`;
@@ -151,6 +215,56 @@ function truncate(value: string, max = MAX_OUTPUT): string {
 function truncateToolResult(value: string): string {
   if (value.length <= MAX_TOOL_RESULT_SIZE) return value;
   return `${value.slice(0, MAX_TOOL_RESULT_SIZE)}\n...[tool result truncated: ${value.length} bytes total]`;
+}
+
+const VISUAL_METHOD_NOTE =
+  "Visual inspection method: DOM layout measurements only. This agent cannot interpret screenshot pixels, so no image-based visual judgment was performed.";
+
+function formatLayoutAnalysis(label: string, analysis: LayoutAnalysis): string {
+  const header = `${label} (${analysis.width}x${analysis.height}):`;
+  if (analysis.defects.length === 0) {
+    return `${header} no measurable layout defects.`;
+  }
+  const lines = analysis.defects.map(d => `  - [${d.severity}] ${d.message}`);
+  return `${header}\n${lines.join("\n")}`;
+}
+
+interface VisualQualityReport {
+  desktop: LayoutAnalysis;
+  mobile: LayoutAnalysis;
+  critical: LayoutDefect[];
+  warnings: LayoutDefect[];
+}
+
+async function runVisualQualityChecks(session: BrowserSession, baseUrl: string): Promise<VisualQualityReport | null> {
+  try {
+    const navResult = await session.navigate(baseUrl);
+    if (!navResult.success) return null;
+
+    const desktopResult = await session.analyzeLayout("desktop");
+    const mobileResult = await session.analyzeLayout("mobile");
+    try { await session.setViewport("desktop"); } catch { /* viewport reset is best-effort */ }
+
+    if (!desktopResult.success || !mobileResult.success) return null;
+
+    const all = [...desktopResult.analysis.defects, ...mobileResult.analysis.defects];
+    return {
+      desktop: desktopResult.analysis,
+      mobile: mobileResult.analysis,
+      critical: all.filter(d => d.severity === "critical"),
+      warnings: all.filter(d => d.severity === "warning"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatVisualQualityReport(report: VisualQualityReport): string {
+  return [
+    formatLayoutAnalysis("Desktop layout", report.desktop),
+    formatLayoutAnalysis("Mobile layout", report.mobile),
+    VISUAL_METHOD_NOTE,
+  ].join("\n");
 }
 
 export function stripEnclosingQuotes(command: string): string {
@@ -528,6 +642,120 @@ export async function detectExistingProject(workspace: Workspace): Promise<{
   }
 
   return { hasProject: existingFiles.length > 0, projectType, existingFiles, framework };
+}
+
+/**
+ * Classifies a user coding task to determine scope, targeted files, and execution strategy.
+ */
+export function classifyTask(
+  task: string,
+  existingProjectInfo?: {
+    hasProject: boolean;
+    projectType: string;
+    existingFiles: string[];
+    framework: string | null;
+  }
+): TaskScope {
+  const lower = task.toLowerCase();
+  const hasProject = existingProjectInfo?.hasProject ?? false;
+
+  // Extract explicit file targets mentioned in the task
+  const fileRegex = /\b(?:[\w.-]+[\\/])*[\w.-]+\.(?:ts|tsx|js|jsx|html|css|json|py|rs|go|mjs|cjs)\b/gi;
+  const matches = task.match(fileRegex) || [];
+  const targetFiles = Array.from(new Set(matches.map(m => m.replace(/\\/g, "/"))));
+
+  // 1. Investigation / Read-Only check
+  if (/(?:do\s+not|don'?t|never)\s+(?:modify|edit|change)\s+(?:the\s+)?(?:file|code|source)|read\.?only|inspect\s+only|explain\s+only|analyze\s+only|tell\s+me|what\s+(?:is|does|this)/i.test(lower)) {
+    return {
+      classification: "investigation",
+      targetFiles,
+      isTargetedEdit: false,
+      confidence: 0.9,
+      reason: "Task requested inspection/explanation without modifying source code."
+    };
+  }
+
+  // Check primary creation intent for new projects (e.g. "Create a task manager...", "Build a website...")
+  const isCreationIntent = /^\s*(?:create|build|scaffold|generate|setup|make)\s+(?:a|an)\s+(?:new\s+)?(?:small\s+|polished\s+|responsive\s+|modern\s+)?(?:task\s+manager|website|web\s*app|app|landing\s+page|portfolio|dashboard|project|site)/i.test(lower) ||
+    (/\b(?:from\s+scratch|brand\s+new|build\s+(?:a|an)\s+(?:landing|website|app|portfolio|dashboard))\b/i.test(lower) && !hasProject);
+
+  if (isCreationIntent && !hasProject) {
+    return {
+      classification: "new_project",
+      targetFiles,
+      isTargetedEdit: false,
+      confidence: 0.95,
+      reason: "Task requested creating a complete new application from scratch."
+    };
+  }
+
+  // 2. Bug Fix check (excluding subordinate instructions like "fix any errors you encounter")
+  const hasSubordinateFixOnly = /fix\s+any\s+(?:errors?|issues?|problems?)\s+you\s+encounter/i.test(lower) && !/\b(?:there\s+is\s+a\s+bug|fix\s+the\s+bug|fix\s+the\s+error|bug\s+in|broken\s+function)\b/i.test(lower);
+  if (!hasSubordinateFixOnly && /\b(?:fix|bug|broken|error|crash|failure|failing|issue|exception|syntax\s*error)\b/i.test(lower)) {
+    return {
+      classification: "bug_fix",
+      targetFiles,
+      isTargetedEdit: targetFiles.length > 0 || /\b(in\s+[\w.-]+|the\s+heading|the\s+button|the\s+input)\b/i.test(lower),
+      confidence: 0.85,
+      reason: "Task requested diagnosing and resolving a bug or failure."
+    };
+  }
+
+  // 3. Refactor check
+  if (/\b(?:refactor|cleanup|clean\s*up|restructure|reorganize|re-architect|simplify\s+code)\b/i.test(lower)) {
+    return {
+      classification: "refactor",
+      targetFiles,
+      isTargetedEdit: targetFiles.length > 0,
+      confidence: 0.85,
+      reason: "Task requested code restructuring/refactoring."
+    };
+  }
+
+  // 4. Targeted Edit check
+  const isNarrowScope = (targetFiles.length > 0 && targetFiles.length <= 2) ||
+    /\b(?:change|update|edit|replace|rename|modify)\s+(?:the\s+)?(?:heading|title|button|color|spacing|padding|margin|font|text|label|link|hero|navbar|footer|placeholder)\b/i.test(lower) ||
+    /\b(?:single\s+heading|only\s+change|one\s+component|single\s+file)\b/i.test(lower);
+
+  if (isNarrowScope && (hasProject || targetFiles.length > 0 || /\b(?:in\s+[\w.-]+|the\s+heading|the\s+button)\b/i.test(lower))) {
+    return {
+      classification: "targeted_edit",
+      targetFiles,
+      isTargetedEdit: true,
+      confidence: 0.95,
+      reason: "Task requested a narrowly scoped modification to a specific component or section."
+    };
+  }
+
+  // 5. Feature Addition check (on existing project)
+  if (hasProject && /\b(?:add|create|implement|introduce|extend|new\s+page|new\s+route|new\s+component|new\s+section|new\s+feature)\b/i.test(lower)) {
+    return {
+      classification: "feature_addition",
+      targetFiles,
+      isTargetedEdit: false,
+      confidence: 0.85,
+      reason: "Task requested adding a new feature or component to an existing project."
+    };
+  }
+
+  // 6. New Project check
+  if (!hasProject || /\b(?:scaffold|from\s+scratch|brand\s+new|build\s+(?:a|an)\s+(?:landing|website|app|portfolio|dashboard))\b/i.test(lower)) {
+    return {
+      classification: "new_project",
+      targetFiles,
+      isTargetedEdit: false,
+      confidence: 0.9,
+      reason: "Task requested creating a complete new application from scratch."
+    };
+  }
+
+  return {
+    classification: isNarrowScope ? "targeted_edit" : "feature_addition",
+    targetFiles,
+    isTargetedEdit: isNarrowScope,
+    confidence: 0.75,
+    reason: "Inferred from workspace state and prompt keywords."
+  };
 }
 
 export function initializePlan(task: string, existingProjectInfo?: { hasProject: boolean; projectType: string; existingFiles: string[]; framework: string | null }): PlanStep[] {
@@ -1091,6 +1319,7 @@ export function isToolResultFailure(toolName: string, result: string): boolean {
     if (result.includes("VERIFICATION FAILED")) return true;
     if (toolName === "browser_verify" && result.includes("Browser verification failed")) return true;
     if (toolName === "browser_verify" && result.includes("Browser verification incomplete")) return true;
+    if (toolName === "browser_verify" && result.includes("measurable visual defects")) return true;
   }
   if (toolName === "navigate" && result.includes("Navigation failed:")) return true;
   if (toolName === "start_app" && (result.includes("failed to become ready") || result.includes("No start command found") || result.includes("App failed to become ready"))) return true;
@@ -1405,13 +1634,33 @@ export function generateRecoveryHint(state: AgentState): string | null {
       ? `\n- This failure is a deterministic verification-criteria construction error (e.g. a semantic input type in the "selector" field, or a malformed selector), NOT a page defect. Do NOT edit or rewrite source files in response. Fix the target fields: "selector" takes CSS (#email, input[type="email"]), "inputType" takes semantic types (email, password), and label/placeholder/name take their literal values.`
       : `\n- If elements are missing or styled incorrectly, edit the React/HTML files with 'edit_file'.`;
     repeatedHint += `\n\nBROWSER VERIFICATION GUIDANCE:${failedAssertions}\n- Ensure the application server is running and ready.\n- Re-run browser_verify with target criteria that match the page's actual DOM.${fixGuidance}`;
+    if (/measurable visual defects/i.test(err.errorMessage ?? "")) {
+      repeatedHint += `\n- The content assertions passed but measurable layout defects were reported (see error text). Apply targeted CSS/HTML fixes for each listed defect (overflow, clipping, overlap, text overflow, touch targets) and re-run browser_verify. Do NOT claim visual success while these defects are reported.`;
+    }
   }
   if (err.command === "edit_file") {
     repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- To update the file, either read the latest content with 'read_file' first to get exact matching context, or specify 'oldText: "*"' with your new content in 'edit_file' to update the file directly.`;
   }
+  if (err.errorMessage?.includes("TRUNCATED_OR_INCOMPLETE_OUTPUT") || err.errorMessage?.includes("SYNTAX_VALIDATION_ERROR")) {
+    repeatedHint += `\n\nTRUNCATION & SYNTAX ERROR RECOVERY GUIDANCE:\n- The file was truncated or contains unclosed/incomplete syntax blocks.\n- Error details: ${err.errorMessage}\n- Do NOT write empty or partial files.\n- Use 'edit_file' with sufficient surrounding context or append the missing closing braces/rules to complete the file.\n- Ensure all blocks (CSS rules, HTML tags, JS functions) are properly terminated before proceeding.`;
+  }
   // CRITICAL: If the failure was using run_command for server startup, explicitly block it
   if (err.command === "run_command" && /\b(npx\s+(serve|http-server)|npm\s+run\s+(dev|start|serve|preview))\b/i.test(err.errorMessage ?? "")) {
     repeatedHint += `\n\nCRITICAL: run_command CANNOT be used to start development servers. You MUST use the 'start_app' tool. The 'start_app' tool detects the correct command from package.json, waits for readiness, and returns the actual URL.`;
+  }
+  if (state.executionLedger) {
+    if (state.executionLedger.serverStartAttempts >= 2 && err.command === "start_app") {
+      repeatedHint += `\n- Server start was attempted ${state.executionLedger.serverStartAttempts} times. If the server is already active or listening on an allocated port, do NOT restart it; use browser_verify directly.`;
+    }
+    if (state.executionLedger.filesModified.size > 0) {
+      repeatedHint += `\n- Recently modified files (${state.executionLedger.filesModified.size}): ${Array.from(state.executionLedger.filesModified).slice(-5).join(", ")}. Verify syntax and component exports in these files.`;
+    }
+    if (state.taskScope?.isTargetedEdit) {
+      repeatedHint += `\n- TARGETED EDIT FOCUS: This is a targeted edit (${state.taskScope.classification}). Modify ONLY the requested component/section in ${state.scopedTargetFiles?.length ? state.scopedTargetFiles.join(", ") : "the target file"} and preserve all surrounding lines and unrelated files.`;
+    }
+    if (state.executionLedger.consecutiveFailuresWithSameError >= 2) {
+      repeatedHint += `\n- UNCHANGED ERROR DETECTED: The same error occurred repeatedly across recovery attempts. Do NOT re-apply the same edit; inspect surrounding context with 'read_file' and diagnose the underlying cause.`;
+    }
   }
   return repeatedHint;
 }
@@ -1603,13 +1852,18 @@ async function executeVerification(workspace: Workspace, command: string, state:
   return verification;
 }
 
-export function createSystemPrompt(workspaceRoot: string, requestedVerification: string | null, architectureSummary: string | null): string {
+export function createSystemPrompt(workspaceRoot: string, requestedVerification: string | null, architectureSummary: string | null, taskScope?: TaskScope, designSpec?: DesignSpec | null): string {
+  const scopeSection = taskScope ? `
+TASK CLASSIFICATION & SCOPE:
+- Mode: ${taskScope.classification.toUpperCase()} (${taskScope.reason})
+${taskScope.isTargetedEdit ? `- TARGETED EDIT SCOPE: Make the smallest necessary source-code change for the requested edit. Preserve surrounding code, comments, imports, and unrelated components. DO NOT rewrite entire files when a targeted patch suffices.\n` : ''}${taskScope.targetFiles.length > 0 ? `- Scoped Target Files: ${taskScope.targetFiles.join(", ")}\n` : ''}` : '';
+
   return `You are Achu Coding Agent, an autonomous general-purpose software engineering agent.
 
 Workspace:
 ${workspaceRoot}
 
-${architectureSummary ? `PROJECT ARCHITECTURE:\n${architectureSummary}\n` : ''}
+${architectureSummary ? `PROJECT ARCHITECTURE:\n${architectureSummary}\n` : ''}${scopeSection}
 Your job:
 1. Understand the user's task.
 2. Inspect existing source code before editing.
@@ -1652,6 +1906,21 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
 - Deliver functional and responsive websites with accessible buttons, forms, and interactions.
 - Avoid random gradients, unnecessary decorative elements, and generic placeholder text unless appropriate for the design.
 
+${designSpec ? `PHASE 13 — DESIGN INTELLIGENCE ACTIVE:
+A design specification has been pre-computed for this task. YOU MUST follow it faithfully:
+
+${formatDesignSpecForPrompt(designSpec)}
+
+VISUAL VERIFICATION SELF-IMPROVEMENT LOOP (Phase 13.2):
+After browser_verify passes content assertions, it automatically runs measurable layout checks at desktop (1280x800) and mobile (375x667) viewports.
+1. Read the reported measurable defects (horizontal overflow, clipped interactive elements, navigation overlap, text overflow, small touch targets).
+2. For each concrete defect, make targeted CSS/HTML corrections.
+3. Re-run browser_verify (maximum 2 correction iterations). Layout defects block verification success until fixed or the attempt limit is reached.
+4. Use inspect_visual_quality at any time for the full measurable layout report, and take_screenshot only when a human needs a PNG file for review.
+5. You CANNOT see screenshot pixels. Never claim visual inspection based on a screenshot; base visual fixes only on measurable defects reported by these tools.
+6. Report any remaining visual issues honestly.
+DO NOT make unrelated changes to pass a layout check.
+` : ""}
 EXECUTION SPEED AND EFFICIENCY:
 - Keep the process efficient. Simple tasks must not trigger excessive planning or over-decomposition.
 - Avoid redundant model calls and repeated analysis of unchanged files.
@@ -1926,23 +2195,6 @@ async function callModelWithRetry(
   const maxDelayMs = options?.maxDelayMs ?? DEFAULT_NVIDIA_RETRY_MAX_DELAY_MS;
   const backoffFactor = options?.backoffFactor ?? DEFAULT_NVIDIA_RETRY_BACKOFF_FACTOR;
 
-  const tools = [
-    { type: "function", function: { name: "read_file", description: "Read a file from the workspace.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } } },
-    { type: "function", function: { name: "search_code", description: "Search source files in the workspace.", parameters: { type: "object", properties: { query: { type: "string" }, type: { type: "string", enum: ["text", "symbol", "path", "imports"], description: "Type of search: 'text' (default) for substring, 'symbol' for functions/classes, 'path' for file path, 'imports' to find what imports a module." } }, required: ["query"], additionalProperties: false } } },
-    { type: "function", function: { name: "edit_file", description: "Edit one or more occurrences in a source file. Use 'edits' array for multiple replacements, or oldText/newText for a single replacement. Be sure to provide enough context in oldText to match exactly one location.", parameters: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" }, edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } }, required: ["oldText", "newText"] } } }, required: ["path"], additionalProperties: false } } },
-    { type: "function", function: { name: "run_command", description: "Run a safe non-verification terminal command.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
-    { type: "function", function: { name: "run_verification", description: "Run the exact verification command requested by the user.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
-    { type: "function", function: { name: "list_directory", description: "List the contents of a directory in the workspace.", parameters: { type: "object", properties: { directoryPath: { type: "string", description: "Path of directory to list (relative to workspace root)." } }, required: [], additionalProperties: false } } },
-    { type: "function", function: { name: "create_file", description: "Create a new file in the workspace with the given content.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"], additionalProperties: false } } },
-    { type: "function", function: { name: "scaffold_project", description: "Scaffold a complete, runnable modern application structure with valid files and configurations. Templates: 'react-vite' (React 18 + Vite), 'static' (HTML5/CSS3/JS).", parameters: { type: "object", properties: { template: { type: "string", enum: ["react-vite", "static"], description: "Template to scaffold: 'react-vite' or 'static'." }, name: { type: "string", description: "Project name (optional)." } }, required: ["template"], additionalProperties: false } } },
-    { type: "function", function: { name: "navigate", description: "Navigate to a URL in the browser.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
-    { type: "function", function: { name: "start_app", description: "Start the development server for the current project. Detects the start command from package.json and waits for the application to be ready.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-    { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-    { type: "function", function: { name: "open_browser", description: "Open a browser session for live preview verification.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-    { type: "function", function: { name: "close_browser", description: "Close the browser session.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-    { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks for expected text, headings, buttons, inputs, links, or routes. Provide optional baseUrl and targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Array of verification targets (type: text|heading|button|input|link|route, text/url for expected content).", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
-  ];
-
   const isRetriableError = (error: any): boolean => {
     if (!error) return false;
     // Timeout/abort errors
@@ -2008,22 +2260,7 @@ async function callModelWithRetry(
           model,
           messages: messages as any,
           temperature: 0,
-          tools: [
-            { type: "function", function: { name: "read_file", description: "Read a file from the workspace.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } } },
-            { type: "function", function: { name: "search_code", description: "Search source files in the workspace.", parameters: { type: "object", properties: { query: { type: "string" }, type: { type: "string", enum: ["text", "symbol", "path", "imports"], description: "Type of search: 'text' (default) for substring, 'symbol' for functions/classes, 'path' for file path, 'imports' to find what imports a module." } }, required: ["query"], additionalProperties: false } } },
-            { type: "function", function: { name: "edit_file", description: "Edit a source file. Use oldText and newText for targeted replacement, or set oldText: '*' (or omit oldText) to replace the entire file content. Use 'edits' array for multiple replacements.", parameters: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" }, edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } }, required: ["newText"] } } }, required: ["path"], additionalProperties: false } } },
-            { type: "function", function: { name: "run_command", description: "Run a safe non-verification terminal command.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
-            { type: "function", function: { name: "run_verification", description: "Run the exact verification command requested by the user.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
-            { type: "function", function: { name: "list_directory", description: "List the contents of a directory in the workspace.", parameters: { type: "object", properties: { directoryPath: { type: "string", description: "Path of directory to list (relative to workspace root)." } }, required: [], additionalProperties: false } } },
-            { type: "function", function: { name: "create_file", description: "Create a new file in the workspace with the given content.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"], additionalProperties: false } } },
-            { type: "function", function: { name: "scaffold_project", description: "Scaffold a complete, runnable modern application structure with valid files and configurations. Templates: 'react-vite' (React 18 + Vite), 'static' (HTML5/CSS3/JS).", parameters: { type: "object", properties: { template: { type: "string", enum: ["react-vite", "static"], description: "Template to scaffold: 'react-vite' or 'static'." }, name: { type: "string", description: "Project name (optional)." } }, required: ["template"], additionalProperties: false } } },
-            { type: "function", function: { name: "navigate", description: "Navigate to a URL in the browser.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
-            { type: "function", function: { name: "start_app", description: "Start the development server for the current project. Detects the start command from package.json and waits for the application to be ready.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-            { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-            { type: "function", function: { name: "open_browser", description: "Open a browser session for live preview verification.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-            { type: "function", function: { name: "close_browser", description: "Close the browser session.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-            { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks for expected text, headings, buttons, inputs, links, or routes. Provide optional baseUrl and targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Array of verification targets (type: text|heading|button|input|link|route, text/url for expected content).", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
-          ],
+          tools: AGENT_TOOLS as any,
         },
         { timeout: requestTimeoutMs }
       );
@@ -2116,7 +2353,11 @@ const schemas = {
       label: z.string().optional(),
       required: z.boolean().optional()
     })).optional()
-  })
+  }),
+  take_screenshot: z.object({
+    viewport: z.enum(["desktop", "mobile"]).optional()
+  }),
+  inspect_visual_quality: z.object({})
 };
 
 async function executeTool(workspace: Workspace, toolCall: ToolCall, state: AgentState): Promise<string> {
@@ -2135,6 +2376,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
     switch (toolCall.function.name) {
       case "read_file": {
         const filePath = args.path;
+        state.executionLedger?.filesInspected.add(filePath);
         const normRead = filePath.replaceAll("\\", "/").toLowerCase();
         if (normRead.split("/").pop()?.startsWith(".env")) {
           return "BLOCKED: Reading .env files is not permitted to protect environment secrets.";
@@ -2143,11 +2385,31 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         const content = await readFile(workspace, filePath);
         return truncateToolResult(content);
       }
-      case "search_code": { const query = args.query; const searchType = args.type || "text"; console.log(chalk.gray(`Searching (${searchType}): ${query}`)); const results = await searchCode(workspace, query, searchType); return truncateToolResult(results); }
+      case "search_code": { const query = args.query; const searchType = args.type || "text"; if (query) state.executionLedger?.filesInspected.add(query); console.log(chalk.gray(`Searching (${searchType}): ${query}`)); const results = await searchCode(workspace, query, searchType); return truncateToolResult(results); }
       case "edit_file": {
         const filePath = args.path;
+        state.executionLedger?.filesModified.add(filePath);
+        if (state.executionLedger) {
+          state.executionLedger.changeVerifications.push({
+            file: filePath,
+            tool: "edit_file",
+            step: state.commandHistory.length,
+            verifiedPassed: false,
+          });
+        }
         const edits = args.edits || [{ oldText: args.oldText !== undefined ? args.oldText : "*", newText: args.newText || "" }];
         const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
+
+        // Scope awareness for targeted edits
+        if (state.taskScope?.isTargetedEdit && state.scopedTargetFiles && state.scopedTargetFiles.length > 0) {
+          const isScoped = state.scopedTargetFiles.some(f => {
+            const nf = f.toLowerCase().replace(/^\.\/+/, "");
+            return normalizedPath.endsWith(nf) || nf.endsWith(normalizedPath);
+          });
+          if (!isScoped && isUnrequestedFileMutation(state.taskPrompt || "", filePath)) {
+            console.log(chalk.yellow(`[Scope Notice] Targeted edit modifying ${filePath} outside primary targets: ${state.scopedTargetFiles.join(", ")}`));
+          }
+        }
         const fileName = normalizedPath.split("/").pop() || normalizedPath;
         if (fileName.startsWith(".env")) {
           return `BLOCKED: ${filePath} is an environment configuration file and cannot be modified automatically.`;
@@ -2228,6 +2490,14 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         const isCancelled = combinedOut.includes("Operation cancelled") || combinedOut.includes("canceled by user");
         const effectiveExitCode = isCancelled && result.exitCode === 0 ? 1 : result.exitCode;
 
+        if (state.executionLedger) {
+          state.executionLedger.commandsExecuted.push({
+            cmd: command,
+            exitCode: effectiveExitCode,
+            step: state.commandHistory.length,
+          });
+        }
+
         if (isCancelled) {
           return truncateToolResult([
             `Exit code: 1`,
@@ -2245,10 +2515,42 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>"
         ].join("\n"));
       }
-      case "run_verification": { const command = normalizeCommand(args.command); try { const result = await executeVerification(workspace, command, state); const combinedOutput = `${result.stdout}\n${result.stderr}`; if (result.exitCode !== 0 && isEnvironmentVerificationFailure(combinedOutput)) { return truncate([`Verification command: ${result.command}`, `Exit code: ${result.exitCode}`, result.stdout ? `STDOUT:\n${result.stdout}` : "STDOUT: <empty>", result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>", "", "VERIFICATION FAILED", "TS5112 CONFIGURATION ERROR", "", "STOP: The exact requested command cannot be made to succeed through source-code changes.", "No configuration workaround is permitted."].join("\n")); } return truncateToolResult([`Verification command: ${result.command}`, `Exit code: ${result.exitCode}`, result.stdout ? `STDOUT:\n${result.stdout}` : "STDOUT: <empty>", result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>", result.exitCode === 0 ? "VERIFICATION PASSED" : "VERIFICATION FAILED"].join("\n")); } catch (error) { const message = error instanceof Error ? error.message : String(error); if (state.stopReason) return `STOPPED SAFELY: ${message}`; return `Verification error: ${message}`; } }
+      case "run_verification": {
+        const command = normalizeCommand(args.command);
+        try {
+          const result = await executeVerification(workspace, command, state);
+          if (state.executionLedger) {
+            const passed = result.exitCode === 0;
+            state.executionLedger.verificationResults.push({
+              command,
+              passed,
+              step: state.commandHistory.length,
+            });
+            for (const cv of state.executionLedger.changeVerifications) {
+              cv.verifiedPassed = passed;
+            }
+          }
+          const combinedOutput = `${result.stdout}\n${result.stderr}`;
+          if (result.exitCode !== 0 && isEnvironmentVerificationFailure(combinedOutput)) { return truncate([`Verification command: ${result.command}`, `Exit code: ${result.exitCode}`, result.stdout ? `STDOUT:\n${result.stdout}` : "STDOUT: <empty>", result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>", "", "VERIFICATION FAILED", "TS5112 CONFIGURATION ERROR", "", "STOP: The exact requested command cannot be made to succeed through source-code changes.", "No configuration workaround is permitted."].join("\n")); }
+          return truncateToolResult([`Verification command: ${result.command}`, `Exit code: ${result.exitCode}`, result.stdout ? `STDOUT:\n${result.stdout}` : "STDOUT: <empty>", result.stderr ? `STDERR:\n${result.stderr}` : "STDERR: <empty>", result.exitCode === 0 ? "VERIFICATION PASSED" : "VERIFICATION FAILED"].join("\n"));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (state.stopReason) return `STOPPED SAFELY: ${message}`;
+          return `Verification error: ${message}`;
+        }
+      }
       case "list_directory": { const directoryPath = args.directoryPath; console.log(chalk.gray(`Listing: ${directoryPath}`)); const result = await listDirectory(workspace, directoryPath); return truncate(result); }
       case "create_file": {
         const filePath = args.path; const content = args.content;
+        state.executionLedger?.filesModified.add(filePath);
+        if (state.executionLedger) {
+          state.executionLedger.changeVerifications.push({
+            file: filePath,
+            tool: "create_file",
+            step: state.commandHistory.length,
+            verifiedPassed: false,
+          });
+        }
         const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
         const fileName = normalizedPath.split("/").pop() || normalizedPath;
         if (fileName.startsWith(".env")) {
@@ -2336,6 +2638,9 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         return `Successfully scaffolded '${template}' project with files: ${scaffoldRes.files.join(", ")}`;
       }
       case "start_app": {
+        if (state.executionLedger) {
+          state.executionLedger.serverStartAttempts++;
+        }
         // Enforce lifecycle: sync authoritative root first
         const authoritativeRoot = await workspace.getAuthoritativeProjectRoot();
         if (authoritativeRoot !== workspace.root) {
@@ -2596,6 +2901,9 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         return "App process stopped.";
       }
       case "browser_verify": {
+        if (state.executionLedger) {
+          state.executionLedger.browserChecks++;
+        }
         if (!state.browserSession) {
           const session = new BrowserSession();
           const availability = await session.isAvailable();
@@ -2686,9 +2994,6 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           return `Browser verification failed (attempt ${state.browserVerificationAttempts}/${state.maxBrowserVerificationAttempts}) at ${baseUrl}:\n${lines.join("\n")}${errorText}${outstandingNote}${criteriaNote}`;
         }
 
-          state.browserVerificationAttempts = 0;
-          state.browserVerificationPassed = true;
-          if (state.browserVerificationRequested) state.verificationPassed = true;
           const lines = summary.results.map(r => `✓ ${r.target.type}: ${r.actual}`);
           let warningText = "";
           if (summary.pageInfo) {
@@ -2697,7 +3002,28 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
               warningText = `\n(Note: Passed, but had console errors:\n- ${allErrors.slice(0, 5).join("\n- ")})`;
             }
           }
-          return `Browser verification passed at ${baseUrl}:\n${lines.join("\n")}${warningText}`;
+
+          const visualReport = await runVisualQualityChecks(state.browserSession, baseUrl);
+          if (visualReport && visualReport.critical.length > 0) {
+            const visualDetail = formatVisualQualityReport(visualReport);
+            if (state.browserVerificationAttempts >= state.maxBrowserVerificationAttempts) {
+              return `Browser verification failed after ${state.browserVerificationAttempts} attempts at ${baseUrl}: content assertions passed, but measurable visual defects remain unfixed:\n${visualDetail}\nReport these remaining visual issues honestly instead of claiming visual success.`;
+            }
+            return `Browser verification: content assertions passed (attempt ${state.browserVerificationAttempts}/${state.maxBrowserVerificationAttempts}) at ${baseUrl}, but measurable visual defects were detected:\n${visualDetail}\nFix these layout defects with targeted CSS/HTML edits, then re-run browser_verify. Do not claim visual quality until these checks pass.`;
+          }
+
+          state.browserVerificationAttempts = 0;
+          state.browserVerificationPassed = true;
+          if (state.browserVerificationRequested) state.verificationPassed = true;
+          let visualText: string;
+          if (visualReport) {
+            visualText = visualReport.warnings.length > 0
+              ? `\nMeasurable layout checks (non-blocking warnings):\n${visualReport.warnings.slice(0, 5).map(w => `- ${w.message}`).join("\n")}\n${VISUAL_METHOD_NOTE}`
+              : `\nMeasurable layout checks: no defects found at desktop and mobile viewports. ${VISUAL_METHOD_NOTE}`;
+          } else {
+            visualText = `\nMeasurable layout checks could not be completed. ${VISUAL_METHOD_NOTE}`;
+          }
+          return `Browser verification passed at ${baseUrl}:\n${lines.join("\n")}${warningText}${visualText}`;
       }
       case "open_browser": {
         if (state.browserSession) return "Browser already open.";
@@ -2719,6 +3045,30 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         return `Browser session skipped: Browser automation service unavailable (${result.error}). Application edits remain intact.`;
       }
       case "close_browser": { if (!state.browserSession) return "Browser not open."; const result = await close_browser(state.browserSession); state.browserSession = null; return result.success ? "Browser closed" : `Failed to close browser: ${result.error}`; }
+      case "take_screenshot": {
+        if (!state.browserSession) return "Tool error: Browser is not open. Use open_browser first.";
+        try {
+          const viewport = args?.viewport as "desktop" | "mobile" | undefined;
+          const shotResult = await state.browserSession.screenshot({ viewport });
+          if (state.executionLedger) state.executionLedger.browserChecks++;
+          if (!shotResult.success) {
+            return `Tool error: Screenshot failed: ${shotResult.error}`;
+          }
+          return `Screenshot captured (${shotResult.screenshot.length} bytes base64${viewport ? `, viewport: ${viewport}` : ""}). Note: screenshot pixels cannot be interpreted by this agent; use inspect_visual_quality for measurable layout checks.`;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return `Tool error: Screenshot failed: ${message}`;
+        }
+      }
+      case "inspect_visual_quality": {
+        if (!state.browserSession) return "Tool error: Browser is not open. Use open_browser first.";
+        const baseUrl = state.appUrl || (state.appProcess ? getAppUrl(state.appProcess) : null);
+        if (!baseUrl) return "No base URL available. Start the app first.";
+        if (state.executionLedger) state.executionLedger.browserChecks++;
+        const report = await runVisualQualityChecks(state.browserSession, baseUrl);
+        if (!report) return `Tool error: Visual quality checks could not be completed at ${baseUrl}.`;
+        return `Measurable visual quality report for ${baseUrl}:\n${formatVisualQualityReport(report)}`;
+      }
       default: return `Unknown tool: ${toolCall.function.name}`;
     }
   } catch (error) { const message = error instanceof Error ? error.message : String(error); return `Tool error: ${message}`; }
@@ -2839,6 +3189,13 @@ export async function runAgent(
     }
   }
 
+  // Task Classification & Scoping
+  const taskScope = classifyTask(task, existingProjectInfo);
+  console.log(chalk.cyan(`Task Classification: ${taskScope.classification.toUpperCase()} (targeted: ${taskScope.isTargetedEdit})`));
+  if (taskScope.targetFiles.length > 0) {
+    console.log(chalk.gray(`Target files in scope: ${taskScope.targetFiles.join(", ")}`));
+  }
+
   let initialPlan: PlanStep[];
   let state: AgentState;
 
@@ -2880,6 +3237,22 @@ export async function runAgent(
       projectState: sessionProjectState,
       snapshotManager,
       taskPrompt: task,
+      taskScope,
+      scopedTargetFiles: taskScope.targetFiles,
+      executionLedger: {
+        taskClassification: taskScope.classification,
+        filesInspected: new Set(),
+        filesModified: new Set(),
+        scopedTargetFiles: taskScope.targetFiles,
+        commandsExecuted: [],
+        verificationResults: [],
+        changeVerifications: [],
+        serverStartAttempts: 0,
+        browserChecks: 0,
+        recoveryAttempts: sessionState.recoveryAttempts || 0,
+        consecutiveFailuresWithSameError: 0,
+        lastBlocker: null,
+      },
     };
   } else {
     initialPlan = initializePlan(task, existingProjectInfo);
@@ -2922,6 +3295,22 @@ export async function runAgent(
         },
         snapshotManager,
         taskPrompt: task,
+        taskScope,
+        scopedTargetFiles: taskScope.targetFiles,
+        executionLedger: {
+          taskClassification: taskScope.classification,
+          filesInspected: new Set(),
+          filesModified: new Set(),
+          scopedTargetFiles: taskScope.targetFiles,
+          commandsExecuted: [],
+          verificationResults: [],
+          changeVerifications: [],
+          serverStartAttempts: 0,
+          browserChecks: 0,
+          recoveryAttempts: 0,
+          consecutiveFailuresWithSameError: 0,
+          lastBlocker: null,
+        },
       };
   }
 
@@ -2954,16 +3343,44 @@ export async function runAgent(
 
   const planContext = state.currentPlan.length > 1 ? `\n\nPlanned steps:\n` + state.currentPlan.map((s, i) => `${i + 1}. ${s.description} [tool: ${s.toolType || 'none'}]${s.dependsOn ? ` (depends on: ${s.dependsOn.join(", ")})` : ""}`).join("\n") : "";
 
-  const MAX_MESSAGE_HISTORY = 50;
+  // Phase 13: Generate design spec for UI tasks
+  const p13DesignSpec: DesignSpec | null = isUITask(task) ? generateDesignSpec(task) : null;
+  if (p13DesignSpec) {
+    console.log(chalk.magenta(`[Phase 13] Design Intelligence: ${p13DesignSpec.direction} / ${p13DesignSpec.productType}`));
+  }
+
+  const MAX_MESSAGE_HISTORY = 60;
   let messages: ChatMessage[] = [
-    { role: "system", content: createSystemPrompt(workspace.root, requestedVerification, architectureSummary) },
+    { role: "system", content: createSystemPrompt(workspace.root, requestedVerification, architectureSummary, taskScope, p13DesignSpec) },
     { role: "user", content: task + planContext },
   ];
 
+  function summarizeToolOutput(content: string, toolName?: string): string {
+    if (!content || content.length <= 1500) return content;
+    const prefix = content.slice(0, 300);
+    const suffix = content.slice(-200);
+    const omitted = content.length - 500;
+    return `${prefix}\n... [${toolName || 'tool'} output truncated: ${omitted} characters omitted] ...\n${suffix}`;
+  }
+
   function trimMessageHistory(messages: ChatMessage[]): ChatMessage[] {
     if (messages.length <= MAX_MESSAGE_HISTORY) return messages;
-    const systemMsg = messages[0]; const firstUserMsg = messages[1]; const recentMessages = messages.slice(-(MAX_MESSAGE_HISTORY - 2));
-    return [systemMsg, firstUserMsg, ...recentMessages];
+    const systemMsg = messages[0];
+    const firstUserMsg = messages[1];
+    const recentMessages = messages.slice(-(MAX_MESSAGE_HISTORY - 2));
+
+    // Summarize older tool outputs among preserved messages to conserve context window
+    const sanitizedRecent = recentMessages.map((msg, idx) => {
+      if (msg.role === "tool" && idx < Math.floor(recentMessages.length / 2) && typeof msg.content === "string" && msg.content.length > 1500) {
+        return {
+          ...msg,
+          content: summarizeToolOutput(msg.content, (msg as any).name),
+        };
+      }
+      return msg;
+    });
+
+    return [systemMsg, firstUserMsg, ...sanitizedRecent];
   }
 
   let lastAppOutputLength = state.appProcess ? readAppOutput(state.appProcess).length : 0;
@@ -3221,6 +3638,7 @@ export async function runAgent(
           extractedError = result.slice(0, 500).trim();
         }
 
+        const prevErrorMessage = state.lastError?.errorMessage;
         state.lastError = {
           command: toolCall.function.name,
           exitCode: result.includes("Exit code:") ? parseInt(result.split("Exit code:")[1].split("\n")[0].trim()) : 1,
@@ -3228,6 +3646,13 @@ export async function runAgent(
           stderr: "",
           errorMessage: extractedError
         };
+        if (state.executionLedger) {
+          if (prevErrorMessage && prevErrorMessage === extractedError) {
+            state.executionLedger.consecutiveFailuresWithSameError++;
+          } else {
+            state.executionLedger.consecutiveFailuresWithSameError = 1;
+          }
+        }
         console.error(chalk.red(`\n[Execution Failure] Step "${stepThatFailed.description}" failed: ${state.lastError.errorMessage}`));
         state.phase = "recover";
         if (state.recoveryAttempts >= maxRecoveryAttempts) {

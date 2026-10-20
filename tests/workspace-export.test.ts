@@ -82,9 +82,25 @@ describe("Workspace export for cloud import (companion)", () => {
     try {
       fs.writeFileSync(path.join(outsideDir, "secret.txt"), "outside-secret", "utf8");
       fs.writeFileSync(path.join(tmpDir, "real.txt"), "inside", "utf8");
+      let linkCreated = false;
       try {
         fs.symlinkSync(path.join(outsideDir, "secret.txt"), path.join(tmpDir, "linked.txt"));
+        linkCreated = true;
       } catch {
+        // On Windows without Developer Mode, file symlinks require elevation,
+        // but directory junctions do not and produce entry.isSymbolicLink() === true.
+        try {
+          const secretSubdir = path.join(outsideDir, "secret_dir");
+          fs.mkdirSync(secretSubdir, { recursive: true });
+          fs.writeFileSync(path.join(secretSubdir, "secret.txt"), "outside-secret", "utf8");
+          fs.symlinkSync(secretSubdir, path.join(tmpDir, "linked_dir"), "junction");
+          linkCreated = true;
+        } catch {
+          t.skip("Platform does not allow creating symlinks or junctions without elevation");
+          return;
+        }
+      }
+      if (!linkCreated) {
         t.skip("Platform does not allow creating symlinks without elevation");
         return;
       }
@@ -92,6 +108,7 @@ describe("Workspace export for cloud import (companion)", () => {
       const paths = result.files.map((f) => f.path).sort();
       assert.deepEqual(paths, ["real.txt"]);
       assert.equal(result.files.some((f) => f.content.includes("outside-secret")), false);
+      assert.ok(result.skipped.symlink >= 1, "Should count skipped symlink");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
       fs.rmSync(outsideDir, { recursive: true, force: true });
