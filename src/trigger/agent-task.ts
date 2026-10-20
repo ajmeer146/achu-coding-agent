@@ -8,6 +8,7 @@ import { WorkspaceRegistry } from "../tools/workspace-registry.js";
 import { GitWorkspace } from "../tools/git-workspace.js";
 import { AgentResult } from "../agent.js";
 import { validateGitUrl, redactCredentials } from "../tools/git-workspace.js";
+import { sanitizeUserFacingError } from "../utils/error-sanitizer.js";
 
 /**
  * Safely get the workspace root path from either Workspace or GitWorkspace.
@@ -368,7 +369,7 @@ export const codingAgentTask = task({
 
       return {
         success: finalResult.success,
-        stopReason: finalResult.stopReason,
+        stopReason: finalResult.stopReason ? sanitizeUserFacingError(finalResult.stopReason) : null,
         verificationPassed: finalResult.verificationPassed,
         completedSteps: finalResult.completedSteps,
         totalSteps: finalResult.totalSteps,
@@ -376,20 +377,21 @@ export const codingAgentTask = task({
         artifacts: artifacts.length > 0 ? artifacts : undefined,
         gitCommitted,
         gitPushed,
-        error: finalResult.error,
+        error: finalResult.error ? sanitizeUserFacingError(finalResult.error) : undefined,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const sanitized = sanitizeUserFacingError(message);
       console.error(`[Trigger.dev] Agent execution failed:`, error);
 
       return {
         success: false,
-        stopReason: message,
+        stopReason: sanitized,
         verificationPassed: false,
         completedSteps: 0,
         totalSteps: 0,
         filesModified: [],
-        error: message,
+        error: sanitized,
       };
     } finally {
       // Restore environment

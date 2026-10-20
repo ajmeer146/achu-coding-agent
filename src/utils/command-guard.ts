@@ -288,7 +288,7 @@ export function normalizeGrepCommand(cmd: string): { normalized: string; warning
   if (isRecursive) {
     const targetPath = paths.length > 0 && paths[0] !== "." ? paths[0] : "";
     const pathPart = targetPath ? ` -Path "${targetPath}"` : "";
-    const converted = `Get-ChildItem${pathPart} -Recurse -File | Select-String${flagStr} -Pattern "${escapedPattern}"`;
+    const converted = `$res = @(Get-ChildItem${pathPart} -Recurse -File | Select-String${flagStr} -Pattern "${escapedPattern}"); if ($res.Count -gt 0) { $res } else { exit 1 }`;
     return { normalized: converted, warning: `Normalized recursive grep to "${converted}"` };
   }
 
@@ -297,7 +297,7 @@ export function normalizeGrepCommand(cmd: string): { normalized: string; warning
     const pathFlag = targetPath.includes("*") || targetPath.includes("?")
       ? `-Path "${targetPath}"`
       : `-LiteralPath "${targetPath}"`;
-    const converted = `Select-String${flagStr} -Pattern "${escapedPattern}" ${pathFlag}`;
+    const converted = `$res = @(Select-String${flagStr} -Pattern "${escapedPattern}" ${pathFlag}); if ($res.Count -gt 0) { $res } else { exit 1 }`;
     return { normalized: converted, warning: `Normalized grep with path to "${converted}"` };
   }
 

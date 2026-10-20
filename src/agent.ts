@@ -4012,7 +4012,7 @@ export async function runAgent(
       }
 
       const isCurrentToolFailure = isToolResultFailure(toolCall.function.name, result);
-      let stepThatFailed = newlyFailedSteps[0] || (isCurrentToolFailure ? state.currentPlan.find(s => s.status === "failed") : null);
+      let stepThatFailed: PlanStep | null = newlyFailedSteps[0] || (isCurrentToolFailure ? state.currentPlan.find(s => s.status === "failed") || null : null);
 
       if (isCurrentToolFailure) {
         if (!stepThatFailed) {

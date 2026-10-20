@@ -219,7 +219,7 @@ export interface LocalTaskRecord {
   sessionId: string;
   task: string;
   workspaceRoot: string;
-  status: "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
+  status: "RUNNING" | "COMPLETED" | "PARTIAL" | "FAILED" | "CANCELLED";
   startTime: number;
   endTime?: number;
   childProcess: any | null;

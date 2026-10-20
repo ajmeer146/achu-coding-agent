@@ -11,7 +11,7 @@ const KNOWN_MODEL_PATTERNS = [
 ];
 
 const SECRET_PATTERNS = [
-  /(?:nvapi|tr_prod|tr_dev|whsec|sk)_[a-zA-Z0-9_\-]{8,}/gi,
+  /(?:nvapi|tr_prod|tr_dev|whsec|sk)[_-][a-zA-Z0-9_\-]{8,}/gi,
   /Bearer\s+[a-zA-Z0-9_\-\.]{8,}/gi,
 ];
 
