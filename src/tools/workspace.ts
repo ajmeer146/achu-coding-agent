@@ -272,24 +272,11 @@ export class Workspace {
       target = this.root;
     }
 
-    // If target does not exist at current root, check if it exists in an immediate child project directory
-    // (e.g., if project was scaffolded into a subdirectory like 'DevShowcase/src/App.jsx')
-    if (!fsSync.existsSync(target)) {
-      try {
-        const entries = fsSync.readdirSync(this.root, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory() && entry.name !== "node_modules" && !entry.name.startsWith(".")) {
-            const candidate = path.resolve(this.root, entry.name, relativePath);
-            if (fsSync.existsSync(candidate)) {
-              // Found target inside child project: update authoritative root
-              this.setRoot(path.join(this.root, entry.name));
-              target = candidate;
-              break;
-            }
-          }
-        }
-      } catch {}
-    }
+    // NOTE: never mutate this.root here. A failed probe for a root-level file
+    // (e.g. exists("main.jsx") on a Vite project where the file lives in src/)
+    // must not silently switch the authoritative project root into a child
+    // directory — that makes every later root-relative read fail. Root
+    // discovery is explicit via getAuthoritativeProjectRoot().
 
     const isAllowed = isInsideRoot(this.root, target) || (this.parentRoot ? isInsideRoot(this.parentRoot, target) : false);
     if (!isAllowed) {

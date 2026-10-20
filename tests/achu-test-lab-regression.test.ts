@@ -11,6 +11,15 @@ import {
   isToolResultSuccess,
   updatePlanProgress,
   generateRecoveryHint,
+  extractRequestedVerification,
+  extractRequestedEditTargets,
+  isFileModifiedInState,
+  isCommandVerifiedPassing,
+  verifyTaskCompletionEvidence,
+  shouldFinishOnTextResponse,
+  normalizeCommandTarget,
+  getToolTarget,
+  getTaskIdentity,
   type AgentState,
   type PlanStep,
 } from "../src/agent.ts";
@@ -19,6 +28,7 @@ import {
   validateProjectStructure,
 } from "../src/tools/scaffold.js";
 import { validateCommand } from "../src/utils/command-guard.js";
+import { getModelConfig, DEFAULT_MODEL } from "../src/router.js";
 
 describe("Achu Test Lab Defect Regression Tests", () => {
   const achuTestLabPrompt = `Build a complete, working React + Vite website named **Achu Test Lab** inside a new, isolated workspace project.
@@ -198,6 +208,25 @@ describe("Achu Test Lab Defect Regression Tests", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
+  test("3b. Probing a missing root-level file never switches the workspace root into a child directory", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "achu-root-probe-"));
+    try {
+      await fs.writeFile(path.join(tempDir, "package.json"), JSON.stringify({ name: "probe-app", scripts: { dev: "vite" } }));
+      await fs.writeFile(path.join(tempDir, "index.html"), "<div id=\"root\"></div>");
+      await fs.mkdir(path.join(tempDir, "src"), { recursive: true });
+      await fs.writeFile(path.join(tempDir, "src", "main.jsx"), "export default 1;");
+
+      const workspace = new Workspace(tempDir);
+      const originalRoot = workspace.root;
+
+      assert.equal(await workspace.exists("main.jsx"), false, "main.jsx does not exist at the project root");
+      assert.equal(workspace.root, originalRoot, "Workspace root must remain the project root after a failed probe");
+      assert.equal(await workspace.exists("package.json"), true, "Root-relative reads must still work after the probe");
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("4. Structured tool status: successful file reads and directory listings are NOT treated as failures", () => {
     // 1. JSON file content starting with {
     const jsonContent = JSON.stringify({ name: "achu-test-lab", version: "0.1.0" }, null, 2);
@@ -325,5 +354,319 @@ describe("Achu Test Lab Defect Regression Tests", () => {
         `Dangerous process killing command must be blocked: ${cmd}`
       );
     }
+  });
+
+  test("7. Planning: logic bug fix with an explicit test command skips the browser lifecycle", () => {
+    const logicalBugTask = `The counter application is broken in this existing React + Vite project. Running node --test tests/counter.test.js fails with: AssertionError: Expected values to be strictly equal: -1 !== 1 (increment works correctly). Diagnose the root cause in the source, fix only the broken logic, and do not change the test expectations. Then run these exact commands and report their real exit codes:
+- node --test tests/counter.test.js
+- npm run build`;
+
+    const plan = initializePlan(logicalBugTask, {
+      hasProject: true,
+      projectType: "react",
+      existingFiles: ["package.json", "vite.config.js", "src/main.jsx", "src/App.jsx", "src/counter-logic.js", "tests/counter.test.js"],
+      framework: "vite",
+    });
+
+    const browserLifecycle = plan.filter(
+      (s) => ["start_app", "open_browser", "browser_verify", "close_browser", "stop_app", "navigate", "click"].includes(s.toolType || "")
+    );
+    assert.deepEqual(
+      browserLifecycle.map((s) => s.description),
+      [],
+      "Logic bug fixes backed by tests must not plan browser verification"
+    );
+    assert.ok(plan.some((s) => s.toolType === "edit_file"), "Plan must still edit the source");
+    assert.ok(plan.some((s) => s.toolType === "run_verification"), "Plan must still run the requested verification");
+
+    // Guard against over-filtering: a real UI follow-up must keep the browser lifecycle.
+    const uiTask = `In the existing app, change the badge text in src/components/Header.jsx and verify it in the browser.`;
+    const uiPlan = initializePlan(uiTask, {
+      hasProject: true,
+      projectType: "react",
+      existingFiles: ["package.json", "vite.config.js", "src/main.jsx", "src/App.jsx", "src/components/Header.jsx"],
+      framework: "vite",
+    });
+    assert.ok(uiPlan.some((s) => s.toolType === "browser_verify"), "UI follow-ups must still verify in the browser");
+  });
+
+  test("8. Requested verification extraction recognizes node --test and keeps the build command", () => {
+    const task = `The counter application is broken. Running node --test tests/counter.test.js fails. Then run these exact commands:
+- node --test tests/counter.test.js
+- npm run build`;
+    assert.equal(
+      extractRequestedVerification(task),
+      "node --test tests/counter.test.js; npm run build"
+    );
+  });
+
+  test("9. Planning: mentions of the browser as context do not require an interaction step", () => {
+    const task = `Add noValidate to the <form> element in src/components/FeedbackForm.jsx so the browser's native email validation does not block submission. Then verify with: npm run build.`;
+    const plan = initializePlan(task, {
+      hasProject: true,
+      projectType: "react",
+      existingFiles: ["package.json", "vite.config.js", "src/main.jsx", "src/App.jsx", "src/components/FeedbackForm.jsx"],
+      framework: "vite",
+    });
+
+    assert.equal(
+      plan.some((s) => s.toolType === "click"),
+      false,
+      "Browser context alone must not add a click/interaction step"
+    );
+    assert.ok(plan.some((s) => s.toolType === "edit_file"));
+    assert.ok(plan.some((s) => s.toolType === "run_verification"));
+  });
+
+  test("10. Completion truthfulness: unfulfilled file modification requests block false success claims", () => {
+    const multiFileEditTask = `Fix three real quality gaps in this existing React + Vite app.
+1. Replace tests/counter.test.js with genuine node:test assertions.
+2. In src/App.jsx give the section a className like "cards".
+3. In src/components/FeedbackForm.jsx add noValidate to the form.
+Then verify with: npm run build.`;
+
+    const stateWithOmission = {
+      taskPrompt: multiFileEditTask,
+      requestedVerification: "npm run build",
+      verificationPassed: true,
+      phase: "execute",
+      stopReason: null,
+      completedTasks: new Set(["edit_file:tests/counter.test.js", "edit_file:src/App.jsx"]),
+      currentPlan: [
+        { id: "1", description: "edit tests", status: "completed", toolType: "edit_file" },
+        { id: "2", description: "edit App", status: "completed", toolType: "edit_file" },
+        { id: "3", description: "build", status: "completed", toolType: "run_verification" },
+      ],
+      stepsTaken: new Map(),
+      executionLedger: {
+        taskClassification: "targeted_edit",
+        filesInspected: new Set(["src/components/FeedbackForm.jsx"]),
+        filesModified: new Set(["tests/counter.test.js", "src/App.jsx"]),
+        scopedTargetFiles: ["tests/counter.test.js", "src/App.jsx", "src/components/FeedbackForm.jsx"],
+        commandsExecuted: [{ cmd: "npm run build", exitCode: 0, step: 1 }],
+        verificationResults: [{ command: "npm run build", passed: true, step: 1 }],
+        changeVerifications: [],
+        serverStartAttempts: 0,
+        browserChecks: 0,
+        recoveryAttempts: 0,
+        consecutiveFailuresWithSameError: 0,
+        lastBlocker: null,
+      },
+      snapshotManager: {
+        records: new Map([
+          ["tests/counter.test.js", { operation: "edit", relativePath: "tests/counter.test.js", beforeHash: "h1", afterHash: "h2", backupPath: null }],
+          ["src/App.jsx", { operation: "edit", relativePath: "src/App.jsx", beforeHash: "h3", afterHash: "h4", backupPath: null }],
+        ]),
+      } as any,
+    } as unknown as AgentState;
+
+    const evidence = verifyTaskCompletionEvidence(multiFileEditTask, stateWithOmission);
+    assert.equal(evidence.verified, false, "Evidence must be false when FeedbackForm.jsx was not modified");
+    assert.ok(evidence.unfulfilledFiles.some((f) => f.includes("FeedbackForm.jsx")), "Missing files must include FeedbackForm.jsx");
+    assert.equal(
+      shouldFinishOnTextResponse(stateWithOmission, "The task is complete. All three changes were made."),
+      false,
+      "shouldFinishOnTextResponse must reject completion claims when requested file edits are unfulfilled"
+    );
+
+    // Now mark FeedbackForm.jsx as modified
+    stateWithOmission.completedTasks.add("edit_file:src/components/FeedbackForm.jsx");
+    stateWithOmission.executionLedger.filesModified.add("src/components/FeedbackForm.jsx");
+    (stateWithOmission.snapshotManager.records as Map<string, any>).set("src/components/FeedbackForm.jsx", {
+      operation: "edit",
+      relativePath: "src/components/FeedbackForm.jsx",
+      beforeHash: "h5",
+      afterHash: "h6",
+      backupPath: null,
+    });
+
+    const evidenceAfter = verifyTaskCompletionEvidence(multiFileEditTask, stateWithOmission);
+    assert.equal(evidenceAfter.verified, true, "Evidence must be true once all requested files are modified");
+    assert.equal(
+      shouldFinishOnTextResponse(stateWithOmission, "The task is complete. All three changes were made."),
+      true,
+      "shouldFinishOnTextResponse accepts completion once all requested changes are verified"
+    );
+  });
+
+  test("11. Completion truthfulness: unverified requested commands block false success claims", () => {
+    const taskWithCommands = `Diagnose and fix the issue. Then run these exact commands and report their real exit codes:
+- node --test tests/counter.test.js
+- npm run build`;
+
+    const stateMissingTest = {
+      taskPrompt: taskWithCommands,
+      requestedVerification: "npm run build",
+      verificationPassed: true,
+      phase: "execute",
+      stopReason: null,
+      completedTasks: new Set(["edit_file:src/counter-logic.js"]),
+      currentPlan: [],
+      stepsTaken: new Map(),
+      executionLedger: {
+        taskClassification: "bug_fix",
+        filesInspected: new Set(),
+        filesModified: new Set(["src/counter-logic.js"]),
+        scopedTargetFiles: [],
+        commandsExecuted: [{ cmd: "npm run build", exitCode: 0, step: 1 }],
+        verificationResults: [{ command: "npm run build", passed: true, step: 1 }],
+        changeVerifications: [],
+        serverStartAttempts: 0,
+        browserChecks: 0,
+        recoveryAttempts: 0,
+        consecutiveFailuresWithSameError: 0,
+        lastBlocker: null,
+      },
+    } as unknown as AgentState;
+
+    const evidence = verifyTaskCompletionEvidence(taskWithCommands, stateMissingTest);
+    assert.equal(evidence.verified, false, "Evidence must be false if node --test was never executed");
+    assert.ok(evidence.unverifiedCommands.some((c) => c.includes("node --test")), "Unverified commands must list node --test");
+
+    // Add node --test execution with exit code 0
+    stateMissingTest.executionLedger.commandsExecuted.unshift({
+      cmd: "node --test tests/counter.test.js",
+      exitCode: 0,
+      step: 0,
+    });
+
+    const evidencePassing = verifyTaskCompletionEvidence(taskWithCommands, stateMissingTest);
+    assert.equal(evidencePassing.verified, true, "Evidence must pass when all requested commands executed with exit code 0");
+  });
+
+  test("12. Completion truthfulness: extractRequestedEditTargets respects negative directives and import references", () => {
+    const task = `Fix three real quality gaps in this existing React + Vite app.
+1. Replace tests/counter.test.js with genuine node:test assertions: import increment, decrement, resetCount from ../src/counter-logic.js and assert...
+2. In src/App.jsx give the section a className like "cards".
+3. Add noValidate to the form in src/components/FeedbackForm.jsx.
+Do not modify package.json.`;
+
+    const targets = extractRequestedEditTargets(task);
+    assert.deepEqual(targets, [
+      "tests/counter.test.js",
+      "src/App.jsx",
+      "src/components/FeedbackForm.jsx",
+    ]);
+    assert.equal(targets.includes("../src/counter-logic.js"), false, "Imported file must not be an edit target");
+    assert.equal(targets.includes("package.json"), false, "Negative directive file must not be an edit target");
+  });
+
+  test("13. Model configuration: unavailable nemotron-3-super is safely remapped to verified nemotron-3.5-lightning", () => {
+    const originalEnv = process.env.NVIDIA_MODEL;
+    const originalKey = process.env.NVIDIA_API_KEY;
+    try {
+      process.env.NVIDIA_API_KEY = "test-key-mock";
+      process.env.NVIDIA_MODEL = "nvidia/nemotron-3-super-120b-a12b";
+      const config = getModelConfig();
+      assert.equal(config.name, DEFAULT_MODEL, "Obsolete nemotron-3-super must be remapped to DEFAULT_MODEL");
+    } finally {
+      if (originalEnv !== undefined) process.env.NVIDIA_MODEL = originalEnv;
+      else delete process.env.NVIDIA_MODEL;
+      if (originalKey !== undefined) process.env.NVIDIA_API_KEY = originalKey;
+      else delete process.env.NVIDIA_API_KEY;
+    }
+  });
+
+  test("14. Command fingerprinting: chained cd commands do NOT collapse into 'cd' and avoid false loop detection", () => {
+    const commands = [
+      "cd achu-test-lab && npm install",
+      "cd achu-test-lab && npm run build",
+      "cd achu-test-lab && npm test",
+      "cd achu-test-lab && npx tsc --noEmit",
+    ];
+
+    const targets = commands.map(cmd =>
+      getToolTarget({
+        id: "call-1",
+        type: "function",
+        function: { name: "run_command", arguments: JSON.stringify({ command: cmd }) },
+      })
+    );
+
+    // None of them should be "cd"
+    for (const t of targets) {
+      assert.notEqual(t, "cd", `Command target must not be 'cd': ${t}`);
+    }
+
+    // All 4 distinct commands must produce distinct targets
+    const uniqueTargets = new Set(targets);
+    assert.equal(uniqueTargets.size, 4, "All 4 commands must have unique fingerprints");
+    assert.deepEqual(Array.from(uniqueTargets), ["npm install", "npm run build", "npm test", "npx tsc"]);
+
+    // Test getTaskIdentity as well
+    const identities = commands.map(cmd =>
+      getTaskIdentity({
+        id: "call-1",
+        type: "function",
+        function: { name: "run_command", arguments: JSON.stringify({ command: cmd }) },
+      })
+    );
+    for (const id of identities) {
+      assert.notEqual(id, "run_command:cd", `Task identity must not be 'run_command:cd': ${id}`);
+    }
+    assert.equal(new Set(identities).size, 4, "Task identities must all be distinct");
+  });
+
+  test("15. Plan progress tracking: sequential create_file steps advance active running step without stalling", () => {
+    const plan = initializePlan("create simple log in page");
+    const completedTasks = new Set<string>();
+    let curPlan = plan;
+
+    // Initial state: no step is running yet (pending phase)
+    assert.equal(curPlan.find(s => s.status === "running"), undefined);
+
+    // Step 1: list_directory completes discovery, activates step 2
+    completedTasks.add("list_directory:.");
+    curPlan = updatePlanProgress(
+      curPlan,
+      completedTasks,
+      { id: "1", type: "function", function: { name: "list_directory", arguments: "{}" } },
+      "[]"
+    );
+    assert.equal(curPlan.find(s => s.status === "running")?.description, "Check if workspace is empty or has existing project");
+
+    // Step 2: create_file index.html auto-completes skipped step 2, completes step 3, activates step 4
+    completedTasks.add("create_file:index.html");
+    curPlan = updatePlanProgress(
+      curPlan,
+      completedTasks,
+      { id: "2", type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "index.html", content: "<html></html>" }) } },
+      "Successfully created index.html."
+    );
+    assert.equal(curPlan.find(s => s.id === "2")?.status, "completed", "Skipped inspection step 2 must be auto-completed");
+    assert.equal(curPlan.find(s => s.id === "3")?.status, "completed", "Create index.html step 3 must be completed");
+    assert.equal(curPlan.find(s => s.status === "running")?.description, "Create styles.css", "Next active step must be Create styles.css");
+
+    // Step 3: create_file styles.css completes step 4, activates step 5
+    completedTasks.add("create_file:styles.css");
+    curPlan = updatePlanProgress(
+      curPlan,
+      completedTasks,
+      { id: "3", type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "styles.css", content: "body {}" }) } },
+      "Successfully created styles.css."
+    );
+    assert.equal(curPlan.find(s => s.id === "4")?.status, "completed");
+    assert.equal(curPlan.find(s => s.status === "running")?.description, "Create script.js");
+
+    // Step 4: create_file script.js completes step 5, activates step 6
+    completedTasks.add("create_file:script.js");
+    curPlan = updatePlanProgress(
+      curPlan,
+      completedTasks,
+      { id: "4", type: "function", function: { name: "create_file", arguments: JSON.stringify({ path: "script.js", content: "console.log();" }) } },
+      "Successfully created script.js."
+    );
+    assert.equal(curPlan.find(s => s.id === "5")?.status, "completed");
+    assert.equal(curPlan.find(s => s.status === "running")?.description, "Create package.json with development scripts");
+  });
+
+  test("16. Command normalization: handles varied whitespace, quotes, and command formats accurately", () => {
+    assert.equal(normalizeCommandTarget('"npm run dev"'), "npm run dev");
+    assert.equal(normalizeCommandTarget("'cd \"my-dir\" && npm test'"), "npm test");
+    assert.equal(normalizeCommandTarget("cd /var/www ; git status"), "git status");
+    assert.equal(normalizeCommandTarget("node --test tests/auth.test.js"), "node --test tests/auth.test.js");
+    assert.equal(normalizeCommandTarget("npx vite --port 5173"), "npx vite");
+    assert.equal(normalizeCommandTarget(""), "empty_command");
+    assert.equal(normalizeCommandTarget("   "), "empty_command");
   });
 });

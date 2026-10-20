@@ -198,10 +198,124 @@ export function normalizePipelinesForPowerShell(command: string): string {
   // | tail (default 10)
   result = result.replace(/\|\s*tail\b/gi, "| Select-Object -Last 10");
 
-  // | grep <pattern>
-  result = result.replace(/\|\s*grep\s+(?:-[a-zA-Z]+\s+)?(['"]?)([^'"|\s]+)\1/gi, '| Select-String -Pattern "$2"');
+  // | grep [flags] <pattern> (supporting spaces in single/double quotes or unquoted tokens)
+  result = result.replace(
+    /\|\s*grep(?:\.exe)?\s+((?:-[a-zA-Z]+\s+)*)(?:"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|([^\s|]+))/gi,
+    (_full, flagsStr = "", dQuoted, sQuoted, unquoted) => {
+      const rawPattern = dQuoted !== undefined ? dQuoted : (sQuoted !== undefined ? sQuoted : unquoted);
+      const isCaseInsensitive = /i/i.test(flagsStr);
+      const isNotMatch = /v/i.test(flagsStr);
+      const parts = ["Select-String"];
+      if (!isCaseInsensitive) parts.push("-CaseSensitive");
+      if (isNotMatch) parts.push("-NotMatch");
+      const escaped = (rawPattern || "").replace(/"/g, '`"');
+      parts.push(`-Pattern "${escaped}"`);
+      return `| ${parts.join(" ")}`;
+    }
+  );
 
   return result;
+}
+
+/**
+ * Normalizes standalone Unix grep commands to PowerShell cmdlets.
+ */
+export function normalizeGrepCommand(cmd: string): { normalized: string; warning: string } | null {
+  const match = cmd.match(/^grep(?:\.exe)?\b(?:\s+(.*))?$/i);
+  if (!match) return null;
+  const rawArgs = match[1] ? match[1].trim() : "";
+  if (!rawArgs) {
+    return { normalized: "Select-String", warning: "Normalized bare 'grep' to 'Select-String'" };
+  }
+
+  // Parse arguments respecting single and double quotes
+  const tokens: string[] = [];
+  let cur = "";
+  let inDouble = false;
+  let inSingle = false;
+  for (let i = 0; i < rawArgs.length; i++) {
+    const ch = rawArgs[i];
+    const prev = i > 0 ? rawArgs[i - 1] : "";
+    if (ch === '"' && !inSingle && prev !== "\\") {
+      inDouble = !inDouble;
+      cur += ch;
+    } else if (ch === "'" && !inDouble && prev !== "\\") {
+      inSingle = !inSingle;
+      cur += ch;
+    } else if (/\s/.test(ch) && !inDouble && !inSingle) {
+      if (cur) {
+        tokens.push(cur);
+        cur = "";
+      }
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur) tokens.push(cur);
+
+  let isRecursive = false;
+  let isCaseInsensitive = false;
+  let isNotMatch = false;
+  let pattern: string | null = null;
+  const paths: string[] = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token.startsWith("-") && token.length > 1 && pattern === null) {
+      if (/r/i.test(token)) isRecursive = true;
+      if (/i/i.test(token)) isCaseInsensitive = true;
+      if (/v/i.test(token)) isNotMatch = true;
+      if (token === "-e" && i + 1 < tokens.length) {
+        pattern = cleanPathArg(tokens[++i]);
+      }
+    } else if (pattern === null) {
+      pattern = cleanPathArg(token);
+    } else {
+      paths.push(cleanPathArg(token));
+    }
+  }
+
+  if (pattern === null) {
+    return { normalized: "Select-String", warning: "Normalized 'grep' to 'Select-String'" };
+  }
+
+  const flags: string[] = [];
+  if (!isCaseInsensitive) flags.push("-CaseSensitive");
+  if (isNotMatch) flags.push("-NotMatch");
+  const flagStr = flags.length > 0 ? ` ${flags.join(" ")}` : "";
+  const escapedPattern = pattern.replace(/"/g, '`"');
+
+  if (isRecursive) {
+    const targetPath = paths.length > 0 && paths[0] !== "." ? paths[0] : "";
+    const pathPart = targetPath ? ` -Path "${targetPath}"` : "";
+    const converted = `Get-ChildItem${pathPart} -Recurse -File | Select-String${flagStr} -Pattern "${escapedPattern}"`;
+    return { normalized: converted, warning: `Normalized recursive grep to "${converted}"` };
+  }
+
+  if (paths.length > 0) {
+    const targetPath = paths[0];
+    const pathFlag = targetPath.includes("*") || targetPath.includes("?")
+      ? `-Path "${targetPath}"`
+      : `-LiteralPath "${targetPath}"`;
+    const converted = `Select-String${flagStr} -Pattern "${escapedPattern}" ${pathFlag}`;
+    return { normalized: converted, warning: `Normalized grep with path to "${converted}"` };
+  }
+
+  const converted = `Select-String${flagStr} -Pattern "${escapedPattern}"`;
+  return { normalized: converted, warning: `Normalized grep to "${converted}"` };
+}
+
+/**
+ * Normalizes Unix find commands to PowerShell Get-ChildItem.
+ */
+export function normalizeFindCommand(cmd: string): { normalized: string; warning: string } | null {
+  const match = cmd.match(/^find\s+([^\s]+)(?:\s+(?:-name|-iname)\s+["']?([^"']+)["']?)?(?:\s+-type\s+[fd])?$/i);
+  if (!match) return null;
+  const targetDir = cleanPathArg(match[1]);
+  const filterPattern = match[2] ? match[2].trim() : "*";
+  const pathPart = targetDir === "." ? "" : ` -Path "${targetDir}"`;
+  const converted = `Get-ChildItem${pathPart} -Recurse -Filter "${filterPattern}"`;
+  return { normalized: converted, warning: `Normalized find to "${converted}"` };
 }
 
 function cleanPathArg(arg: string): string {
@@ -293,6 +407,29 @@ export function normalizeSingleCommand(cmd: string): { normalized: string; warni
   if (afterPipelines !== normalized) {
     normalized = afterPipelines;
     warnings.push("Normalized pipeline utilities (head/tail/grep) to PowerShell cmdlets");
+  }
+
+  // Standalone grep
+  const grepMatch = normalizeGrepCommand(normalized);
+  if (grepMatch) {
+    warnings.push(grepMatch.warning);
+    return { normalized: grepMatch.normalized, warnings };
+  }
+
+  // Standalone find
+  const findMatch = normalizeFindCommand(normalized);
+  if (findMatch) {
+    warnings.push(findMatch.warning);
+    return { normalized: findMatch.normalized, warnings };
+  }
+
+  // test -f or test -d
+  const testMatch = normalized.match(/^test\s+-[fd]\s+(.*)$/i);
+  if (testMatch && testMatch[1]) {
+    const cleanPath = cleanPathArg(testMatch[1]);
+    const converted = `Test-Path -LiteralPath "${cleanPath}"`;
+    warnings.push(`Normalized test to "${converted}"`);
+    return { normalized: converted, warnings };
   }
 
   // ls -la with optional path

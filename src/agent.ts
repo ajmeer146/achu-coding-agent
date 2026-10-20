@@ -5,7 +5,8 @@ import chalk from "chalk";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
-import { getModelConfig } from "./router.js";
+import { getModelConfig, DEFAULT_MODEL } from "./router.js";
+import { sanitizeUserFacingError } from "./utils/error-sanitizer.js";
 import { Workspace } from "./tools/workspace.js";
 import { readFile } from "./tools/read-file.js";
 import { searchCode } from "./tools/search-code.js";
@@ -70,6 +71,8 @@ export type PlanStep = {
 export type AgentResult = {
   /** Whether the agent completed successfully (no stop reason or verification passed) */
   success: boolean;
+  /** Explicit task outcome state */
+  status?: "COMPLETED" | "PARTIAL" | "FAILED" | "CANCELLED";
   /** Reason for stopping, if any */
   stopReason: string | null;
   /** Whether verification passed (if verification was requested) */
@@ -385,6 +388,7 @@ function extractCommandsFromText(text: string): string[] {
   }
 
   const standalonePatterns = [
+    /\b(node\s+--test(?:\s+(?:--?[\w:=.-]+|[^\s;]+\.(?:[cm]?[jt]sx?)))*)/gi,
     /\b(npm\s+run\s+\w+(?:\s+--\S+)*)\b/gi,
     /\b(npx\s+tsc\s+--noEmit(?:\s+--\S+)*)\b/gi,
     new RegExp(`\\b(npm\\s+test${npmTestFlags})\\b`, "gi"),
@@ -408,6 +412,161 @@ export function extractRequestedVerification(task: string): string | null {
   if (commands.length === 0) return null;
   if (commands.length === 1) return commands[0];
   return commands.join("; ");
+}
+
+export function extractRequestedEditTargets(task: string): string[] {
+  const targets: string[] = [];
+  const editIntentPatterns = [
+    /\b(?:edit|modify|update|change|replace|patch|fix)\s+(?:the\s+)?(?:file\s+)?([\w./\\-]+\.(?:ts|tsx|js|jsx|html|css|json|py|rs|go|mjs|cjs))\b/gi,
+    /\b(?:create|write|scaffold|generate)\s+(?:the\s+)?(?:new\s+)?(?:file\s+)?([\w./\\-]+\.(?:ts|tsx|js|jsx|html|css|json|py|rs|go|mjs|cjs))\b/gi,
+    /\b(?:in|into|inside)\s+(?:the\s+)?(?:file\s+)?([\w./\\-]+\.(?:ts|tsx|js|jsx|html|css|json|py|rs|go|mjs|cjs))\b/gi,
+  ];
+
+  for (const pattern of editIntentPatterns) {
+    let match;
+    while ((match = pattern.exec(task)) !== null) {
+      const file = match[1].replace(/\\/g, "/").replace(/^["'`]+|["'`]+$/g, "");
+      const preceding = task.slice(Math.max(0, match.index - 40), match.index).toLowerCase();
+      // Skip if preceded by "from " (import) or negative directives like "do not change"
+      if (/\b(?:from|import\s+[\s\S]*?from|do\s+not|don'?t|never|without|avoid)\s*$/i.test(preceding)) {
+        continue;
+      }
+      if (!targets.includes(file)) {
+        targets.push(file);
+      }
+    }
+  }
+
+  return targets;
+}
+
+function normalizeRelativePath(p: string): string {
+  return p.replace(/\\/g, "/").replace(/^\.\/+/, "").toLowerCase();
+}
+
+export function isFileModifiedInState(targetFile: string, state: AgentState): boolean {
+  const normTarget = normalizeRelativePath(targetFile);
+
+  // 1. Check snapshotManager records for real file diff (beforeHash !== afterHash or new file created)
+  if (state.snapshotManager?.records) {
+    for (const [recordedPath, record] of state.snapshotManager.records) {
+      const normRecorded = normalizeRelativePath(recordedPath);
+      if (normRecorded === normTarget || normRecorded.endsWith("/" + normTarget) || normTarget.endsWith("/" + normRecorded)) {
+        if (record.operation === "create" && record.afterHash !== null) return true;
+        if (record.beforeHash !== record.afterHash && record.afterHash !== null) return true;
+      }
+    }
+  }
+
+  // 2. Check executionLedger filesModified
+  if (state.executionLedger?.filesModified) {
+    for (const modified of state.executionLedger.filesModified) {
+      const normMod = normalizeRelativePath(modified);
+      if (normMod === normTarget || normMod.endsWith("/" + normTarget) || normTarget.endsWith("/" + normMod)) {
+        return true;
+      }
+    }
+  }
+
+  // 3. Check completedTasks for edit_file or create_file
+  if (state.completedTasks) {
+    for (const taskKey of state.completedTasks) {
+      if (taskKey.startsWith("edit_file:") || taskKey.startsWith("create_file:")) {
+        const taskPath = normalizeRelativePath(taskKey.split(":")[1] || "");
+        if (taskPath && (taskPath === normTarget || taskPath.endsWith("/" + normTarget) || normTarget.endsWith("/" + taskPath))) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+export function isCommandVerifiedPassing(command: string, state: AgentState): boolean {
+  const normReq = normalizeCommand(command).toLowerCase();
+
+  // 1. If state.requestedVerification matches and verificationPassed is true
+  if (state.requestedVerification && state.verificationPassed) {
+    const normRequestedVer = normalizeCommand(state.requestedVerification).toLowerCase();
+    if (normRequestedVer === normReq || normRequestedVer.includes(normReq)) {
+      return true;
+    }
+  }
+
+  // 2. Check verificationResults (from run_verification)
+  if (state.executionLedger?.verificationResults) {
+    const matching = state.executionLedger.verificationResults.filter(vr => {
+      const normVr = normalizeCommand(vr.command).toLowerCase();
+      return normVr === normReq || normVr.includes(normReq);
+    });
+    if (matching.length > 0) {
+      return matching[matching.length - 1].passed;
+    }
+  }
+
+  // 3. Check commandsExecuted (from run_command)
+  if (state.executionLedger?.commandsExecuted) {
+    const matching = state.executionLedger.commandsExecuted.filter(ce => {
+      const normCe = normalizeCommand(ce.cmd).toLowerCase();
+      return normCe === normReq || normCe.includes(normReq);
+    });
+    if (matching.length > 0) {
+      return matching[matching.length - 1].exitCode === 0;
+    }
+  }
+
+  // 4. Check lastVerification
+  if (state.lastVerification) {
+    const normLast = normalizeCommand(state.lastVerification.command).toLowerCase();
+    if ((normLast === normReq || normLast.includes(normReq)) && state.lastVerification.exitCode === 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export interface TaskEvidenceResult {
+  verified: boolean;
+  missingRequirements: string[];
+  unfulfilledFiles: string[];
+  unverifiedCommands: string[];
+}
+
+export function verifyTaskCompletionEvidence(task: string, state: AgentState): TaskEvidenceResult {
+  const unfulfilledFiles: string[] = [];
+  const unverifiedCommands: string[] = [];
+  const missingRequirements: string[] = [];
+
+  if (!task || !task.trim()) {
+    return { verified: true, missingRequirements, unfulfilledFiles, unverifiedCommands };
+  }
+
+  // 1. Verify requested file changes against the real filesystem diff / modification records
+  const requestedFiles = extractRequestedEditTargets(task);
+  for (const file of requestedFiles) {
+    if (!isFileModifiedInState(file, state)) {
+      unfulfilledFiles.push(file);
+      missingRequirements.push(`Requested file was not modified: ${file}`);
+    }
+  }
+
+  // 2. Verify requested commands actually ran and exited with 0
+  const requestedCommands = extractCommandsFromText(task);
+  for (const cmd of requestedCommands) {
+    if (!isCommandVerifiedPassing(cmd, state)) {
+      unverifiedCommands.push(cmd);
+      missingRequirements.push(`Requested command was not verified passing (exit code 0): ${cmd}`);
+    }
+  }
+
+  return {
+    verified: unfulfilledFiles.length === 0 && unverifiedCommands.length === 0,
+    missingRequirements,
+    unfulfilledFiles,
+    unverifiedCommands,
+  };
 }
 
 export function inferVerificationCommand(task: string, workspaceRoot: string): string | null {
@@ -810,7 +969,14 @@ export function initializePlan(task: string, existingProjectInfo?: { hasProject:
   const hasAppCreate = new RegExp(`\\b(create|generate)\\b[^\\n.!?]*\\b(?:${appTargets})\\b`, 'i').test(lowerTask);
   const hasAppAdd = new RegExp(`add\\s+(a|an)\\s+(?:landing page|page|component|feature|route|view)`, 'i').test(lowerTask);
   const hasAppAddFlexible = /add\s+(an?\s+\w+\s+)?(page|component|feature|route|view)/.test(lowerTask);
-  const hasAppModify = /modify|update|improve|extend|make.*premium|make.*modern|enhance|change/.test(lowerTask) && /app|website|page|component|dashboard|layout|hero|section/.test(lowerTask);
+  // A logic bug fix backed by an explicit test command is not a UI/app modification,
+  // even when the wording mentions "app" and "change" (e.g. "do not change the test
+  // expectations"). Without this gate the planner adds the full browser lifecycle and
+  // then fails the task on an unrelated browser assertion despite green tests.
+  const hasExplicitTestCommand = /\b(?:node\s+--test|npm\s+test|npm\s+run\s+test|npx\s+(?:jest|vitest|mocha)|pytest)\b/i.test(task);
+  const hasUiSurface = /\b(ui|css|style|styles|styling|layout|responsive|component|components|button|form|input|header|footer|hero|page|screen)\b/i.test(task);
+  const isLogicBugFix = hasBugFix && hasExplicitTestCommand && !hasUiSurface;
+  const hasAppModify = !isLogicBugFix && /modify|update|improve|extend|make.*premium|make.*modern|enhance|change/.test(lowerTask) && /app|website|page|component|dashboard|layout|hero|section/.test(lowerTask);
   const isAppBuildingTask = hasAppBuild || hasAppCreate || hasAppAdd || hasAppAddFlexible || hasAppModify;
 
   const hasAppBuildGeneric = /build\s+(a|an)\s+\w+/.test(lowerTask) && /app|site|page|dashboard|component|library/.test(lowerTask);
@@ -820,6 +986,9 @@ export function initializePlan(task: string, existingProjectInfo?: { hasProject:
   const isAppOrGenericTask = isAppBuildingTask || isGenericAppTask;
 
   const hasExplicitBrowserAction = /\b(navigate|open|click|type|browser|website|url)\b/.test(lowerTask);
+  // "browser" alone (e.g. "the browser's native validation") is context, not a
+  // request to drive the browser. Only add an interaction step for real actions.
+  const hasBrowserInteractionRequest = /\b(click|type|fill|submit|press|select|hover|drag|interact)\b/.test(lowerTask);
   const hasPageInBrowserContext = /\b(page)\b/.test(lowerTask) && !isAppBuildingTask;
   let hasBrowserIntent = hasExplicitBrowserAction || hasPageInBrowserContext;
   let hasBrowserVerification = hasBrowserIntent && (hasVerification || hasExplicitVerification) && !hasExplicitVerification;
@@ -1042,7 +1211,7 @@ if (isAppOrGenericTask) {
     if (hasBrowserVerification && !hasVerificationStep) {
       if (!hasSimilarStep("browser_verify", "browser")) { addStep("Verify the application in the browser", "browser_verify"); hasVerificationStep = true; }
     }
-    if (!hasBrowserVerification && !hasSimilarStep("click", "click")) addStep("Perform browser interactions (click, type, inspect)", "click");
+    if (!hasBrowserVerification && hasBrowserInteractionRequest && !hasSimilarStep("click", "click")) addStep("Perform browser interactions (click, type, inspect)", "click");
     if (hasBrowserVerification) {
       if (!hasSimilarStep("close_browser", "close")) addStep("Close the browser session", "close_browser");
       if (!hasSimilarStep("stop_app", "stop")) addStep("Stop the development server", "stop_app");
@@ -1096,8 +1265,6 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
       const sTool = step.toolType?.toLowerCase();
       if (
         sTool === "scaffold_project" ||
-        sTool === "create_file" ||
-        (sTool === "edit_file" && (sDesc.includes("app.jsx") || sDesc.includes("main.jsx") || sDesc.includes("component"))) ||
         sDesc.includes("scaffold") ||
         sDesc.includes("create index.html") ||
         sDesc.includes("create styles.css") ||
@@ -1114,10 +1281,23 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
     return updatedPlan;
   }
 
-  // 2. Pre-pass: auto-complete any pending create_file steps whose files are already recorded in completedTasks
+  // 2. Pre-pass: auto-complete any pending create_file/edit_file steps whose files are already recorded in completedTasks
+  // (Excluding the target of the current toolCall so the main loop handles it directly,
+  // cleans up skipped prior steps, and activates the next runnable step)
+  let toolCallTargetPath = "";
+  try {
+    const parsedArgs = JSON.parse(toolCall.function.arguments);
+    if (parsedArgs.path) {
+      toolCallTargetPath = String(parsedArgs.path).replace(/^.*?[\\/]/, "").replace(/\\/g, "/").toLowerCase();
+    }
+  } catch {}
+
   for (const step of updatedPlan) {
-    if (step.status === "pending" && step.toolType === "create_file" && step.target) {
+    if (step.status === "pending" && (step.toolType === "create_file" || step.toolType === "edit_file") && step.target) {
       const normTarget = step.target.replace(/^.*?[\\/]/, "").replace(/\\/g, "/").toLowerCase();
+      if (toolCallTargetPath && (normTarget === toolCallTargetPath || normTarget.endsWith("/" + toolCallTargetPath) || toolCallTargetPath.endsWith("/" + normTarget))) {
+        continue;
+      }
       if (
         completedTasks.has(`create_file:${normTarget}`) ||
         completedTasks.has(`create_file:${step.target}`) ||
@@ -1302,6 +1482,21 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
       break;
     }
   }
+
+  // Ensure there is an active running step if runnable pending steps exist
+  const hasRunning = updatedPlan.some(s => s.status === "running");
+  if (!hasRunning) {
+    const nextRunnable = updatedPlan.find(s => {
+      if (s.status !== "pending") return false;
+      return !s.dependsOn || s.dependsOn.length === 0 ||
+        s.dependsOn.every(depId => {
+          const dep = updatedPlan.find(d => d.id === depId);
+          return dep && dep.status === "completed";
+        });
+    });
+    if (nextRunnable) nextRunnable.status = "running";
+  }
+
   return updatedPlan;
 }
 
@@ -1356,8 +1551,8 @@ export function isToolResultSuccess(toolName: string, result: string): boolean {
   if (isToolResultFailure(toolName, result)) return false;
   switch (toolName) {
     case "start_app": return /ready at (https?:\/\/\S+)/i.test(result) || result.includes("reused active server") || result.includes("reused existing server");
-    case "open_browser": return result.includes("Browser opened successfully") || result.includes("Browser session skipped") || result.includes("Browser already open");
-    case "browser_verify": return result.includes("Browser verification passed") || result.includes("Browser verification skipped");
+    case "open_browser": return result.includes("Browser opened successfully") || result.includes("Browser already open");
+    case "browser_verify": return result.includes("Browser verification passed");
     case "close_browser": return result.includes("Browser closed") || result.includes("Browser not open");
     case "stop_app": return result.includes("App process stopped") || result.includes("No app process running") || result.includes("remains running for Live Preview");
     default: return true;
@@ -1396,6 +1591,44 @@ export function getPlanSummary(plan: PlanStep[]): string {
   return summary;
 }
 
+export function normalizeCommandTarget(rawCmd: string): string {
+  let cmd = String(rawCmd || "").trim();
+  if ((cmd.startsWith('"') && cmd.endsWith('"')) || (cmd.startsWith("'") && cmd.endsWith("'"))) {
+    cmd = cmd.slice(1, -1).trim();
+  }
+  // Strip redundant leading cd clause if chained with && or ;
+  const cdPrefix = /^\s*cd\s+["']?[^;&"']+["']?\s*(?:&&|;)\s*/i;
+  cmd = cmd.replace(cdPrefix, "").trim();
+
+  const parts = cmd.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "empty_command";
+
+  const p0 = parts[0].toLowerCase();
+  const p1 = parts[1]?.toLowerCase();
+  const p2 = parts[2]?.toLowerCase();
+
+  if (p0 === "npm" || p0 === "yarn" || p0 === "pnpm") {
+    if (p1 === "run" && p2) return `${p0} run ${p2}`;
+    if (p1) return `${p0} ${p1}`;
+    return p0;
+  }
+  if (p0 === "npx" && p1) {
+    return `${p0} ${p1}`;
+  }
+  if (p0 === "git" && p1) {
+    return `${p0} ${p1}`;
+  }
+  if (p0 === "node" && p1) {
+    if (p1 === "--test" && p2) return `node --test ${p2}`;
+    return `${p0} ${p1}`;
+  }
+
+  if (parts.length > 1) {
+    return `${parts[0]} ${parts[1]}`.slice(0, 40);
+  }
+  return parts[0].slice(0, 40);
+}
+
 export function getTaskIdentity(toolCall: ToolCall): string {
   const name = toolCall.function.name;
   const args = toolCall.function.arguments;
@@ -1412,7 +1645,7 @@ export function getTaskIdentity(toolCall: ToolCall): string {
     }
     if (name === "run_verification" || name === "run_command") {
       const cmd = parsed.command || "";
-      const parts = cmd.split(/\s+/); return `${name}:${parts[0]}`;
+      return `${name}:${normalizeCommandTarget(cmd)}`;
     }
     return `${name}:${JSON.stringify(parsed)}`;
   } catch { return `${name}:${args}`; }
@@ -1429,8 +1662,7 @@ export function getToolTarget(toolCall: ToolCall): string {
       // loop guard catches variations like "npx serve . -l 3000",
       // "npx http-server -p 3000" and "npx serve . -l 3000 &".
       if (isServerStartupCommand(cmd)) return "server_startup";
-      const parts = cmd.split(/\s+/);
-      return parts[0] || cmd.slice(0, 50);
+      return normalizeCommandTarget(cmd);
     }
     return JSON.stringify(args).slice(0, 50);
   } catch { return "unknown"; }
@@ -1644,9 +1876,13 @@ export function generateRecoveryHint(state: AgentState): string | null {
   if (err.errorMessage?.includes("TRUNCATED_OR_INCOMPLETE_OUTPUT") || err.errorMessage?.includes("SYNTAX_VALIDATION_ERROR")) {
     repeatedHint += `\n\nTRUNCATION & SYNTAX ERROR RECOVERY GUIDANCE:\n- The file was truncated or contains unclosed/incomplete syntax blocks.\n- Error details: ${err.errorMessage}\n- Do NOT write empty or partial files.\n- Use 'edit_file' with sufficient surrounding context or append the missing closing braces/rules to complete the file.\n- Ensure all blocks (CSS rules, HTML tags, JS functions) are properly terminated before proceeding.`;
   }
-  // CRITICAL: If the failure was using run_command for server startup, explicitly block it
-  if (err.command === "run_command" && /\b(npx\s+(serve|http-server)|npm\s+run\s+(dev|start|serve|preview))\b/i.test(err.errorMessage ?? "")) {
-    repeatedHint += `\n\nCRITICAL: run_command CANNOT be used to start development servers. You MUST use the 'start_app' tool. The 'start_app' tool detects the correct command from package.json, waits for readiness, and returns the actual URL.`;
+  // Command recovery guidance
+  if (err.command === "run_command") {
+    if (/\b(npx\s+(serve|http-server)|npm\s+run\s+(dev|start|serve|preview))\b/i.test(err.errorMessage ?? "")) {
+      repeatedHint += `\n\nCRITICAL: run_command CANNOT be used to start development servers. You MUST use the 'start_app' tool. The 'start_app' tool detects the correct command from package.json, waits for readiness, and returns the actual URL.`;
+    } else {
+      repeatedHint += `\n\nCOMMAND RECOVERY GUIDANCE:\n- Command failed with exit code ${err.exitCode}.\n- Error output: ${err.errorMessage}\n- Do NOT repeat the exact same command. If looking for files or inspecting text, prefer 'list_directory', 'read_file', or 'search_code'.\n- On Windows PowerShell, ensure command syntax is valid or use built-in tool actions directly.`;
+    }
   }
   if (state.executionLedger) {
     if (state.executionLedger.serverStartAttempts >= 2 && err.command === "start_app") {
@@ -1700,6 +1936,11 @@ export function shouldFinishOnTextResponse(state: AgentState, answer: string | n
   if (state.requestedVerification && !state.verificationPassed) return false;
   if (state.phase === "understand") return false;
   if (state.stopReason) return true;
+
+  if (state.taskPrompt) {
+    const evidence = verifyTaskCompletionEvidence(state.taskPrompt, state);
+    if (!evidence.verified) return false;
+  }
 
   const completedTasks = state.completedTasks || new Set();
   const hasToolWork = completedTasks.size > 0;
@@ -1879,9 +2120,26 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
   2. Implement rich, complete semantic HTML in index.html:
      - Navigation header (<header><nav>): Brand/logo, navigation links, and call-to-action button.
      - Hero section: Bold headline, clear subtitle/tagline, primary and secondary action buttons, and visual highlights.
-     - Substantive content sections: For portfolios (projects showcase cards with tags/links, skills grid, about, contact); for landing pages (features grid with icons, stats/metrics, testimonials/social proof, pricing/CTA); for dashboards (sidebar/topbar nav, KPI stats cards, data table/cards, filter controls); for login/signup (centered card, input fields with labels and validation message containers, action buttons).
-     - Semantic footer (<footer>): Links, branding, and copyright.
-     - Never output bare skeletons with 1 card and 1 sentence. Deliver substantive, realistic content matching the user request.
+      - Substantive content sections:
+        * For ecommerce / online stores (e.g. ShopNova, storefronts):
+          - Responsive navigation header with brand/logo, real-time search input, category filter links, and cart button with live item count badge.
+          - Promotional Hero section with headline, marketing copy, and primary action button.
+          - Interactive category filtering pills/buttons (e.g. All, Electronics, Fashion, Home, Books) and sorting dropdown (Price: Low to High, Price: High to Low, Rating).
+          - Responsive product grid with at least 6-8 distinct, realistic products. Each product card must display product image, title, category, star rating, price, and "Add to Cart" button.
+          - Slide-out cart drawer or modal dialog displaying cart items, thumbnails, unit price, quantity increment/decrement controls, remove button, subtotal, tax/shipping, total amount, and "Checkout" button.
+          - Working client-side cart logic: adding products increments badge count and cart line items; adjusting quantities updates subtotal and total; empty cart displays a helpful empty state message.
+          - Never duplicate sections or show empty product cards.
+        * For login / authentication pages:
+          - Centered modern authentication card layout with subtle elevation or glassmorphism.
+          - Email input (<input type="email">) with label, placeholder, and client-side format validation.
+          - Password input (<input type="password">) with label and working show/hide password toggle button (toggling type="password" <-> "text" with icon/text update).
+          - Inline validation feedback containers displaying clear error messages on invalid submit.
+          - Working submit handler demonstrating validation and success/error status.
+          - Remember me checkbox, "Forgot password?" link, and "Don't have an account? Sign up" link.
+        * For portfolios (projects showcase cards with tags/links, skills grid, about, contact); for landing pages (features grid with icons, stats/metrics, testimonials/social proof, pricing/CTA); for dashboards (sidebar/topbar nav, KPI stats cards, data table/cards, filter controls).
+      - Semantic footer (<footer>): Links, branding, social links, and copyright.
+      - Image Assets and Fallbacks: When displaying product or showcase images, always use valid inline SVG illustrations, data URIs, or reliable image URLs with explicit fallback (e.g. onerror="this.onerror=null;this.src='data:image/svg+xml,...'") so images NEVER appear broken or missing.
+      - Never output bare skeletons with 1 card and 1 sentence. Deliver substantive, realistic content matching the user request.
   3. Implement polished, production-grade styling in styles.css:
      - Comprehensive box-sizing reset (*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }).
      - Modern typography stack (system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif) with clear hierarchy and comfortable line-height.
@@ -2271,22 +2529,19 @@ async function callModelWithRetry(
     } catch (error: any) {
       const classified = classifyError(error);
 
-      // Log the error with full context for debugging (safe - no secrets)
-      console.log(chalk.yellow(`[NVIDIA API] Attempt ${attempt + 1}/${maxRetries + 1} failed: type=${classified.type}, retriable=${classified.retriable}, message=${classified.message}`));
+      // Safe user-facing retry log (diagnostics preserved without leaking model names)
+      console.log(chalk.yellow(`[AI Service] Request attempt ${attempt + 1}/${maxRetries + 1} failed (${classified.type}).`));
 
       lastError = error;
 
-      // Non-retriable errors - fail fast
+      // Non-retriable errors - fail fast with safe user-facing message
       if (!classified.retriable) {
-        if (classified.type === "QUOTA_EXHAUSTED") {
-          throw new Error(classified.message);
-        }
-        throw new Error(`${classified.type}: ${classified.message}`);
+        throw new Error(sanitizeUserFacingError(classified.message));
       }
 
-      // If this was the last attempt, throw the error
+      // If this was the last attempt, throw sanitized error
       if (attempt === maxRetries) {
-        throw new Error(`${classified.type} after ${maxRetries + 1} attempts: ${classified.message}`);
+        throw new Error(sanitizeUserFacingError(`${classified.type} after ${maxRetries + 1} attempts: ${classified.message}`));
       }
 
       // Calculate delay with exponential backoff and jitter
@@ -2294,14 +2549,14 @@ async function callModelWithRetry(
       const jitter = Math.random() * 0.3 * delay; // 0-30% jitter
       const totalDelay = delay + jitter;
 
-      console.log(chalk.yellow(`[NVIDIA API] Retrying in ${Math.round(totalDelay)}ms (attempt ${attempt + 1}/${maxRetries})...`));
+      console.log(chalk.yellow(`[AI Service] Retrying in ${Math.round(totalDelay)}ms (attempt ${attempt + 1}/${maxRetries})...`));
 
       await new Promise(resolve => setTimeout(resolve, totalDelay));
     }
   }
 
   // Should not reach here, but TypeScript needs it
-  throw lastError;
+  throw new Error(sanitizeUserFacingError(lastError?.message || "AI service request failed"));
 }
 
 async function callModel(client: OpenAI, model: string, messages: ChatMessage[]): Promise<{ content: string; toolCalls: ToolCall[] }> {
@@ -2309,11 +2564,11 @@ async function callModel(client: OpenAI, model: string, messages: ChatMessage[])
     return await callModelWithRetry(client, model, messages);
   } catch (err: any) {
     const isTimeout = err?.message?.includes("timed out") || err?.message?.includes("timeout");
-    if (isTimeout && model !== "nvidia/nemotron-3-super-120b-a12b") {
-      console.log(`[callModel] Model ${model} timed out. Falling back to nvidia/nemotron-3-super-120b-a12b...`);
-      return await callModelWithRetry(client, "nvidia/nemotron-3-super-120b-a12b", messages);
+    if (isTimeout && model !== DEFAULT_MODEL) {
+      console.log(chalk.yellow(`[AI Service] Primary request timed out. Retrying with fallback model...`));
+      return await callModelWithRetry(client, DEFAULT_MODEL, messages);
     }
-    throw err;
+    throw new Error(sanitizeUserFacingError(err?.message));
   }
 }
 
@@ -2359,6 +2614,65 @@ const schemas = {
   }),
   inspect_visual_quality: z.object({})
 };
+
+export async function runDeterministicUIChecks(workspace: Workspace, appUrl?: string | null): Promise<{
+  passed: boolean;
+  errors: string[];
+  warnings: string[];
+  details: string;
+}> {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  const hasIndex = await workspace.exists("index.html");
+  if (!hasIndex) {
+    errors.push("index.html does not exist in workspace root");
+  } else {
+    try {
+      const html = await workspace.read("index.html");
+      if (!html.includes("<html") && !html.includes("<!DOCTYPE")) {
+        errors.push("index.html does not contain valid HTML document structure");
+      }
+      if (!/<link[^>]+rel=["']stylesheet["']/i.test(html) && !/<style[\s>]/i.test(html)) {
+        warnings.push("index.html does not link an external stylesheet");
+      }
+      if (!/<script[\s>]/i.test(html)) {
+        warnings.push("index.html does not include client-side script tags");
+      }
+    } catch (e: any) {
+      errors.push(`Failed to read index.html: ${e.message}`);
+    }
+  }
+
+  const hasStyles = await workspace.exists("styles.css");
+  if (hasStyles) {
+    try {
+      const css = await workspace.read("styles.css");
+      if (css.trim().length < 50) {
+        warnings.push("styles.css has fewer than 50 characters of styling rules");
+      }
+    } catch {}
+  }
+
+  if (appUrl) {
+    try {
+      const res = await fetch(appUrl, { signal: AbortSignal.timeout(3000) });
+      if (!res.ok) {
+        warnings.push(`Local server at ${appUrl} returned HTTP status ${res.status}`);
+      }
+    } catch {}
+  }
+
+  const passed = errors.length === 0;
+  return {
+    passed,
+    errors,
+    warnings,
+    details: passed
+      ? `Deterministic UI checks: PASSED (${hasIndex ? "index.html present" : ""}${hasStyles ? ", styles.css present" : ""}${appUrl ? ", server responding" : ""}).`
+      : `Deterministic UI checks: FAILED (${errors.join("; ")}).`,
+  };
+}
 
 async function executeTool(workspace: Workspace, toolCall: ToolCall, state: AgentState): Promise<string> {
   let args: any;
@@ -2460,6 +2774,23 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         const redundantCd = new RegExp(`^\\s*cd\\s+["']?(?:\\.\\/|\\.\\\\\\\\)?(?:${escapedBase}|${escapedRoot})["']?\\s*(?:&&|;|\\|\\|)\\s*`, "i");
         if (redundantCd.test(command)) {
           command = command.replace(redundantCd, "").trim();
+        }
+
+        // Handle standalone cd command
+        const standaloneCd = command.match(/^\s*cd\s+["']?([^;&"']+)["']?\s*$/i);
+        if (standaloneCd) {
+          const targetSubdir = path.resolve(workspace.root, standaloneCd[1].trim());
+          if (fs.existsSync(targetSubdir)) {
+            try {
+              if (fs.statSync(targetSubdir).isDirectory()) {
+                workspace.setRoot(targetSubdir);
+                state.snapshotManager.setWorkspaceRoot(workspace.root);
+                console.log(chalk.cyan(`Authoritative project root updated to: ${targetSubdir}`));
+                return `Working directory changed to: ${targetSubdir}\nExit code: 0\nSTDOUT: ${targetSubdir}\nSTDERR: <empty>`;
+              }
+            } catch {}
+          }
+          return `Exit code: 1\nSTDOUT: <empty>\nSTDERR: Directory does not exist: ${standaloneCd[1].trim()}`;
         }
 
         // Support cd into existing child subdirectory containing project
@@ -2564,6 +2895,17 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           console.error(chalk.red(blockMsg));
           return blockMsg;
         }
+
+        // Avoid repeating file creation when identical content already exists on disk
+        const normTarget = filePath.replace(/^.*?[\\/]/, "").replace(/\\/g, "/").toLowerCase();
+        const alreadyDone = state.completedTasks.has(`create_file:${normTarget}`) || state.completedTasks.has(`create_file:${filePath}`);
+        if (alreadyDone && await workspace.exists(filePath)) {
+          const currentDiskContent = await workspace.read(filePath).catch(() => null);
+          if (currentDiskContent === content) {
+            return `File ${filePath} is already created with identical content (no-op). Proceeding to next step.`;
+          }
+        }
+
         console.log(chalk.cyan(`Creating: ${filePath}`));
         try {
           await state.snapshotManager.captureBefore(filePath, "create");
@@ -2909,23 +3251,26 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           const availability = await session.isAvailable();
           if (!availability.available) {
             state.browserVerificationRequested = false;
-            state.browserVerificationPassed = true;
-            return `Browser verification skipped: Browser automation service unavailable (${availability.error}). Application edits remain intact.`;
+            state.browserVerificationPassed = false;
+            const deterministic = await runDeterministicUIChecks(workspace, state.appUrl);
+            return `Browser verification skipped: Browser automation service unavailable (${availability.error}). ${deterministic.details}`;
           }
           const openRes = await open_browser(session);
           if (openRes.success) {
             state.browserSession = session;
           } else {
             state.browserVerificationRequested = false;
-            state.browserVerificationPassed = true;
-            return `Browser verification skipped: Browser automation service unavailable (${openRes.error}). Application edits remain intact.`;
+            state.browserVerificationPassed = false;
+            const deterministic = await runDeterministicUIChecks(workspace, state.appUrl);
+            return `Browser verification skipped: Browser automation service unavailable (${openRes.error}). ${deterministic.details}`;
           }
         }
         const availability = await state.browserSession.isAvailable();
         if (!availability.available) {
           state.browserVerificationRequested = false;
-          state.browserVerificationPassed = true;
-          return `Browser verification skipped: Browser automation service unavailable (${availability.error}). Application edits remain intact.`;
+          state.browserVerificationPassed = false;
+          const deterministic = await runDeterministicUIChecks(workspace, state.appUrl);
+          return `Browser verification skipped: Browser automation service unavailable (${availability.error}). ${deterministic.details}`;
         }
         const baseUrl = (args.baseUrl as string) || state.appUrl || (state.appProcess ? getAppUrl(state.appProcess) : null);
         if (!baseUrl) return "No base URL available. Start app first.";
@@ -3031,7 +3376,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         const availability = await session.isAvailable();
         if (!availability.available) {
           state.browserVerificationRequested = false;
-          state.browserVerificationPassed = true;
+          state.browserVerificationPassed = false;
           state.browserSession = session;
           return `Browser session skipped: Browser automation service unavailable (${availability.error}). Application edits remain intact.`;
         }
@@ -3041,7 +3386,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           return "Browser opened successfully";
         }
         state.browserVerificationRequested = false;
-        state.browserVerificationPassed = true;
+        state.browserVerificationPassed = false;
         return `Browser session skipped: Browser automation service unavailable (${result.error}). Application edits remain intact.`;
       }
       case "close_browser": { if (!state.browserSession) return "Browser not open."; const result = await close_browser(state.browserSession); state.browserSession = null; return result.success ? "Browser closed" : `Failed to close browser: ${result.error}`; }
@@ -3098,6 +3443,14 @@ function printFinalResult(state: AgentState): void {
   else if (state.lastVerification) { console.log(chalk.red(`Verification FAILED (exit code ${state.lastVerification.exitCode}).`)); }
   else if (state.requestedVerification) { console.log(chalk.yellow(`Verification NOT COMPLETED: ${state.requestedVerification}`)); }
   else { console.log(chalk.green("Task completed without requested verification.")); }
+
+  const evidence = state.taskPrompt ? verifyTaskCompletionEvidence(state.taskPrompt, state) : { verified: true, missingRequirements: [] };
+  if (!evidence.verified) {
+    console.log(chalk.red(`\nUNVERIFIED REQUIREMENTS:`));
+    for (const req of evidence.missingRequirements) {
+      console.log(chalk.red(`  ✗ ${req}`));
+    }
+  }
   if (state.currentPlan && state.currentPlan.length > 0) {
     const completed = state.currentPlan.filter(s => s.status === "completed").length;
     const failed = state.currentPlan.filter(s => s.status === "failed").length;
@@ -3440,12 +3793,10 @@ export async function runAgent(
     try {
       response = await callModel(client, config.name, messages);
     } catch (error: any) {
-      if (error.message.startsWith("QUOTA_EXHAUSTED:")) {
-        console.log(chalk.red(`\n${error.message}`));
-        state.stopReason = error.message;
-        break;
-      }
-      throw error;
+      const sanitized = sanitizeUserFacingError(error?.message);
+      console.log(chalk.red(`\n${sanitized}`));
+      state.stopReason = sanitized;
+      break;
     }
 
     messages.push({ role: "assistant", content: response.content || null, tool_calls: response.toolCalls.length > 0 ? response.toolCalls : undefined });
@@ -3466,9 +3817,13 @@ export async function runAgent(
         })
       : [];
 
+    const evidence = state.taskPrompt ? verifyTaskCompletionEvidence(state.taskPrompt, state) : { verified: true, missingRequirements: [] };
+
     if (modelIndicatesCompletion(response.content) && !state.requestedVerification && hasToolWorkNow) {
       if (pendingLifecycle.length > 0) {
         console.log(chalk.yellow(`\nModel claims completion but lifecycle is incomplete. Pending: ${pendingLifecycle.map(s => s.description).join("; ")}`));
+      } else if (!evidence.verified) {
+        console.log(chalk.yellow(`\nModel claims completion but requirements are unverified: ${evidence.missingRequirements.join("; ")}`));
       } else {
         console.log(chalk.green(`\nModel indicates task completion. Stopping.`));
         state.currentPlan = reconcilePlanOnModelCompletion(state.currentPlan, state);
@@ -3478,6 +3833,16 @@ export async function runAgent(
 
     if (response.toolCalls.length === 0) {
       if (shouldFinishOnTextResponse(state, response.content)) break;
+      if (!evidence.verified && hasToolWorkNow && !state.stopReason) {
+        console.log(chalk.yellow(`\nContinuing: ${evidence.missingRequirements.length} required task requirement(s) still unverified.`));
+        messages.push({
+          role: "user",
+          content: `NOT COMPLETE - the task requires these requirements which are still unfulfilled:\n` +
+            evidence.missingRequirements.map((r, i) => `${i + 1}. ${r}`).join("\n") +
+            `\n\nPerform the necessary file edits or verification commands now. Do not claim completion until these requirements are fulfilled.`
+        });
+        continue;
+      }
       if (pendingLifecycle.length > 0 && hasToolWorkNow && !state.stopReason) {
         console.log(chalk.yellow(`\nContinuing: ${pendingLifecycle.length} required lifecycle step(s) still pending.`));
         messages.push({
@@ -3515,23 +3880,28 @@ export async function runAgent(
       if (completedAfter > completedBefore) {
         stepsWithoutPlanProgress = 0;
       } else {
-        stepsWithoutPlanProgress++;
-        if (stepsWithoutPlanProgress === 3 || stepsWithoutPlanProgress === 5) {
-          const nextPlanStep = state.currentPlan.find(s => s.status === "running") ||
-            state.currentPlan.find(s => s.status !== "completed" && s.status !== "failed");
-          if (nextPlanStep && !state.stopReason) {
-            messages.push({
-              role: "user",
-              content: `PLAN PROGRESS REMINDER: Recent actions did not advance the plan.\n\n${getPlanSummary(state.currentPlan)}\n\nExecute the next required step now: "${nextPlanStep.description}"${nextPlanStep.toolType ? ` using tool: ${nextPlanStep.toolType}` : ""}. Do not run unrelated exploration commands or repeat previous actions.`
-            });
-          }
-        } else if (stepsWithoutPlanProgress >= 7) {
-          console.log(chalk.red(`\nNo plan progress after ${stepsWithoutPlanProgress} actions. Triggering recovery path.`));
-          state.phase = "recover";
-          state.recoveryAttempts++;
-          if (state.recoveryAttempts >= maxRecoveryAttempts) {
-            state.stopReason = `Task stopped: No progress made after ${state.recoveryAttempts} recovery attempts.`;
-            break;
+        const tName = toolCall.function.name;
+        const isInspection = (tName === "read_file" || tName === "list_directory" || tName === "search_code") && !isToolResultFailure(tName, result);
+        if (!isInspection) {
+          stepsWithoutPlanProgress++;
+          if (stepsWithoutPlanProgress === 3 || stepsWithoutPlanProgress === 5) {
+            const nextPlanStep = state.currentPlan.find(s => s.status === "running") ||
+              state.currentPlan.find(s => s.status !== "completed" && s.status !== "failed");
+            if (nextPlanStep && !state.stopReason) {
+              messages.push({
+                role: "user",
+                content: `PLAN PROGRESS REMINDER: Recent actions did not advance the plan.\n\n${getPlanSummary(state.currentPlan)}\n\nExecute the next required step now: "${nextPlanStep.description}"${nextPlanStep.toolType ? ` using tool: ${nextPlanStep.toolType}` : ""}. Do not run unrelated exploration commands or repeat previous actions.`
+              });
+            }
+          } else if (stepsWithoutPlanProgress >= 7) {
+            console.log(chalk.red(`\nNo plan progress after ${stepsWithoutPlanProgress} actions. Triggering recovery path.`));
+            state.phase = "recover";
+            state.recoveryAttempts++;
+            stepsWithoutPlanProgress = 0;
+            if (state.recoveryAttempts >= maxRecoveryAttempts) {
+              state.stopReason = `Task stopped: No progress made after ${state.recoveryAttempts} recovery attempts.`;
+              break;
+            }
           }
         }
       }
@@ -3565,6 +3935,33 @@ export async function runAgent(
           state.recoveryAttempts++;
           if (state.recoveryAttempts >= maxRecoveryAttempts) {
             state.stopReason = `Execution loop detected: ${recentCall.toolName}(${recentCall.target}) repeated ${consecutiveCount} consecutive times without progress.`;
+            break;
+          }
+        }
+      }
+
+      // Check for alternating 2-action cycle (e.g. A -> B -> A -> B -> A -> B)
+      if (state.recentToolCalls.length >= 6) {
+        const len = state.recentToolCalls.length;
+        const c1 = state.recentToolCalls[len - 1];
+        const c2 = state.recentToolCalls[len - 2];
+        const c3 = state.recentToolCalls[len - 3];
+        const c4 = state.recentToolCalls[len - 4];
+        const c5 = state.recentToolCalls[len - 5];
+        const c6 = state.recentToolCalls[len - 6];
+        const isCycle = (c1.toolName === c3.toolName && c1.target === c3.target && c3.toolName === c5.toolName && c3.target === c5.target) &&
+                        (c2.toolName === c4.toolName && c2.target === c4.target && c4.toolName === c6.toolName && c4.target === c6.target) &&
+                        (c1.toolName !== c2.toolName || c1.target !== c2.target);
+        if (isCycle) {
+          console.log(chalk.red(`\nAlternating cycle loop detected between ${c1.toolName}(${c1.target}) and ${c2.toolName}(${c2.target}). Forcing recovery.`));
+          messages.push({
+            role: "user",
+            content: `CYCLE LOOP DETECTED: You are alternating repeatedly between ${c1.toolName} and ${c2.toolName} without advancing the plan. Do NOT repeat these actions. Proceed directly to the next uncompleted plan step.`
+          });
+          state.phase = "recover";
+          state.recoveryAttempts++;
+          if (state.recoveryAttempts >= maxRecoveryAttempts) {
+            state.stopReason = `Execution loop detected: alternating between ${c1.toolName} and ${c2.toolName} without progress.`;
             break;
           }
         }
@@ -3615,9 +4012,15 @@ export async function runAgent(
       }
 
       const isCurrentToolFailure = isToolResultFailure(toolCall.function.name, result);
-      const stepThatFailed = newlyFailedSteps[0] || (isCurrentToolFailure ? state.currentPlan.find(s => s.status === "failed") : null);
+      let stepThatFailed = newlyFailedSteps[0] || (isCurrentToolFailure ? state.currentPlan.find(s => s.status === "failed") : null);
 
-      if (isCurrentToolFailure && stepThatFailed) {
+      if (isCurrentToolFailure) {
+        if (!stepThatFailed) {
+          stepThatFailed = state.currentPlan.find(s => s.status === "running") || null;
+          if (stepThatFailed) {
+            stepThatFailed.status = "failed";
+          }
+        }
         const currentCompletedCount = state.currentPlan.filter(s => s.status === "completed").length;
         const madeProgress = currentCompletedCount > lastCompletedStepCount;
         if (!madeProgress) state.recoveryAttempts += 1; else { state.recoveryAttempts = 0; lastCompletedStepCount = currentCompletedCount; }
@@ -3653,13 +4056,14 @@ export async function runAgent(
             state.executionLedger.consecutiveFailuresWithSameError = 1;
           }
         }
-        console.error(chalk.red(`\n[Execution Failure] Step "${stepThatFailed.description}" failed: ${state.lastError.errorMessage}`));
+        const failDesc = stepThatFailed ? `Step "${stepThatFailed.description}" failed` : `Action ${toolCall.function.name} failed`;
+        console.error(chalk.red(`\n[Execution Failure] ${failDesc}: ${state.lastError.errorMessage}`));
         state.phase = "recover";
         if (state.recoveryAttempts >= maxRecoveryAttempts) {
           state.stopReason = `Recovery limit reached (${maxRecoveryAttempts} attempts). Task cannot continue. Last error: ${state.lastError.errorMessage}`;
           console.log(chalk.red(`\nRecovery limit reached after ${state.recoveryAttempts} attempts. Stopping.`));
         } else {
-          console.log(chalk.yellow(`\nStep failed: ${stepThatFailed.description} - entering recovery (attempt ${state.recoveryAttempts}/${maxRecoveryAttempts})`));
+          console.log(chalk.yellow(`\n${failDesc} - entering recovery (attempt ${state.recoveryAttempts}/${maxRecoveryAttempts})`));
         }
       }
 
@@ -3840,20 +4244,31 @@ export async function runAgent(
   const hasFailedSteps = state.currentPlan?.some(s => s.status === "failed") ?? false;
   const allRequiredStepsComplete = state.currentPlan ? state.currentPlan.every(s => s.status === "completed" || (s.toolType === "stop_app" && isWebAppLifecycle)) : true;
 
+  const evidence = verifyTaskCompletionEvidence(task, state);
+
   const success = !state.stopReason &&
     !browserVerificationIncomplete &&
     !appNotStarted &&
     !hasFailedSteps &&
     allRequiredStepsComplete &&
-    (state.requestedVerification ? state.verificationPassed : true);
+    (state.requestedVerification ? state.verificationPassed : true) &&
+    evidence.verified;
 
-  const error = !success
-    ? state.stopReason || (browserVerificationIncomplete ? "Browser verification did not pass" : appNotStarted ? "Application server could not be started for Live Preview" : hasFailedSteps ? "One or more plan steps failed" : !allRequiredStepsComplete ? "Task steps were incomplete" : "Task could not be completed successfully")
+  const rawError = !success
+    ? state.stopReason || (browserVerificationIncomplete ? "Browser verification did not pass" : appNotStarted ? "Application server could not be started for Live Preview" : hasFailedSteps ? "One or more plan steps failed" : !allRequiredStepsComplete ? "Task steps were incomplete" : !evidence.verified ? `Incomplete task: ${evidence.missingRequirements.join("; ")}` : "Task could not be completed successfully")
     : undefined;
+
+  const error = rawError ? sanitizeUserFacingError(rawError) : undefined;
+  const stopReason = state.stopReason ? sanitizeUserFacingError(state.stopReason) : null;
+
+  const status: "COMPLETED" | "PARTIAL" | "FAILED" = success
+    ? "COMPLETED"
+    : (filesModified.length > 0 && completedSteps > 0 ? "PARTIAL" : "FAILED");
 
   return {
     success,
-    stopReason: state.stopReason,
+    status,
+    stopReason,
     verificationPassed: state.verificationPassed,
     completedSteps,
     totalSteps,

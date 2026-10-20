@@ -95,7 +95,7 @@ export function analyseTaskBrief(task: string): ProductType {
   if (/\b(dashboard|analytics|metrics|admin\s+panel|kpi|reporting|data\s+viz)\b/.test(lower))
     return "dashboard";
 
-  if (/\b(e[\s-]?commerce|online\s+store|shop|shopping\s+cart|product\s+list|buy\s+now)\b/.test(lower))
+  if (/\b(e[\s-]?commerce|online\s+store|shop|shopping\s+cart|product\s+list|buy\s+now|shopnova|store|catalog|cart|checkout)\b/.test(lower))
     return "ecommerce";
 
   if (/\b(blog|article|post|news|cms|magazine|editorial)\b/.test(lower))

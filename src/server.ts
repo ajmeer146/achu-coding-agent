@@ -20,6 +20,7 @@ import { captureWorkspaceBaseline, detectChanges, ChangedFile, generateDiffForDi
 import { getAppRuntime, isUrlServing, isProcessAlive, ensureAppServer, clearAppRuntime } from "./tools/app-lifecycle.js";
 import { createSessionManager } from "./session/session-manager.js";
 import { SessionData, SessionMetadata } from "./session/session-types.js";
+import { sanitizeUserFacingError } from "./utils/error-sanitizer.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -492,6 +493,10 @@ app.get("/api/companion/tasks/:taskId", (req, res) => {
     res.status(404).json({ ok: false, error: "Task not found" });
     return;
   }
+  if (task.status === "RUNNING" && task.childProcess && task.childProcess.pid && !isProcessAlive(task.childProcess.pid)) {
+    task.status = (task.changedFiles && task.changedFiles.length > 0) ? "PARTIAL" : "FAILED";
+    task.error = task.error || "Process exited unexpectedly";
+  }
   res.json({
     ok: true,
     task: {
@@ -508,7 +513,7 @@ app.get("/api/companion/tasks/:taskId", (req, res) => {
       buildStatus: task.buildStatus,
       browserStatus: task.browserStatus,
       appUrl: task.appUrl,
-      error: task.error,
+      error: sanitizeUserFacingError(task.error),
     },
   });
 });
@@ -1763,13 +1768,14 @@ async function runAgentWithWorkspace(
       broadcastToAll({ type: "task_status", taskId, status: "COMPLETED", sessionId, workspaceRoot: effectiveRoot });
     } else {
       const errorMsg = signal ? `Process terminated by signal ${signal}` : `Process exited with code ${code}`;
-      console.log(`[run_task] Task failed: ${errorMsg}`);
-      taskRecord.error = errorMsg;
-      broadcastToAll({ 
+      const sanitizedError = sanitizeUserFacingError(taskRecord.error || errorMsg);
+      console.log(`[run_task] Task failed: ${sanitizedError}`);
+      taskRecord.error = sanitizedError;
+      broadcastToAll({
         type: "task_failed",
-        taskId, 
+        taskId,
         sessionId,
-        error: errorMsg,
+        error: sanitizedError,
         output: finalOutput,
         changedFiles: detectedChanges.map(f => ({ path: f.path, changeType: f.changeType, additions: f.additions, deletions: f.deletions, isBinary: f.isBinary })),
         workspaceRoot: effectiveRoot,

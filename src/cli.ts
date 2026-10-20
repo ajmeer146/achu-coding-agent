@@ -3,6 +3,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { runAgent } from "./agent.js";
+import { sanitizeUserFacingError } from "./utils/error-sanitizer.js";
 
 const program = new Command();
 
@@ -25,14 +26,15 @@ program
     try {
       const result = await runAgent(task);
       if (!result.success) {
-        console.error(chalk.red(`\nTask failed: ${result.error || result.stopReason || "Execution was not successful"}`));
+        const errorMsg = sanitizeUserFacingError(result.error || result.stopReason || "Execution was not successful");
+        console.error(chalk.red(`\nTask failed: ${errorMsg}`));
         process.exitCode = 1;
       }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : String(error);
 
-      console.error(chalk.red(`\nAgent error: ${message}`));
+      console.error(chalk.red(`\nAgent error: ${sanitizeUserFacingError(message)}`));
       process.exitCode = 1;
     }
   });
