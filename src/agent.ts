@@ -1098,9 +1098,6 @@ if (isAppOrGenericTask) {
               if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
               if (!hasSimilarStep("create_file", "script.js")) addStep("Create script.js", "create_file", "script.js");
             }
-            if (!hasSimilarStep("create_file", "package.json")) {
-              addStep("Create package.json with development scripts", "create_file", "package.json");
-            }
           }
         } else if (isFollowUpTask) {
           // For follow-up on existing project, plan edits instead of creation
@@ -1128,9 +1125,6 @@ if (isAppOrGenericTask) {
               if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
               if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
               if (!hasSimilarStep("create_file", "script.js")) addStep("Create script.js", "create_file", "script.js");
-            }
-            if (!hasSimilarStep("create_file", "package.json")) {
-              addStep("Create package.json with development scripts", "create_file", "package.json");
             }
           }
         }
@@ -1856,7 +1850,13 @@ export function generateRecoveryHint(state: AgentState): string | null {
   }
   // Domain-specific recovery guidance
   if (err.command === "start_app") {
-    repeatedHint += `\n\nSERVER STARTUP RECOVERY GUIDANCE:\n- Server diagnostic error: ${err.errorMessage}\n- Do NOT run npm install serve or attempt to install static server packages.\n- Do NOT create or modify .env files.\n- The 'start_app' tool automatically handles port allocation and launches on an available port.\n- Verify that package.json scripts and entry files (index.html, src/main.jsx, src/App.jsx) exist.\n- If files are missing, use 'create_file' or 'scaffold_project'.\n- If dependencies are missing, install them with 'npm install'.\n- Do NOT run shell commands to kill node processes.`;
+    const diagnostic = err.errorMessage ?? "";
+    const missingBinary = /not found|not recognized|is not recognized|Cannot find module/i.test(diagnostic);
+    const configFailure = /failed to load config|vite\.config|Cannot find module|ERR_MODULE_NOT_FOUND/i.test(diagnostic);
+    const targetedGuidance = missingBinary || configFailure
+      ? `\n- The startup output indicates a missing dependency, binary, or invalid config. Install dev dependencies with 'npm install --include=dev', then read package.json, the bundler config, and entry files to fix the real cause. Do NOT call start_app again until the dependency/config problem is fixed.`
+      : "";
+    repeatedHint += `\n\nSERVER STARTUP RECOVERY GUIDANCE:\n- Server diagnostic error: ${diagnostic}\n- Do NOT run npm install serve or attempt to install static server packages.\n- Do NOT create or modify .env files.\n- The 'start_app' tool automatically handles port allocation and launches on an available port.\n- For static HTML/CSS/JS sites, do NOT add package.json or Vite files; start_app serves index.html directly.\n- Verify that the declared entry files and config files exist and are valid before retrying.\n- If dependencies are missing, install them with 'npm install --include=dev'.\n- Do NOT run shell commands to kill node processes.${targetedGuidance}`;
   }
   if (err.command === "browser_verify") {
     const failedAssertions = state.browserVerificationFailedTargets && state.browserVerificationFailedTargets.size > 0
@@ -1870,6 +1870,9 @@ export function generateRecoveryHint(state: AgentState): string | null {
     repeatedHint += `\n\nBROWSER VERIFICATION GUIDANCE:${failedAssertions}\n- Ensure the application server is running and ready.\n- Re-run browser_verify with target criteria that match the page's actual DOM.${fixGuidance}`;
     if (/measurable visual defects/i.test(err.errorMessage ?? "")) {
       repeatedHint += `\n- The content assertions passed but measurable layout defects were reported (see error text). Apply targeted CSS/HTML fixes for each listed defect (overflow, clipping, overlap, text overflow, touch targets) and re-run browser_verify. Do NOT claim visual success while these defects are reported.`;
+    }
+    if (/placeholder/i.test(err.errorMessage ?? "")) {
+      repeatedHint += `\n- Placeholder visuals were detected. Replace placeholder text/services and any large single-letter SVG graphic with a real multi-shape inline SVG illustration or product imagery. Do not rename or hide the element to pass the check.`;
     }
   }
   if (err.command === "edit_file") {
@@ -2118,14 +2121,16 @@ Your job:
 
 CREATIVE AND DISTINCTIVE UI GENERATION:
 - When asked to build a website, landing page, login page, dashboard, portfolio, or web application:
-  1. ALWAYS link styles.css in index.html (<link rel="stylesheet" href="styles.css">) and script.js (<script src="script.js" defer></script>).
-  2. Implement rich, complete semantic HTML in index.html:
+  1. For plain HTML/CSS/JS sites, create ONLY index.html, styles.css, and script.js. Do NOT create package.json, vite.config.js, src/main.jsx, or React/Vite scaffolding unless the user explicitly requests React, Vite, or Next.js. The start_app tool serves static sites automatically.
+  2. ALWAYS link styles.css in index.html (<link rel="stylesheet" href="styles.css">) and script.js (<script src="script.js" defer></script>).
+  3. Implement rich, complete semantic HTML in index.html:
      - Navigation header (<header><nav>): Brand/logo, navigation links, and call-to-action button.
      - Hero section: Bold headline, clear subtitle/tagline, primary and secondary action buttons, and visual highlights.
       - Substantive content sections:
         * For ecommerce / online stores (e.g. ShopNova, storefronts):
           - Responsive navigation header with brand/logo, real-time search input, category filter links, and cart button with live item count badge.
           - Promotional Hero section with headline, marketing copy, and primary action button.
+          - Hero visual: build a layered inline SVG product/scene illustration or a polished multi-shape gradient composition. NEVER use a plain rectangle with one letter or circle (for example a grey rect with a circle and the letter "E"), and never use placeholder image services. Those are placeholders and browser verification fails them.
           - Interactive category filtering pills/buttons (e.g. All, Electronics, Fashion, Home, Books) and sorting dropdown (Price: Low to High, Price: High to Low, Rating).
           - Responsive product grid with at least 6-8 distinct, realistic products. Each product card must display product image, title, category, star rating, price, and "Add to Cart" button.
           - Slide-out cart drawer or modal dialog displaying cart items, thumbnails, unit price, quantity increment/decrement controls, remove button, subtotal, tax/shipping, total amount, and "Checkout" button.
@@ -2140,9 +2145,9 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
           - Remember me checkbox, "Forgot password?" link, and "Don't have an account? Sign up" link.
         * For portfolios (projects showcase cards with tags/links, skills grid, about, contact); for landing pages (features grid with icons, stats/metrics, testimonials/social proof, pricing/CTA); for dashboards (sidebar/topbar nav, KPI stats cards, data table/cards, filter controls).
       - Semantic footer (<footer>): Links, branding, social links, and copyright.
-      - Image Assets and Fallbacks: When displaying product or showcase images, always use valid inline SVG illustrations, data URIs, or reliable image URLs with explicit fallback (e.g. onerror="this.onerror=null;this.src='data:image/svg+xml,...'") so images NEVER appear broken or missing.
+      - Image Assets and Fallbacks: When displaying product or showcase images, always use valid inline SVG illustrations, data URIs, or reliable image URLs with explicit fallback (e.g. onerror="this.onerror=null;this.src='data:image/svg+xml,...'") so images NEVER appear broken or missing. Never use placeholder services (via.placeholder.com, placehold.co, dummyimage.com, lorempixel) or a large SVG that contains only a single letter as imagery.
       - Never output bare skeletons with 1 card and 1 sentence. Deliver substantive, realistic content matching the user request.
-  3. Implement polished, production-grade styling in styles.css:
+  4. Implement polished, production-grade styling in styles.css:
      - Comprehensive box-sizing reset (*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }).
      - Modern typography stack (system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif) with clear hierarchy and comfortable line-height.
      - Design tokens at :root (--bg, --card-bg, --text-primary, --text-secondary, --accent, --accent-hover, --border, --shadow).
@@ -2153,13 +2158,13 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
      - Action buttons: prominent primary buttons with hover/active transitions, cursor: pointer, and accessible contrast.
      - Mobile responsiveness: media queries ensuring touch targets (min 44px) and stacked layouts for mobile screens (@media (max-width: 768px)).
      - Stylesheet must contain comprehensive rules covering all page elements (at least 25-50 CSS rules).
-  4. Implement functional, clean client-side logic in script.js:
+  5. Implement functional, clean client-side logic in script.js:
      - Form submit handlers preventing default reload (e.preventDefault()) and demonstrating interactive validation feedback.
      - Interactive toggles: theme toggle (dark/light mode), mobile menu toggle, or filter tabs.
      - Password visibility toggles where password inputs exist (toggling type="password" <-> "text" with eye icon update).
      - Clear visual feedback for errors or successful actions.
-  5. Browser verification inspects CSS rules, typography, computed styles, semantic elements, and content richness. An unstyled page or bare skeleton will FAIL verification.
-  6. Ensure all files are correctly interconnected before concluding execution.
+  6. Browser verification inspects CSS rules, typography, computed styles, semantic elements, and content richness. An unstyled page or bare skeleton will FAIL verification.
+  7. Ensure all files are correctly interconnected before concluding execution.
 - Understand the product purpose, audience, and required features before starting.
 - Make deliberate design decisions: vary layout composition, typography/font pairings, color palette, and spacing.
 - Use distinct visual directions matching the brief.
@@ -3068,13 +3073,14 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           }
         } catch {}
 
-        if (hasDependencies && !fs.existsSync(path.join(workingDir, "node_modules"))) {
+        if (!startInfo.static && hasDependencies && !fs.existsSync(path.join(workingDir, "node_modules"))) {
           console.log(chalk.gray(`Dependencies declared but node_modules missing in ${workingDir}. Installing dependencies...`));
           const subWs = new Workspace(workingDir);
           const pm = await detectPackageManager(subWs);
-          const installRes = await runCommand(`${pm} install`, workingDir, 300000);
+          const installCommand = pm === "npm" ? "npm install --include=dev" : `${pm} install`;
+          const installRes = await runCommand(installCommand, workingDir, 300000);
           if (installRes.exitCode !== 0) {
-            return `Dependency installation failed via '${pm} install' (code ${installRes.exitCode}): ${installRes.stderr || installRes.stdout}`;
+            return `Dependency installation failed via '${installCommand}' (code ${installRes.exitCode}): ${installRes.stderr || installRes.stdout}`;
           }
           console.log(chalk.gray("Dependencies installed successfully."));
         }

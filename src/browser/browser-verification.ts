@@ -765,6 +765,17 @@ export async function runVerificationSuite(
     }
   }
 
+  // Placeholder visuals are a quality failure regardless of which content
+  // assertions were supplied. They must be replaced with real content before
+  // verification can pass.
+  if (pageInfo?.qualityIssues && pageInfo.qualityIssues.length > 0) {
+    results.push({
+      passed: false,
+      target: { type: "text", text: "Placeholder visual quality check" },
+      error: `Placeholder or low-effort visual content detected: ${pageInfo.qualityIssues.slice(0, 3).join("; ")} Replace it with substantive inline SVG artwork or real product imagery, then re-run browser_verify.`,
+    });
+  }
+
   // Check for fatal console errors
   if (pageInfo && pageInfo.consoleErrors && pageInfo.consoleErrors.length > 0) {
     results.push({

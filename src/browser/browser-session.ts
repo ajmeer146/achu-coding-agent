@@ -266,10 +266,34 @@ export class BrowserSession {
             headings: headings.slice(0, 15),
             semanticElementsCount: semanticTags.length,
           };
+        }),
+        // Placeholder and low-effort visual content detection
+        this.page.evaluate(() => {
+          const issues: string[] = [];
+          const bodyText = (document.body?.innerText || "").toLowerCase();
+          for (const phrase of ["lorem ipsum", "your image here", "image placeholder", "placeholder image"]) {
+            if (bodyText.includes(phrase)) issues.push(`Placeholder text "${phrase}" is visible.`);
+          }
+          for (const img of Array.from(document.querySelectorAll("img"))) {
+            const src = (img.getAttribute("src") || "").toLowerCase();
+            const alt = (img.getAttribute("alt") || "").toLowerCase();
+            if (/placeholder|placehold\.co|dummyimage|lorempixel/.test(src) || /placeholder/.test(alt)) {
+              issues.push(`Image uses a placeholder source or alt text: ${src || alt || "(empty)"}`);
+            }
+          }
+          for (const svg of Array.from(document.querySelectorAll("svg"))) {
+            const rect = svg.getBoundingClientRect();
+            if (rect.width < 160 || rect.height < 120) continue;
+            const text = (svg.textContent || "").trim();
+            if (!text || text.length > 2) continue;
+            const hasIllustration = Boolean(svg.querySelector("path, image, use, polygon, polyline, line"));
+            if (!hasIllustration) issues.push(`Large inline SVG contains only "${text}" and no illustration paths; it is a placeholder graphic.`);
+          }
+          return Array.from(new Set(issues)).slice(0, 5);
         })
       ]);
 
-      const [buttons, inputs, links, selects, textareas, styleAnalysis] = evalResults;
+      const [buttons, inputs, links, selects, textareas, styleAnalysis, qualityIssues] = evalResults;
 
       const info: PageInfo = {
         url,
@@ -282,6 +306,7 @@ export class BrowserSession {
         textareas: textareas.slice(0, 20),
         consoleErrors: [...this.consoleErrors],
         pageErrors: [...this.pageErrors],
+        qualityIssues,
         styleAnalysis,
       };
 
@@ -644,6 +669,7 @@ export interface PageInfo {
   textareas: Array<{ placeholder: string; name: string }>;
   consoleErrors: string[];
   pageErrors: string[];
+  qualityIssues?: string[];
   styleAnalysis?: {
     stylesheetCount: number;
     totalRules: number;

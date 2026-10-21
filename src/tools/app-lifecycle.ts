@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -27,7 +28,70 @@ export type StartCommandResult = {
   port: number | null;
   url: string | null;
   cwd?: string;
+  static?: boolean;
 };
+
+const STATIC_SERVER_SOURCE = `const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
+const root = path.resolve(process.argv[2] || process.cwd());
+const port = Number(process.env.PORT || process.argv[3] || 3000);
+const types = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf" };
+const send = (res, code, body, type) => { res.writeHead(code, { "Content-Type": type || "text/plain; charset=utf-8", "Cache-Control": "no-store" }); res.end(body); };
+const server = http.createServer((req, res) => {
+  try {
+    const rawPath = decodeURIComponent(String(req.url || "/").split("?")[0]);
+    const filePath = path.resolve(root, "." + rawPath);
+    if (filePath !== root && !filePath.startsWith(root + path.sep)) return send(res, 403, "Forbidden");
+    let target = filePath;
+    try { if (fs.statSync(target).isDirectory()) target = path.join(target, "index.html"); } catch {}
+    if (!fs.existsSync(target)) target = path.join(root, "index.html");
+    if (!fs.existsSync(target)) return send(res, 404, "Not found");
+    const body = fs.readFileSync(target);
+    res.writeHead(200, { "Content-Type": types[path.extname(target).toLowerCase()] || "application/octet-stream", "Content-Length": body.length, "Cache-Control": "no-store" });
+    if (req.method === "HEAD") return res.end();
+    res.end(body);
+  } catch {
+    send(res, 500, "Server error");
+  }
+});
+server.listen(port, "0.0.0.0", () => console.log("Serving " + root + " at http://localhost:" + port));
+`;
+
+function getStaticServerScriptPath(): string {
+  const scriptPath = path.join(os.tmpdir(), "achu-static-server.cjs");
+  try {
+    if (!fs.existsSync(scriptPath) || fs.readFileSync(scriptPath, "utf8") !== STATIC_SERVER_SOURCE) {
+      fs.writeFileSync(scriptPath, STATIC_SERVER_SOURCE, "utf8");
+    }
+  } catch {}
+  return scriptPath;
+}
+
+export function isStaticSiteWorkspace(workingDir: string): boolean {
+  const htmlPath = path.join(workingDir, "index.html");
+  if (!fs.existsSync(htmlPath)) return false;
+  let html = "";
+  try {
+    html = fs.readFileSync(htmlPath, "utf8");
+  } catch {
+    return false;
+  }
+  const hasReactRoot = /<div[^>]+id=["']root["']/i.test(html);
+  const hasModuleEntry = /<script[^>]+type=["']module["'][^>]*src=["'][^"']*src\/(main|index)\.(jsx?|tsx?)/i.test(html);
+  return !hasReactRoot && !hasModuleEntry;
+}
+
+export function createStaticSiteCommand(workingDir: string): StartCommandResult {
+  const scriptPath = getStaticServerScriptPath();
+  return {
+    command: `"${process.execPath}" "${scriptPath}" "${workingDir}"`,
+    port: null,
+    url: null,
+    cwd: workingDir,
+    static: true,
+  };
+}
 
 /**
  * Match commands that (attempt to) start a development server via a shell.
@@ -47,6 +111,13 @@ export function isServerStartupCommand(command: string): boolean {
  */
 export async function detectStartCommand(workspace: Workspace): Promise<StartCommandResult> {
   const scriptPriority = ["dev", "start", "serve", "preview"];
+
+  // A plain HTML/CSS/JS site is served by the built-in static server. This
+  // takes precedence over package.json scripts so a stray Vite/React config
+  // can never break a static site that has no React root entry.
+  if (isStaticSiteWorkspace(workspace.root)) {
+    return createStaticSiteCommand(workspace.root);
+  }
 
   // Auto-repair known project inconsistencies (e.g. React configured with static npx serve)
   try {
@@ -737,8 +808,15 @@ export type AppRuntimeRecord = {
   outputPath?: string;
 };
 
-function appRegistryPath(): string {
-  return path.join(os.tmpdir(), "achu-app-runtime.json");
+function appRegistryDir(): string {
+  const dir = path.join(os.tmpdir(), "achu-app-runtimes");
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    migrateLegacyRegistry(dir);
+  } catch {
+    // Best effort: the registry is an optimization, not a source of truth.
+  }
+  return dir;
 }
 
 function normalizeWorkspaceKey(workspaceRoot: string): string {
@@ -746,22 +824,76 @@ function normalizeWorkspaceKey(workspaceRoot: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-function loadRegistry(): Record<string, AppRuntimeRecord> {
-  try {
-    const raw = fs.readFileSync(appRegistryPath(), "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") return parsed as Record<string, AppRuntimeRecord>;
-  } catch {
-    // Missing or corrupt registry: start clean.
-  }
-  return {};
+function runtimeRecordPath(key: string): string {
+  const hash = crypto.createHash("sha1").update(key).digest("hex");
+  return path.join(appRegistryDir(), `${hash}.json`);
 }
 
-function saveRegistry(registry: Record<string, AppRuntimeRecord>): void {
+function writeRuntimeRecord(key: string, record: AppRuntimeRecord): void {
+  const target = runtimeRecordPath(key);
+  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
   try {
-    fs.writeFileSync(appRegistryPath(), JSON.stringify(registry), "utf8");
+    fs.writeFileSync(tmp, JSON.stringify(record), "utf8");
+    fs.renameSync(tmp, target);
   } catch {
-    // Best effort: the registry is an optimization, not a source of truth.
+    try {
+      fs.writeFileSync(target, JSON.stringify(record), "utf8");
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      // Best effort: the registry is an optimization, not a source of truth.
+    }
+  }
+}
+
+function readRuntimeRecord(file: string): AppRuntimeRecord | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (parsed && typeof parsed.workspaceRoot === "string" && Number.isInteger(parsed.pid)) {
+      return parsed as AppRuntimeRecord;
+    }
+  } catch {
+    // Missing or corrupt record: ignore it.
+  }
+  return null;
+}
+
+/**
+ * One file per workspace avoids the read-modify-write race that lost records
+ * when several agent/test processes updated the old single JSON registry
+ * concurrently (leaving servers running but untracked).
+ */
+function loadRegistry(): Record<string, AppRuntimeRecord> {
+  const dir = appRegistryDir();
+  const records: Record<string, AppRuntimeRecord> = {};
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".json")) continue;
+      const record = readRuntimeRecord(path.join(dir, name));
+      if (record) records[normalizeWorkspaceKey(record.workspaceRoot)] = record;
+    }
+  } catch {
+    // Missing or unreadable registry: start clean.
+  }
+  return records;
+}
+
+function migrateLegacyRegistry(dir: string): void {
+  const legacyPath = path.join(os.tmpdir(), "achu-app-runtime.json");
+  if (!fs.existsSync(legacyPath)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(legacyPath, "utf8"));
+    if (parsed && typeof parsed === "object") {
+      for (const record of Object.values(parsed as Record<string, AppRuntimeRecord>)) {
+        if (!record || typeof record.workspaceRoot !== "string" || !Number.isInteger(record.pid)) continue;
+        if (!isProcessAlive(record.pid)) continue;
+        const hash = crypto.createHash("sha1").update(normalizeWorkspaceKey(record.workspaceRoot)).digest("hex");
+        const target = path.join(dir, `${hash}.json`);
+        try { fs.writeFileSync(target, JSON.stringify(record), "utf8"); } catch {}
+      }
+    }
+    fs.rmSync(legacyPath, { force: true });
+  } catch {
+    // Leave the legacy file in place if it cannot be parsed.
   }
 }
 
@@ -781,19 +913,22 @@ export function isProcessAlive(pid: number): boolean {
  * Returns null (and prunes the entry) when the recorded process is gone.
  */
 export function getAppRuntime(workspaceRoot: string): AppRuntimeRecord | null {
-  const registry = loadRegistry();
   const key = normalizeWorkspaceKey(workspaceRoot);
-  const record = registry[key];
+  const recordPath = runtimeRecordPath(key);
+  const record = readRuntimeRecord(recordPath);
   if (record) {
     if (isProcessAlive(record.pid)) return record;
-    delete registry[key];
-    saveRegistry(registry);
+    try { fs.rmSync(recordPath, { force: true }); } catch {}
   }
 
   // Also check if any active record is inside an immediate child project of workspaceRoot
   const resolvedRoot = path.resolve(workspaceRoot);
-  for (const [k, rec] of Object.entries(registry)) {
-    if (isProcessAlive(rec.pid) && isInsideRoot(resolvedRoot, rec.workspaceRoot)) {
+  for (const [k, rec] of Object.entries(loadRegistry())) {
+    if (!isProcessAlive(rec.pid)) {
+      try { fs.rmSync(runtimeRecordPath(k), { force: true }); } catch {}
+      continue;
+    }
+    if (isInsideRoot(resolvedRoot, rec.workspaceRoot)) {
       return rec;
     }
   }
@@ -803,19 +938,12 @@ export function getAppRuntime(workspaceRoot: string): AppRuntimeRecord | null {
 
 /** Persist (or update) the app runtime record for a workspace. */
 export function saveAppRuntime(record: AppRuntimeRecord): void {
-  const registry = loadRegistry();
-  registry[normalizeWorkspaceKey(record.workspaceRoot)] = record;
-  saveRegistry(registry);
+  writeRuntimeRecord(normalizeWorkspaceKey(record.workspaceRoot), record);
 }
 
 /** Remove the app runtime record for a workspace (e.g. after a failed start). */
 export function clearAppRuntime(workspaceRoot: string): void {
-  const registry = loadRegistry();
-  const key = normalizeWorkspaceKey(workspaceRoot);
-  if (key in registry) {
-    delete registry[key];
-    saveRegistry(registry);
-  }
+  try { fs.rmSync(runtimeRecordPath(normalizeWorkspaceKey(workspaceRoot)), { force: true }); } catch {}
 }
 
 /**
@@ -871,14 +999,11 @@ export async function stopAppRuntime(workspaceRoot: string): Promise<boolean> {
     }
   }
 
-  let changed = false;
   for (const [k, rec] of Object.entries(registry)) {
     if (k === key || (Number.isInteger(rec.pid) && targetPids.has(rec.pid))) {
-      delete registry[k];
-      changed = true;
+      try { fs.rmSync(runtimeRecordPath(k), { force: true }); } catch {}
     }
   }
-  if (changed) saveRegistry(registry);
   return true;
 }
 

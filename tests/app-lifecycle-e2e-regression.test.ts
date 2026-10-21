@@ -25,6 +25,8 @@ import {
   waitForReadiness,
   allocateAvailablePort,
   isPortAvailable,
+  spawnAppProcess,
+  stopAppProcess,
 } from "../src/tools/app-lifecycle.js";
 import { runVerificationSuite } from "../src/browser/browser-verification.js";
 
@@ -565,5 +567,72 @@ export default function App() {
       await new Promise<void>((r) => server.close(() => r()));
       await fs.rm(baseDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
+  });
+
+  test("15. Static index.html site starts without package.json and ignores stray Vite/React files", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "achu-static-serve-"));
+    const workspace = new Workspace(tempDir);
+    await workspace.write(
+      "index.html",
+      `<!DOCTYPE html><html><head><title>ShopNova</title><link rel="stylesheet" href="styles.css"></head><body><h1>ShopNova Storefront</h1><div id="products"></div><script src="script.js" defer></script></body></html>`
+    );
+    await workspace.write("styles.css", "body { font-family: system-ui; } h1 { color: #111; }");
+    await workspace.write("script.js", "document.getElementById('products').textContent = 'Loaded';");
+
+    let info = await detectStartCommand(workspace);
+    assert.equal(info.static, true, "Plain index.html site must use the built-in static server");
+    assert.equal(info.command.includes("achu-static-server"), true);
+
+    // Reproduce the production failure: a stray Vite/React package.json and
+    // src/main.jsx next to a static index.html without a React root.
+    await workspace.write(
+      "package.json",
+      JSON.stringify({ name: "shopnova", scripts: { dev: "vite --port 5173" }, dependencies: { react: "^18.2.0", "react-dom": "^18.2.0" }, devDependencies: { vite: "^4.5.14" } }, null, 2)
+    );
+    await workspace.write("src/main.jsx", "import React from 'react'; console.log(React);");
+    info = await detectStartCommand(workspace);
+    assert.equal(info.static, true, "Static index.html without a React root must win over stray Vite config");
+
+    const port = await allocateAvailablePort(54770);
+    const appInfo = spawnAppProcess(info.command, tempDir, { ...process.env, PORT: String(port) });
+    try {
+      const readiness = await waitForReadiness(`http://localhost:${port}`, { timeoutMs: 10000, intervalMs: 300 });
+      assert.equal(readiness.ready, true);
+      const response = await fetch(`http://localhost:${port}/`);
+      assert.equal(response.status, 200);
+      const html = await response.text();
+      assert.ok(html.includes("ShopNova Storefront"));
+      const script = await fetch(`http://localhost:${port}/script.js`);
+      assert.equal(script.status, 200);
+      assert.ok((await script.text()).includes("products"));
+    } finally {
+      await stopAppProcess(appInfo);
+      await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  });
+
+  test("16. Placeholder hero graphics fail browser verification", async () => {
+    const fakeSession: any = {
+      inspectPage: async () => ({
+        success: true,
+        info: {
+          title: "ShopNova",
+          url: "http://localhost:3000",
+          visibleText: "ShopNova Discover Quality Products",
+          buttons: ["Shop Now"],
+          inputs: [],
+          links: [],
+          selects: [],
+          textareas: [],
+          consoleErrors: [],
+          pageErrors: [],
+          qualityIssues: ['Large inline SVG contains only "E" and no illustration paths; it is a placeholder graphic.'],
+        },
+      }),
+    };
+
+    const summary = await runVerificationSuite(fakeSession, "http://localhost:3000", []);
+    assert.equal(summary.overallPassed, false);
+    assert.ok(summary.results.some((r) => r.error?.includes("Placeholder")));
   });
 });

@@ -657,7 +657,15 @@ Do not modify package.json.`;
       "Successfully created script.js."
     );
     assert.equal(curPlan.find(s => s.id === "5")?.status, "completed");
-    assert.equal(curPlan.find(s => s.status === "running")?.description, "Create package.json with development scripts");
+    assert.equal(curPlan.find(s => s.status === "running")?.description, "Start the development server (reuse if already running)");
+
+    const ecommercePlan = initializePlan("create ecommerce website with working codition");
+    assert.ok(
+      !ecommercePlan.some(s => s.toolType === "create_file" && (s.target || "").includes("package.json")),
+      "Static site plans must not ask the model to invent a package.json/Vite project"
+    );
+    assert.ok(ecommercePlan.some(s => s.toolType === "start_app"));
+    assert.ok(ecommercePlan.some(s => s.toolType === "browser_verify"));
   });
 
   test("16. Command normalization: handles varied whitespace, quotes, and command formats accurately", () => {
