@@ -1719,8 +1719,10 @@ async function executePendingVerificationStep(
   messages.push({ role: "tool", content: result, tool_call_id: toolCall.id });
 
   const taskIdentity = getTaskIdentity(toolCall);
-  state.completedTasks.add(taskIdentity);
   state.stepsTaken.set(taskIdentity, (state.stepsTaken.get(taskIdentity) || 0) + 1);
+  if (!isToolResultFailure("run_verification", result)) {
+    state.completedTasks.add(taskIdentity);
+  }
 
   state.currentPlan = updatePlanProgress(state.currentPlan, state.completedTasks, toolCall, result);
 
@@ -1871,10 +1873,10 @@ export function generateRecoveryHint(state: AgentState): string | null {
     }
   }
   if (err.command === "edit_file") {
-    repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- To update the file, either read the latest content with 'read_file' first to get exact matching context, or specify 'oldText: "*"' with your new content in 'edit_file' to update the file directly.`;
+    repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- To update the file, either read the latest content with 'read_file' first to get exact matching context, or specify 'oldText: "*"' with your new content in 'edit_file' to update the file directly.\n- If the file does not exist on disk (ENOENT / "does not exist"), do NOT retry edit_file. Use create_file with the complete corrected content.`;
   }
   if (err.errorMessage?.includes("TRUNCATED_OR_INCOMPLETE_OUTPUT") || err.errorMessage?.includes("SYNTAX_VALIDATION_ERROR")) {
-    repeatedHint += `\n\nTRUNCATION & SYNTAX ERROR RECOVERY GUIDANCE:\n- The file was truncated or contains unclosed/incomplete syntax blocks.\n- Error details: ${err.errorMessage}\n- Do NOT write empty or partial files.\n- Use 'edit_file' with sufficient surrounding context or append the missing closing braces/rules to complete the file.\n- Ensure all blocks (CSS rules, HTML tags, JS functions) are properly terminated before proceeding.`;
+    repeatedHint += `\n\nTRUNCATION & SYNTAX ERROR RECOVERY GUIDANCE:\n- The file was truncated or contains unclosed/incomplete syntax blocks.\n- Error details: ${err.errorMessage}\n- Do NOT write empty or partial files.\n- A rejected create_file writes nothing to disk. If the file does not exist, call create_file again with the complete corrected content. Never use edit_file on a file that does not exist.\n- If the file already exists, use 'edit_file' with sufficient surrounding context or append the missing closing braces/rules to complete the file.\n- Ensure all blocks (CSS rules, HTML tags, JS functions) are properly terminated before proceeding.`;
   }
   // Command recovery guidance
   if (err.command === "run_command") {
@@ -2702,15 +2704,6 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
       case "search_code": { const query = args.query; const searchType = args.type || "text"; if (query) state.executionLedger?.filesInspected.add(query); console.log(chalk.gray(`Searching (${searchType}): ${query}`)); const results = await searchCode(workspace, query, searchType); return truncateToolResult(results); }
       case "edit_file": {
         const filePath = args.path;
-        state.executionLedger?.filesModified.add(filePath);
-        if (state.executionLedger) {
-          state.executionLedger.changeVerifications.push({
-            file: filePath,
-            tool: "edit_file",
-            step: state.commandHistory.length,
-            verifiedPassed: false,
-          });
-        }
         const edits = args.edits || [{ oldText: args.oldText !== undefined ? args.oldText : "*", newText: args.newText || "" }];
         const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
 
@@ -2730,11 +2723,25 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         }
         const protectedFiles = ["tsconfig.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"];
         if (protectedFiles.includes(normalizedPath)) return `BLOCKED: ${filePath} is a protected configuration file and cannot be modified automatically.`;
+        if (!(await workspace.exists(filePath))) {
+          const missingMsg = `Tool error: File does not exist: ${filePath}. The file was not created on disk (a rejected create_file writes nothing). Use create_file with the complete corrected content instead of edit_file.`;
+          console.error(chalk.red(missingMsg));
+          return missingMsg;
+        }
         console.log(chalk.cyan(`Editing: ${filePath}`));
         await state.snapshotManager.captureBefore(filePath, "edit");
         try {
           const result = await editFile(workspace, filePath, edits);
           await state.snapshotManager.captureAfter(filePath);
+          state.executionLedger?.filesModified.add(filePath);
+          if (state.executionLedger) {
+            state.executionLedger.changeVerifications.push({
+              file: filePath,
+              tool: "edit_file",
+              step: state.commandHistory.length,
+              verifiedPassed: false,
+            });
+          }
           return result;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -2873,15 +2880,17 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
       case "list_directory": { const directoryPath = args.directoryPath; console.log(chalk.gray(`Listing: ${directoryPath}`)); const result = await listDirectory(workspace, directoryPath); return truncate(result); }
       case "create_file": {
         const filePath = args.path; const content = args.content;
-        state.executionLedger?.filesModified.add(filePath);
-        if (state.executionLedger) {
-          state.executionLedger.changeVerifications.push({
-            file: filePath,
-            tool: "create_file",
-            step: state.commandHistory.length,
-            verifiedPassed: false,
-          });
-        }
+        const recordSuccessfulWrite = () => {
+          state.executionLedger?.filesModified.add(filePath);
+          if (state.executionLedger) {
+            state.executionLedger.changeVerifications.push({
+              file: filePath,
+              tool: "create_file",
+              step: state.commandHistory.length,
+              verifiedPassed: false,
+            });
+          }
+        };
         const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
         const fileName = normalizedPath.split("/").pop() || normalizedPath;
         if (fileName.startsWith(".env")) {
@@ -2911,6 +2920,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           await state.snapshotManager.captureBefore(filePath, "create");
           const result = await createFile(workspace, filePath, content, args.overwrite ?? true);
           await state.snapshotManager.captureAfter(filePath);
+          recordSuccessfulWrite();
           if (filePath.endsWith("package.json")) {
             const authRoot = await workspace.getAuthoritativeProjectRoot();
             if (authRoot !== workspace.root) {
@@ -2927,6 +2937,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
             try {
               const editResult = await editFile(workspace, filePath, [{ newText: content }]);
               await state.snapshotManager.captureAfter(filePath);
+              recordSuccessfulWrite();
               if (filePath.endsWith("package.json")) {
                 const authRoot = await workspace.getAuthoritativeProjectRoot();
                 if (authRoot !== workspace.root) {
@@ -2943,7 +2954,10 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
             }
           }
           console.error(chalk.red(`Create failed on ${filePath}: ${message}`));
-          return `Tool error: ${message}`;
+          const syntaxGuidance = message.includes("SYNTAX_VALIDATION_ERROR")
+            ? `\nNo file was written to disk. Fix the invalid syntax in the content and call create_file again with the complete corrected file. Do NOT call edit_file, because ${filePath} does not exist.`
+            : "";
+          return `Tool error: ${message}${syntaxGuidance}`;
         }
       }
       case "navigate": { const url = args.url; if (!state.browserSession) return "Browser session not initialized. Use open_browser first."; console.log(chalk.gray(`Navigating: ${url}`)); const navResult = await navigate(state.browserSession, url); return truncate(navResult.success ? `Navigated to ${url}` : `Navigation failed: ${navResult.error}`); }
@@ -3868,8 +3882,10 @@ export async function runAgent(
       const toolDesc = `${toolCall.function.name}${toolTarget ? `: ${toolTarget}` : ""}`;
       options?.onProgress?.(Math.min(Math.max(step, 2), 5), toolDesc, toolDesc);
       const taskIdentity = getTaskIdentity(toolCall);
-      state.completedTasks.add(taskIdentity);
       state.stepsTaken.set(taskIdentity, (state.stepsTaken.get(taskIdentity) || 0) + 1);
+      if (!isToolResultFailure(toolCall.function.name, result)) {
+        state.completedTasks.add(taskIdentity);
+      }
       const completedIdsBefore = new Set(state.currentPlan.filter(s => s.status === "completed").map(s => s.id));
       const failedIdsBefore = new Set(state.currentPlan.filter(s => s.status === "failed").map(s => s.id));
       const completedBefore = completedIdsBefore.size;

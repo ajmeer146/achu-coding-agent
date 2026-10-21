@@ -12,6 +12,14 @@ test("codingAgentTask is a valid task definition object", () => {
   assert.equal(typeof codingAgentTask, "object");
 });
 
+test("codingAgentTask registers the payload schema for dispatch-time validation", () => {
+  assert.equal((codingAgentTask as { schema?: unknown }).schema, AgentTaskPayloadSchema);
+  assert.equal(
+    AgentTaskPayloadSchema.safeParse({ task: "no workspace provided" }).success,
+    false
+  );
+});
+
 test("AgentTaskPayloadSchema validates gitUrl cloud payloads", () => {
   const validGit = AgentTaskPayloadSchema.safeParse({
     task: "Build landing page",

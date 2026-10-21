@@ -1,4 +1,4 @@
-import { task, metadata } from "@trigger.dev/sdk";
+import { schemaTask, metadata } from "@trigger.dev/sdk";
 import { z } from "zod";
 import os from "node:os";
 import path from "node:path";
@@ -78,8 +78,9 @@ function getWorkspaceRegistry(): WorkspaceRegistry {
   return WorkspaceRegistry.getInstance();
 }
 
-export const codingAgentTask = task({
+export const codingAgentTask = schemaTask({
   id: "coding-agent-run",
+  schema: AgentTaskPayloadSchema,
   maxDuration: 1800, // 30 minutes max
   machine: "small-2x",
   retry: {
