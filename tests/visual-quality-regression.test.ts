@@ -119,6 +119,67 @@ const SMALL_TARGET_PAGE = `<!DOCTYPE html>
 </body>
 </html>`;
 
+// A standard closed off-canvas cart drawer: translated fully out of view.
+const OFF_CANVAS_DRAWER_PAGE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Drawer</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    .cart-drawer { position: fixed; top: 0; right: 0; width: 360px; height: 100vh; background: #fff; transform: translateX(100%); }
+    .cart-drawer.open { transform: translateX(0); }
+    .cart-drawer-close { position: absolute; top: 16px; right: 16px; width: 40px; height: 40px; }
+    .checkout-btn { width: 100%; height: 44px; }
+  </style>
+</head>
+<body>
+  <main class="main-content"><h1>Shop</h1></main>
+  <div class="cart-drawer" id="cart-drawer">
+    <button class="cart-drawer-close" id="cart-close-btn" aria-label="Close cart">&times;</button>
+    <button class="checkout-btn" id="checkout-btn">Checkout</button>
+  </div>
+</body>
+</html>`;
+
+// Horizontally scrollable filter strip: off-screen chips are reachable by scrolling.
+const SCROLLABLE_FILTER_PAGE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Filters</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    .category-filters { display: flex; gap: 8px; overflow-x: auto; padding: 12px; }
+    .filter-btn { flex: 0 0 auto; width: 120px; height: 44px; }
+  </style>
+</head>
+<body>
+  <nav class="category-filters">
+    <button class="filter-btn" data-category="all">All</button>
+    <button class="filter-btn" data-category="electronics">Electronics</button>
+    <button class="filter-btn" data-category="fashion">Fashion</button>
+    <button class="filter-btn" data-category="home">Home</button>
+    <button class="filter-btn" data-category="books">Books</button>
+  </nav>
+  <main class="main-content"><h1>Products</h1></main>
+</body>
+</html>`;
+
+// A control pushed off-screen with no hidden or scrollable ancestor: a real defect.
+const TRULY_OFFSCREEN_PAGE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Offscreen</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; overflow-x: hidden; }
+    .pushed { position: absolute; left: 2000px; top: 100px; }
+    .pushed button { width: 120px; height: 44px; }
+  </style>
+</head>
+<body>
+  <main class="main-content"><h1>Broken</h1><div class="pushed"><button>Unreachable</button></div></main>
+</body>
+</html>`;
+
 describe("Phase 13.2 — Measurable visual quality checks (real browser geometry)", () => {
   test("1. Clean responsive page reports no defects at desktop and mobile viewports", async () => {
     const { port, server } = await startPage(CLEAN_PAGE);
@@ -258,5 +319,88 @@ describe("Phase 13.2 — Measurable visual quality checks (real browser geometry
     assert.match(agentSource, /cannot interpret screenshot pixels/i, "take_screenshot must state screenshot pixels are not interpreted");
     assert.match(agentSource, /You CANNOT see screenshot pixels/, "prompt must forbid claiming visual inspection from screenshots");
     assert.match(agentSource, /measurable visual defects/, "visual defect results must be classified as failures");
+  });
+
+  test("7. Closed off-canvas drawer controls are not reported as layout defects", async () => {
+    const { port, server } = await startPage(OFF_CANVAS_DRAWER_PAGE);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      const desktop = await session.analyzeLayout("desktop");
+      assert.equal(desktop.success, true);
+      if (desktop.success) {
+        const critical = desktop.analysis.defects.filter(d => d.severity === "critical");
+        assert.equal(critical.length, 0, `closed drawer must not create critical defects: ${JSON.stringify(desktop.analysis.defects)}`);
+        assert.equal(
+          desktop.analysis.defects.filter(d => d.type === "offscreen_interactive").length,
+          0,
+          "controls inside a closed drawer are intentionally hidden and must not be reported"
+        );
+      }
+
+      const mobile = await session.analyzeLayout("mobile");
+      assert.equal(mobile.success, true);
+      if (mobile.success) {
+        assert.equal(
+          mobile.analysis.defects.filter(d => d.severity === "critical").length,
+          0,
+          `closed drawer must not create critical defects on mobile: ${JSON.stringify(mobile.analysis.defects)}`
+        );
+      }
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  test("8. Controls inside a horizontally scrollable strip stay reachable and are not clipped defects", async () => {
+    const { port, server } = await startPage(SCROLLABLE_FILTER_PAGE);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      const mobile = await session.analyzeLayout("mobile");
+      assert.equal(mobile.success, true);
+      if (mobile.success) {
+        assert.equal(
+          mobile.analysis.defects.filter(d => d.type === "clipped_interactive").length,
+          0,
+          `scrollable filter strip must not be reported as clipped: ${JSON.stringify(mobile.analysis.defects)}`
+        );
+        assert.equal(
+          mobile.analysis.defects.filter(d => d.severity === "critical").length,
+          0,
+          `scrollable filter strip must not block verification: ${JSON.stringify(mobile.analysis.defects)}`
+        );
+      }
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  test("9. Genuinely unreachable off-screen controls are still reported", async () => {
+    const { port, server } = await startPage(TRULY_OFFSCREEN_PAGE);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      const desktop = await session.analyzeLayout("desktop");
+      assert.equal(desktop.success, true);
+      if (desktop.success) {
+        const offscreen = desktop.analysis.defects.find(d => d.type === "offscreen_interactive");
+        assert.ok(
+          offscreen,
+          `a control pushed off-screen with no hidden or scrollable ancestor must still be reported: ${JSON.stringify(desktop.analysis.defects)}`
+        );
+      }
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
   });
 });

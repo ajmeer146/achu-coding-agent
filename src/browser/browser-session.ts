@@ -492,6 +492,37 @@ export class BrowserSession {
     var cs = window.getComputedStyle(el);
     return cs.display !== "none" && cs.visibility !== "hidden" && parseFloat(cs.opacity || "1") > 0.05;
   }
+  // A control inside a closed off-canvas panel (drawer/modal moved out with a
+  // transform), an aria-hidden or inert subtree, or a zero-opacity ancestor is
+  // intentionally out of view. It is not a layout defect, so it must not be
+  // reported as one. An ancestor that is merely POSITIONED off-screen (no
+  // transform) is treated as a genuine defect, not an intentional hide.
+  function isHiddenByAncestor(el) {
+    var p = el.parentElement;
+    while (p && p !== document.body && p !== document.documentElement) {
+      var pcs = window.getComputedStyle(p);
+      if (pcs.display === "none" || pcs.visibility === "hidden") return true;
+      if (parseFloat(pcs.opacity || "1") <= 0.05) return true;
+      if (p.getAttribute && p.getAttribute("aria-hidden") === "true") return true;
+      if (p.hasAttribute && p.hasAttribute("inert")) return true;
+      var pr = p.getBoundingClientRect();
+      var transformed = pcs.transform && pcs.transform !== "none" && pcs.transform !== "matrix(1, 0, 0, 1, 0, 0)";
+      if (transformed && pr.width >= 1 && pr.height >= 1 && (pr.left >= width - 1 || pr.right <= 1)) return true;
+      p = p.parentElement;
+    }
+    return false;
+  }
+  // A control inside a horizontally scrollable strip stays reachable by
+  // scrolling that container, so it is not a clipped/unreachable defect.
+  function isReachableByScroll(el) {
+    var p = el.parentElement;
+    while (p && p !== document.body && p !== document.documentElement) {
+      var pcs = window.getComputedStyle(p);
+      if ((pcs.overflowX === "auto" || pcs.overflowX === "scroll") && p.scrollWidth > p.clientWidth + 1) return true;
+      p = p.parentElement;
+    }
+    return false;
+  }
   function contentRect(el) {
     var r = el.getBoundingClientRect();
     var cs = window.getComputedStyle(el);
@@ -530,12 +561,16 @@ export class BrowserSession {
     var el = controls[i];
     if (!isVisible(el)) continue;
     var rect = el.getBoundingClientRect();
-    if (rect.right > width + 2 && rect.left < width) {
-      push("critical", "clipped_interactive", "Interactive element " + describe(el) + " is clipped at the right edge of the " + width + "px viewport (extends " + Math.round(rect.right - width) + "px off-screen).");
-    } else if (rect.left >= width + 2) {
-      push("warning", "offscreen_interactive", "Interactive element " + describe(el) + " is positioned entirely off-screen to the right.");
+    var intentionallyHidden = isHiddenByAncestor(el);
+    var scrollReachable = !intentionallyHidden && isReachableByScroll(el);
+    if (!intentionallyHidden && !scrollReachable) {
+      if (rect.right > width + 2 && rect.left < width) {
+        push("critical", "clipped_interactive", "Interactive element " + describe(el) + " is clipped at the right edge of the " + width + "px viewport (extends " + Math.round(rect.right - width) + "px off-screen).");
+      } else if (rect.left >= width + 2) {
+        push("warning", "offscreen_interactive", "Interactive element " + describe(el) + " is positioned entirely off-screen to the right.");
+      }
     }
-    if (vp === "mobile" && ["BUTTON", "INPUT", "SELECT", "TEXTAREA"].indexOf(el.tagName) !== -1) {
+    if (vp === "mobile" && !intentionallyHidden && ["BUTTON", "INPUT", "SELECT", "TEXTAREA"].indexOf(el.tagName) !== -1) {
       if (rect.width < 28 || rect.height < 28) {
         push("warning", "small_touch_target", "Touch target " + describe(el) + " is " + Math.round(rect.width) + "x" + Math.round(rect.height) + "px; the recommended minimum is 44x44px (28x28px hard floor).");
       }

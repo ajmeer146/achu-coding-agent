@@ -8,6 +8,12 @@
  * All functions are pure / synchronous — no API calls, no file I/O.
  */
 
+import {
+  WEBSITE_DESIGN_GUIDE_VERSION,
+  buildQualityChecklist,
+  type QualityChecklistItem,
+} from "../quality/website-design-guide.js";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -76,6 +82,10 @@ export interface DesignSpec {
   expectedSections: string[];
   /** Whether to include entrance animations (prefers-reduced-motion must be respected) */
   useAnimations: boolean;
+  /** Version of the website quality standard applied to this task */
+  qualityGuideVersion: string;
+  /** Task-specific, guide-derived acceptance checklist */
+  qualityChecklist: QualityChecklistItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +456,6 @@ function buildExpectedSections(productType: ProductType): string[] {
 export function generateDesignSpec(task: string): DesignSpec {
   const productType = analyseTaskBrief(task);
   const direction = selectDesignDirection(productType, task);
-
   const lower = task.toLowerCase();
   let colorScheme: ColorScheme = "dark";
   if (/\b(light\s+(theme|mode)|white\s+theme|bright\s+theme|day\s+mode)\b/.test(lower)) {
@@ -484,6 +493,8 @@ export function generateDesignSpec(task: string): DesignSpec {
     visualSummary: directionLabels[direction],
     expectedSections,
     useAnimations: true,
+    qualityGuideVersion: WEBSITE_DESIGN_GUIDE_VERSION,
+    qualityChecklist: buildQualityChecklist(productType, task),
   };
 }
 
@@ -500,6 +511,7 @@ export function formatDesignSpecForPrompt(spec: DesignSpec): string {
 **Product Type:** ${spec.productType.replace(/_/g, " ")}
 **Design Direction:** ${spec.direction.replace(/_/g, " ")} — ${spec.visualSummary}
 **Color Scheme:** ${spec.colorScheme}
+**Quality Guide Version:** ${spec.qualityGuideVersion}
 
 **CSS Design Tokens (use in :root):**
   --bg-primary:    ${t.bgPrimary}

@@ -11,6 +11,7 @@ import {
   runVerificationSuite,
   applyVerificationOutcome,
   signatureForTarget,
+  isCriteriaDefectResult,
   VerificationTarget,
   BrowserVerificationSummary,
 } from "../src/browser/browser-verification.js";
@@ -304,5 +305,43 @@ describe("Browser verification selector normalization & truthful outcome regress
     );
     assert.ok(hint!.includes('"inputType"') && hint!.includes('"selector"'), "Hint must explain the correct target fields");
     assert.ok(hint!.includes("http://localhost:3005"), "Hint must carry the authoritative app URL");
+  });
+
+  test("11. A malformed verification target fails that assertion instead of throwing", async () => {
+    const { port, server } = await startPage(LOGIN_PAGE);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      const malformed = [
+        { type: "text" } as VerificationTarget,
+        { type: "heading" } as VerificationTarget,
+        { type: "link" } as VerificationTarget,
+        { type: "button" } as VerificationTarget,
+        { type: "route" } as VerificationTarget,
+      ];
+
+      let summary: BrowserVerificationSummary | undefined;
+      await assert.doesNotReject(async () => {
+        summary = await runVerificationSuite(session, `http://localhost:${port}`, malformed);
+      }, "A malformed target must never abort the whole verification run");
+
+      assert.ok(summary);
+      assert.equal(summary!.results.length, malformed.length, "Every target must produce a result");
+      for (const result of summary!.results) {
+        assert.equal(result.passed, false, "A malformed target must fail");
+        assert.match(result.error ?? "", /Invalid verification target:/);
+        assert.equal(
+          isCriteriaDefectResult(result),
+          true,
+          "A malformed target must be classified as a criteria defect, not a page defect"
+        );
+      }
+      assert.equal(summary!.overallPassed, false);
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
   });
 });

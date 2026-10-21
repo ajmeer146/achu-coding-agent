@@ -15,6 +15,7 @@ import { listDirectory } from "./tools/list-directory.js";
 import { createFile } from "./tools/create-file.js";
 import { runCommand } from "./tools/terminal.js";
 import { isUITask, generateDesignSpec, formatDesignSpecForPrompt, type DesignSpec } from "./tools/design-planner.js";
+import { buildWebsiteQualityGuidance } from "./quality/website-design-guide.js";
 import { navigate } from "./browser/browser-tools.js";
 import { BrowserSession, type LayoutAnalysis, type LayoutDefect } from "./browser/browser-session.js";
 import { detectStartCommand, spawnAppProcess, waitForReadiness, stopAppProcess, getAppUrl, readAppOutput, cleanupAppOutputFile, hasAppProcessExited, extractUrlFromOutput, extractPortFromOutput, AppProcessInfo, detachAppProcess, isServerStartupCommand, isUrlServing, probePortRange, discoverNewServerUrl, getAppRuntime, saveAppRuntime, clearAppRuntime, resolveProjectEntryUrl, isProcessAlive, allocateAvailablePort, isPortAvailable, replacePortInCommand, detectPackageManager } from "./tools/app-lifecycle.js";
@@ -2098,7 +2099,7 @@ async function executeVerification(workspace: Workspace, command: string, state:
   return verification;
 }
 
-export function createSystemPrompt(workspaceRoot: string, requestedVerification: string | null, architectureSummary: string | null, taskScope?: TaskScope, designSpec?: DesignSpec | null): string {
+export function createSystemPrompt(workspaceRoot: string, requestedVerification: string | null, architectureSummary: string | null, taskScope?: TaskScope, designSpec?: DesignSpec | null, websiteQualityGuidance?: string | null): string {
   const scopeSection = taskScope ? `
 TASK CLASSIFICATION & SCOPE:
 - Mode: ${taskScope.classification.toUpperCase()} (${taskScope.reason})
@@ -2171,7 +2172,9 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
 - Deliver functional and responsive websites with accessible buttons, forms, and interactions.
 - Avoid random gradients, unnecessary decorative elements, and generic placeholder text unless appropriate for the design.
 
-${designSpec ? `PHASE 13 — DESIGN INTELLIGENCE ACTIVE:
+${websiteQualityGuidance ? `${websiteQualityGuidance}
+
+` : ""}${designSpec ? `PHASE 13 — DESIGN INTELLIGENCE ACTIVE:
 A design specification has been pre-computed for this task. YOU MUST follow it faithfully:
 
 ${formatDesignSpecForPrompt(designSpec)}
@@ -2440,6 +2443,34 @@ VERIFICATION MEMORY:
 - Cache invalidated by edit_file or create_file.
 
 `.trim();
+}
+
+/**
+ * Builds the initial system prompt for a task, including the versioned
+ * website-quality guidance when the task is a website/UI build.
+ * Both the local companion server and the Trigger.dev worker reach this
+ * through runAgent, which keeps quality rules identical across modes.
+ */
+export function buildInitialSystemPrompt(
+  task: string,
+  workspaceRoot: string,
+  requestedVerification: string | null,
+  architectureSummary: string | null,
+  taskScope?: TaskScope,
+  designSpec?: DesignSpec | null
+): string {
+  const websiteQualityGuidance = buildWebsiteQualityGuidance(
+    task,
+    designSpec?.productType ?? null
+  );
+  return createSystemPrompt(
+    workspaceRoot,
+    requestedVerification,
+    architectureSummary,
+    taskScope,
+    designSpec,
+    websiteQualityGuidance
+  );
 }
 
 async function callModelWithRetry(
@@ -3724,7 +3755,7 @@ export async function runAgent(
 
   const MAX_MESSAGE_HISTORY = 60;
   let messages: ChatMessage[] = [
-    { role: "system", content: createSystemPrompt(workspace.root, requestedVerification, architectureSummary, taskScope, p13DesignSpec) },
+    { role: "system", content: buildInitialSystemPrompt(task, workspace.root, requestedVerification, architectureSummary, taskScope, p13DesignSpec) },
     { role: "user", content: task + planContext },
   ];
 

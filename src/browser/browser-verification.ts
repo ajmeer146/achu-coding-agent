@@ -637,27 +637,56 @@ export async function verifyButtonInteraction(
 /**
  * Run multiple verification targets and return summary.
  */
+/**
+ * A malformed verification target (for example one supplied by the model with
+ * no "text" value) must fail that single assertion with an actionable message
+ * instead of throwing and aborting the whole verification run.
+ */
+function invalidTargetResult(target: VerificationTarget, requirement: string): VerificationResult {
+  return {
+    passed: false,
+    target,
+    error: `Invalid verification target: "${target.type}" requires ${requirement}. Provide a valid target, or omit "targets" to derive assertions from the task and plan.`,
+  };
+}
+
 export async function runVerificationSuite(
   session: BrowserSession,
   baseUrl: string,
   targets: VerificationTarget[]
 ): Promise<BrowserVerificationSummary> {
   const results: VerificationResult[] = [];
-  
+
   for (const target of targets) {
     let result: VerificationResult;
-    
+
+    const text = typeof target.text === "string" ? target.text.trim() : "";
+    const selector = typeof target.selector === "string" ? target.selector.trim() : "";
+    const routeUrl = typeof target.url === "string" ? target.url.trim() : "";
+
     switch (target.type) {
       case "text":
-        result = await verifyTextExists(session, target.text!);
+        if (!text) {
+          result = invalidTargetResult(target, 'a non-empty "text" value');
+          break;
+        }
+        result = await verifyTextExists(session, text);
         break;
       case "heading":
-        result = await verifyHeadingExists(session, target.text!);
+        if (!text) {
+          result = invalidTargetResult(target, 'a non-empty "text" value');
+          break;
+        }
+        result = await verifyHeadingExists(session, text);
         break;
       case "button":
         // Existence + enabled check. A selector, when present, only binds the
         // button to a DOM element; it is never treated as post-click text.
-        result = await verifyButtonExists(session, target.text!, target.selector);
+        if (!text && !selector) {
+          result = invalidTargetResult(target, 'a non-empty "text" or "selector" value');
+          break;
+        }
+        result = await verifyButtonExists(session, text, selector || undefined);
         break;
       case "input":
         result = await verifyInputExists(session, {
@@ -670,10 +699,18 @@ export async function runVerificationSuite(
         });
         break;
       case "link":
-        result = await verifyLinkExists(session, target.text!);
+        if (!text) {
+          result = invalidTargetResult(target, 'a non-empty "text" value');
+          break;
+        }
+        result = await verifyLinkExists(session, text);
         break;
       case "route":
-        result = await verifyRouteLoads(session, baseUrl, target.url!);
+        if (!routeUrl) {
+          result = invalidTargetResult(target, 'a non-empty "url" value');
+          break;
+        }
+        result = await verifyRouteLoads(session, baseUrl, routeUrl);
         break;
       default:
         result = {
@@ -682,7 +719,7 @@ export async function runVerificationSuite(
           error: `Unknown verification target type: ${target.type}`,
         };
     }
-    
+
     results.push(result);
   }
 
@@ -963,6 +1000,17 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
     addTarget({ type: "button", text: "Login", required: true });
   }
 
+  // Guide-derived category controls (Complete Master Website Design Guide v1.0.0):
+  // an e-commerce build is only verified when its search and cart controls exist.
+  if (/\b(e-?commerce|online\s+shop|web\s?shop|shopping|store)\b/i.test(task)) {
+    addTarget({
+      type: "input",
+      selector: 'input[type="search"], input[placeholder*="search" i], input[name*="search" i], #search, .search-input',
+      required: true,
+    });
+    addTarget({ type: "button", text: "cart", required: true });
+  }
+
   return targets;
 }
 
@@ -988,7 +1036,11 @@ export function signatureForTarget(target: VerificationTarget): string {
  * fault and repeating file edits cannot fix it.
  */
 export function isCriteriaDefectResult(result: VerificationResult): boolean {
-  return Boolean(result.error && result.error.includes("Invalid input verification criteria:"));
+  return Boolean(
+    result.error &&
+      (result.error.includes("Invalid input verification criteria:") ||
+        result.error.includes("Invalid verification target:"))
+  );
 }
 
 export type VerificationOutcome = {
