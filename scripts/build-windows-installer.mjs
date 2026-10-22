@@ -10,9 +10,15 @@ const __dirname = path.dirname(__filename);
 const AGENT_ROOT = path.resolve(__dirname, "..");
 const WEBSITE_ROOT = process.env.ACHU_WEBSITE_ROOT || path.resolve(AGENT_ROOT, "../OneDrive/Desktop/works-with-achu-v2");
 
+// Application version is driven by package.json so a version bump there flows
+// through the installer, the version.json manifest, and the auto-update check.
+const agentPkg = JSON.parse(fs.readFileSync(path.join(AGENT_ROOT, "package.json"), "utf8"));
+const APP_VERSION = String(agentPkg.version || "1.0.0");
+
 console.log("=== Building Achu Local Agent Windows Installer ===");
 console.log(`Agent Root:   ${AGENT_ROOT}`);
 console.log(`Website Root: ${WEBSITE_ROOT}`);
+console.log(`App Version:  ${APP_VERSION}`);
 
 const isManifestOnly = process.argv.includes("--manifest-only") || process.argv.includes("--update-manifest");
 
@@ -54,7 +60,7 @@ function publishAndVerifyArtifact(installerExe, outputDir, websiteRoot) {
   console.log(`Signature Status:     ${isSigned ? "signed" : "unsigned"}`);
 
   const versionMetadata = {
-    version: "1.0.0",
+    version: APP_VERSION,
     releaseDate: new Date().toISOString(),
     filename: "AchuLocalAgentSetup.exe",
     sizeBytes: stats.size,
@@ -185,7 +191,7 @@ for (const scriptFile of fs.readdirSync(templatesDir)) {
 console.log("\n[4/7] Generating Inno Setup configuration (AchuLocalAgent.iss)...");
 const issContent = `; Inno Setup Script for Achu Local Agent
 #define MyAppName "Achu Local Agent"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "${APP_VERSION}"
 #define MyAppPublisher "Achu AI"
 #define MyAppURL "https://www.workswithachu.me"
 #define MyAppExeName "start-agent.vbs"
