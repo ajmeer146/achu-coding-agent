@@ -3,7 +3,7 @@ import { PageInfo } from "./browser-session.js";
 import { analyseTaskBrief } from "../tools/design-planner.js";
 
 export type VerificationTarget = {
-  type: "text" | "heading" | "button" | "input" | "link" | "route";
+  type: "text" | "heading" | "button" | "input" | "link" | "route" | "interaction" | "form";
   selector?: string;
   text?: string;
   url?: string;
@@ -12,6 +12,11 @@ export type VerificationTarget = {
   name?: string;
   label?: string;
   required?: boolean;
+  action?: "click" | "type" | "submit";
+  inputValue?: string;
+  expectedTextAfter?: string;
+  expectedUrlAfter?: string;
+  expectedSelectorAfter?: string;
 };
 
 export type VerificationResult = {
@@ -26,6 +31,22 @@ export type BrowserVerificationSummary = {
   results: VerificationResult[];
   pageInfo?: PageInfo;
 };
+
+/**
+ * Optional assertions (`required: false`) are reported as warnings but never
+ * block completion. Structural checks and task-derived assertions have no
+ * `required: false` marker and are therefore always required.
+ */
+export function computeVerificationOverallPassed(
+  results: VerificationResult[],
+  isDirectoryListing = false
+): boolean {
+  return (
+    results.length > 0 &&
+    !isDirectoryListing &&
+    !results.some(result => !result.passed && result.target.required !== false)
+  );
+}
 
 /**
  * Semantic HTML input types. These are values for the `type` attribute of an
@@ -594,26 +615,35 @@ export async function verifyRouteLoads(
  */
 export async function verifyButtonInteraction(
   session: BrowserSession,
-  buttonText: string,
-  expectedAfterClick?: { text?: string; url?: string }
+  buttonTextOrSelector: string,
+  expectedAfterClick?: { text?: string; url?: string; selector?: string }
 ): Promise<VerificationResult> {
+  const isSelector = looksLikeCssSelector(buttonTextOrSelector);
+  const target: VerificationTarget = {
+    type: "interaction",
+    text: isSelector ? undefined : buttonTextOrSelector,
+    selector: isSelector ? buttonTextOrSelector : undefined,
+  };
+
   // First verify button exists
-  const buttonExists = await verifyButtonExists(session, buttonText);
+  const buttonExists = isSelector
+    ? await verifyButtonExists(session, "", buttonTextOrSelector)
+    : await verifyButtonExists(session, buttonTextOrSelector);
   if (!buttonExists.passed) {
     return buttonExists;
   }
 
   // Click the button
-  const clickResult = await session.click(buttonText);
+  const clickResult = await session.click(buttonTextOrSelector);
   if (!clickResult.success) {
     return {
       passed: false,
-      target: { type: "button" as const, text: buttonText },
+      target,
       error: `Click failed: ${clickResult.error}`,
     };
   }
 
-  // Wait a bit for any state change
+  // Wait a bit for any state change or animation
   await new Promise(resolve => setTimeout(resolve, 500));
 
   // If expected result specified, verify it
@@ -627,17 +657,99 @@ export async function verifyButtonInteraction(
       if (inspectResult.success && !inspectResult.info.url.includes(expectedAfterClick.url)) {
         return {
           passed: false,
-          target: { type: "button" as const, text: buttonText },
+          target,
           error: `After click, expected URL to contain "${expectedAfterClick.url}", got "${inspectResult.info.url}"`,
         };
+      }
+    }
+    if (expectedAfterClick.selector) {
+      const page = session.getPage();
+      if (page) {
+        try {
+          const el = await page.$(expectedAfterClick.selector);
+          if (!el) {
+            return {
+              passed: false,
+              target,
+              error: `After click, expected element "${expectedAfterClick.selector}" to appear in the DOM`,
+            };
+          }
+        } catch (selErr: any) {
+          return {
+            passed: false,
+            target,
+            error: `After click, query for selector "${expectedAfterClick.selector}" failed: ${selErr?.message}`,
+          };
+        }
       }
     }
   }
 
   return {
     passed: true,
-    target: { type: "button" as const, text: buttonText },
-    actual: `Clicked "${buttonText}" successfully`,
+    target,
+    actual: `Clicked "${buttonTextOrSelector}" successfully and verified resulting state`,
+  };
+}
+
+/**
+ * Verify a form interaction: fills inputs, clicks submit, and checks for resulting state/feedback.
+ */
+export async function verifyFormInteraction(
+  session: BrowserSession,
+  formOptions: {
+    inputs?: Array<{ selector?: string; name?: string; placeholder?: string; value: string }>;
+    submitButton?: string;
+    expectedFeedback?: string;
+  }
+): Promise<VerificationResult> {
+  const submitText = formOptions.submitButton || "Submit";
+  const target: VerificationTarget = {
+    type: "form",
+    text: submitText,
+    expectedTextAfter: formOptions.expectedFeedback,
+  };
+
+  if (formOptions.inputs && formOptions.inputs.length > 0) {
+    for (const inp of formOptions.inputs) {
+      const sel = inp.selector || (inp.name ? `[name="${inp.name}"]` : inp.placeholder ? `[placeholder="${inp.placeholder}"]` : "input");
+      const typeRes = await session.type(sel, inp.value);
+      if (!typeRes.success) {
+        return {
+          passed: false,
+          target,
+          error: `Failed to fill form input "${sel}": ${typeRes.error}`,
+        };
+      }
+    }
+  }
+
+  const clickRes = await session.click(submitText);
+  if (!clickRes.success) {
+    return {
+      passed: false,
+      target,
+      error: `Form submit button click on "${submitText}" failed: ${clickRes.error}`,
+    };
+  }
+
+  await new Promise(r => setTimeout(r, 600));
+
+  if (formOptions.expectedFeedback) {
+    const textRes = await verifyTextExists(session, formOptions.expectedFeedback);
+    if (!textRes.passed) {
+      return {
+        passed: false,
+        target,
+        error: `After form submission, expected feedback "${formOptions.expectedFeedback}" was not displayed`,
+      };
+    }
+  }
+
+  return {
+    passed: true,
+    target,
+    actual: `Form filled and submitted successfully with "${submitText}"`,
   };
 }
 
@@ -687,13 +799,39 @@ export async function runVerificationSuite(
         result = await verifyHeadingExists(session, text);
         break;
       case "button":
-        // Existence + enabled check. A selector, when present, only binds the
-        // button to a DOM element; it is never treated as post-click text.
+        if (target.expectedTextAfter || target.expectedUrlAfter || target.expectedSelectorAfter) {
+          result = await verifyButtonInteraction(session, text || selector, {
+            text: target.expectedTextAfter,
+            url: target.expectedUrlAfter,
+            selector: target.expectedSelectorAfter,
+          });
+        } else {
+          // Existence + enabled check. A selector, when present, only binds the
+          // button to a DOM element; it is never treated as post-click text.
+          if (!text && !selector) {
+            result = invalidTargetResult(target, 'a non-empty "text" or "selector" value');
+            break;
+          }
+          result = await verifyButtonExists(session, text, selector || undefined);
+        }
+        break;
+      case "interaction":
         if (!text && !selector) {
-          result = invalidTargetResult(target, 'a non-empty "text" or "selector" value');
+          result = invalidTargetResult(target, 'a non-empty "text" or "selector" for the interactive control');
           break;
         }
-        result = await verifyButtonExists(session, text, selector || undefined);
+        result = await verifyButtonInteraction(session, selector || text, {
+          text: target.expectedTextAfter,
+          url: target.expectedUrlAfter,
+          selector: target.expectedSelectorAfter,
+        });
+        break;
+      case "form":
+        result = await verifyFormInteraction(session, {
+          inputs: target.inputValue ? [{ selector: target.selector, value: target.inputValue }] : [],
+          submitButton: text || "Submit",
+          expectedFeedback: target.expectedTextAfter,
+        });
         break;
       case "input":
         result = await verifyInputExists(session, {
@@ -829,6 +967,17 @@ export async function runVerificationSuite(
     });
   }
 
+  // Uncaught JavaScript errors mean the page is not actually working, even if
+  // the requested content is present. Failed requests are checked separately.
+  const runtimeErrors = (pageInfo?.pageErrors ?? []).filter(e => !e.startsWith("Failed request:"));
+  if (runtimeErrors.length > 0) {
+    results.push({
+      passed: false,
+      target: { type: "text", text: "Page runtime check" },
+      error: `Page raised uncaught JavaScript error(s): ${runtimeErrors.slice(0, 3).join("; ")}. Inspect inline event handlers and script files for conflicting quotes or malformed expressions, then re-run browser_verify.`,
+    });
+  }
+
   // Check for asset loading failures (missing styles.css, script.js, images)
   if (pageInfo && Array.isArray((pageInfo as any).pageErrors) && (pageInfo as any).pageErrors.length > 0) {
     const failedAssets = ((pageInfo as any).pageErrors as string[]).filter(e => /Failed request|404|net::ERR/i.test(e));
@@ -841,7 +990,7 @@ export async function runVerificationSuite(
     }
   }
 
-  const overallPassed = results.length > 0 && !isDirectoryListing && results.every(r => r.passed);
+  const overallPassed = computeVerificationOverallPassed(results, isDirectoryListing);
 
   return {
     overallPassed,
@@ -863,6 +1012,15 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
   if (quotedMatches) {
     for (const match of quotedMatches) {
       const text = match.slice(1, -1);
+      targets.push({ type: "text", text, required: true });
+    }
+  }
+
+  // Extract feedback text following "shows", "displays", "says" (e.g. 'shows Thank You after sending')
+  const showsMatch = task.match(/(?:shows?|displays?|says?|renders?)\s+([A-Za-z0-9][A-Za-z0-9\s!.,'-]{1,40}?)(?:\s+(?:after|upon|when|on|once|\.|$))/i);
+  if (showsMatch && showsMatch[1]) {
+    const text = showsMatch[1].replace(/["'`]/g, "").trim();
+    if (text.length > 1 && !/^(a|an|the|that|this)$/i.test(text)) {
       targets.push({ type: "text", text, required: true });
     }
   }
@@ -1034,7 +1192,7 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
  */
 export function signatureForTarget(target: VerificationTarget): string {
   const parts: Record<string, string> = {};
-  const keys: Array<keyof VerificationTarget> = ["type", "selector", "text", "url", "inputType", "placeholder", "name", "label"];
+  const keys: Array<keyof VerificationTarget> = ["type", "selector", "text", "url", "inputType", "placeholder", "name", "label", "action", "expectedTextAfter"];
   for (const key of keys) {
     const value = target[key];
     if (typeof value === "string" && value.trim()) {
@@ -1042,6 +1200,27 @@ export function signatureForTarget(target: VerificationTarget): string {
     }
   }
   return JSON.stringify(parts);
+}
+
+/**
+ * Combine this run's targets with assertions that failed in earlier attempts.
+ * Verification is only complete once every earlier failure has been re-run and
+ * passed, so a retry that supplies a smaller target list must never silently
+ * skip an outstanding assertion.
+ */
+export function mergeVerificationTargets(
+  targets: VerificationTarget[],
+  outstanding: VerificationTarget[]
+): VerificationTarget[] {
+  const merged = [...targets];
+  const seen = new Set(merged.map(signatureForTarget));
+  for (const target of outstanding) {
+    const signature = signatureForTarget(target);
+    if (seen.has(signature)) continue;
+    merged.push(target);
+    seen.add(signature);
+  }
+  return merged;
 }
 
 /**
@@ -1080,7 +1259,9 @@ export function applyVerificationOutcome(
 
   for (const result of summary.results) {
     const signature = signatureForTarget(result.target);
-    if (result.passed) {
+    // Passing clears a failure; an explicit downgrade to optional also clears
+    // it because optional assertions are warnings, not outstanding blockers.
+    if (result.passed || result.target.required === false) {
       failedTargets.delete(signature);
     } else {
       const label = result.error || result.actual || `Assertion failed: ${JSON.stringify(result.target)}`;

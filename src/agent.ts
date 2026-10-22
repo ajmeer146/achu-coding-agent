@@ -15,11 +15,16 @@ import { listDirectory } from "./tools/list-directory.js";
 import { createFile } from "./tools/create-file.js";
 import { runCommand } from "./tools/terminal.js";
 import { isUITask, generateDesignSpec, formatDesignSpecForPrompt, type DesignSpec } from "./tools/design-planner.js";
-import { buildWebsiteQualityGuidance } from "./quality/website-design-guide.js";
+import {
+  buildWebsiteQualityGuidance,
+  evaluateWebsiteQuality,
+  evaluatePrinciplesApplicability,
+  type WebsiteQualityAuditReport,
+} from "./quality/website-design-guide.js";
 import { navigate } from "./browser/browser-tools.js";
 import { BrowserSession, type LayoutAnalysis, type LayoutDefect } from "./browser/browser-session.js";
 import { detectStartCommand, spawnAppProcess, waitForReadiness, stopAppProcess, getAppUrl, readAppOutput, cleanupAppOutputFile, hasAppProcessExited, extractUrlFromOutput, extractPortFromOutput, AppProcessInfo, detachAppProcess, isServerStartupCommand, isUrlServing, probePortRange, discoverNewServerUrl, getAppRuntime, saveAppRuntime, clearAppRuntime, resolveProjectEntryUrl, isProcessAlive, allocateAvailablePort, isPortAvailable, replacePortInCommand, detectPackageManager } from "./tools/app-lifecycle.js";
-import { verifyTextExists as verify_text, verifyHeadingExists as verify_heading, verifyInputExists as verify_input, verifyLinkExists as verify_link, runVerificationSuite, generateVerificationTargetsFromTask, applyVerificationOutcome, isCriteriaDefectResult, VerificationTarget } from "./browser/browser-verification.js";
+import { verifyTextExists as verify_text, verifyHeadingExists as verify_heading, verifyInputExists as verify_input, verifyLinkExists as verify_link, runVerificationSuite, generateVerificationTargetsFromTask, applyVerificationOutcome, isCriteriaDefectResult, mergeVerificationTargets, signatureForTarget, VerificationTarget } from "./browser/browser-verification.js";
 import { open_browser, close_browser, inspect_page } from "./browser/browser-tools.js";
 import { loadSessionState, saveSessionState } from "./session/session-persistence.js";
 import { SessionState } from "./session/session-types.js";
@@ -86,6 +91,10 @@ export type AgentResult = {
   filesModified: string[];
   /** Error message if execution failed */
   error?: string;
+  /** Website quality audit report across 12 categories */
+  qualityAudit?: WebsiteQualityAuditReport;
+  /** Summary of 50-principles evaluation */
+  principlesSummary?: string;
 };
 
 export type AgentState = {
@@ -107,6 +116,8 @@ export type AgentState = {
     errorMessage: string;
   } | null;
   repeatedFailures: Map<string, number>;
+  qualityAudit?: WebsiteQualityAuditReport | null;
+  principlesSummary?: string | null;
   browserSession: BrowserSession | null;
   verificationMemory: Map<string, number>;
   // Authoritative app URL for the current task (set by start_app, including
@@ -121,6 +132,9 @@ export type AgentState = {
   // A later verification run can only clear an entry by re-running the same
   // assertion and having it pass — failures are never silently overwritten.
   browserVerificationFailedTargets?: Map<string, string>;
+  // Original target objects for the failures above, so a later verification
+  // run can automatically re-run them even if the model omits them.
+  browserVerificationFailedTargetObjects?: Map<string, VerificationTarget>;
   verificationIsStrong: boolean;
   recentToolCalls: { toolName: string; target: string; timestamp: number }[];
     // Phase 4: Project state for follow-up tasks
@@ -206,7 +220,7 @@ const AGENT_TOOLS: Array<{ type: "function"; function: { name: string; descripti
   { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "open_browser", description: "Open a browser session for live preview verification.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "close_browser", description: "Close the browser session.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-  { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks for expected text, headings, buttons, inputs, links, or routes. Provide optional baseUrl and targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Array of verification targets (type: text|heading|button|input|link|route, text/url for expected content).", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
+  { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks expected text, headings, buttons, inputs, links, routes, and click/form interactions. Provide optional baseUrl and a targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Verification targets. Use type=interaction (click) with expectedTextAfter/expectedUrlAfter/expectedSelectorAfter to prove a control changes state. Use type=form with inputValue and expectedTextAfter to submit a form.", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route", "interaction", "form"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" }, action: { type: "string", enum: ["click", "type", "submit"], description: "Interaction action for an interaction target." }, inputValue: { type: "string", description: "Value to type for a form target." }, expectedTextAfter: { type: "string", description: "Text expected in the page after the action." }, expectedUrlAfter: { type: "string", description: "URL fragment expected after the action." }, expectedSelectorAfter: { type: "string", description: "Element selector expected to appear after the action." } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "take_screenshot", description: "Captures a PNG screenshot of the current browser page for human review. Returns only the image size; the agent cannot visually interpret screenshot pixels. Use inspect_visual_quality for measurable layout checks.", parameters: { type: "object", properties: { viewport: { type: "string", enum: ["desktop", "mobile"], description: "Optional viewport to capture: 'desktop' (1280x800) or 'mobile' (375x667)." } }, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "inspect_visual_quality", description: "Runs measurable layout checks (horizontal overflow, clipped interactive elements, navigation overlap, text overflow, small touch targets) at desktop and mobile viewports. Use after browser_verify to find real layout defects. Does not interpret screenshot pixels.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
 ];
@@ -236,9 +250,21 @@ async function runVisualQualityChecks(session: BrowserSession, baseUrl: string):
     if (!navResult.success) return null;
 
     const viewports: Record<string, LayoutAnalysis> = {};
-    const mobileViewports = [{ width: 320, height: 568 }, { width: 375, height: 667 }, { width: 390, height: 844 }];
-    const desktopViewports = [{ width: 1024, height: 768 }, { width: 1280, height: 800 }, { width: 1440, height: 900 }];
-    const allViewports = [...mobileViewports, ...desktopViewports];
+    const mobileViewports = [
+      { width: 320, height: 568 }, // Small mobile (320-375px)
+      { width: 375, height: 667 }, // Small mobile standard
+      { width: 390, height: 844 }, // Standard mobile (390-430px)
+      { width: 430, height: 932 }, // Standard mobile plus
+    ];
+    const tabletViewports = [
+      { width: 768, height: 1024 }, // Tablet (768px)
+    ];
+    const desktopViewports = [
+      { width: 1280, height: 800 }, // Laptop (1280-1440px)
+      { width: 1440, height: 900 }, // Laptop / Desktop
+      { width: 1920, height: 1080 }, // Wide desktop (1920px)
+    ];
+    const allViewports = [...mobileViewports, ...tabletViewports, ...desktopViewports];
     for (const vp of allViewports) {
       const label = `${vp.width}x${vp.height}`;
       try {
@@ -2429,7 +2455,11 @@ LIVE PREVIEW VERIFICATION (Phase 19):
   3. browser_verify: Verify the running application (checks text, headings, buttons, inputs, links, routes)
   4. close_browser: Close the browser session when done
   5. stop_app: Stop the development server when done
-- Use browser_verify with specific targets array for precise checks (type: text|heading|button|input|link|route)
+- Use browser_verify with specific targets array for precise checks (type: text|heading|button|input|link|route|interaction|form)
+  - For working controls, use type=interaction with text or selector plus expectedTextAfter/expectedUrlAfter/expectedSelectorAfter to prove the click changes state.
+  - For forms, use type=form with a submit button (text), inputValue and expectedTextAfter feedback.
+  - Only these type values are valid; never invent other target types.
+  - Assertions derived from the user's task are required (omit "required" or set true). Mark a target "required": false only when you invented it speculatively and the task does not actually require it; optional failures are reported as warnings and do not block completion. If a required assertion fails, fix the page or correct that target's criteria instead of omitting it.
 - Browser verification retries up to 3 times on failure before reporting failure
 - Only stop processes you own (tracked by PID) - never kill unrelated processes
 - CRITICAL: After start_app succeeds, it returns the application URL (e.g., "App started and ready at http://localhost:5173"). You MUST use this exact URL for all subsequent navigate and browser_verify calls. Do NOT assume the port (e.g., do not use port 3000 unless start_app returns it).
@@ -2652,7 +2682,7 @@ const schemas = {
   browser_verify: z.object({
     baseUrl: z.string().optional(),
     targets: z.array(z.object({
-      type: z.enum(["text", "heading", "button", "input", "link", "route"]),
+      type: z.enum(["text", "heading", "button", "input", "link", "route", "interaction", "form"]),
       text: z.string().optional(),
       url: z.string().optional(),
       selector: z.string().optional(),
@@ -2660,7 +2690,12 @@ const schemas = {
       placeholder: z.string().optional(),
       name: z.string().optional(),
       label: z.string().optional(),
-      required: z.boolean().optional()
+      required: z.boolean().optional(),
+      action: z.enum(["click", "type", "submit"]).optional(),
+      inputValue: z.string().optional(),
+      expectedTextAfter: z.string().optional(),
+      expectedUrlAfter: z.string().optional(),
+      expectedSelectorAfter: z.string().optional()
     })).optional()
   }),
   take_screenshot: z.object({
@@ -3345,9 +3380,15 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         // targets: derive assertions from the plan instead of trivially passing.
         const providedTargets = Array.isArray(args.targets) ? (args.targets as VerificationTarget[]) : null;
         const promptForTargets = [state.taskPrompt, state.currentPlan.map(s => s.description).join(" ")].filter(Boolean).join(" ");
-        const targets = providedTargets && providedTargets.length > 0
+        const baseTargets = providedTargets && providedTargets.length > 0
           ? providedTargets
           : generateVerificationTargetsFromTask(promptForTargets);
+        // Always re-run assertions that failed in earlier attempts. The model
+        // may supply a smaller target list on retry; without this merge the
+        // recorded failure could never be cleared and verification would loop
+        // until recovery was exhausted.
+        const outstandingTargets = Array.from(state.browserVerificationFailedTargetObjects?.values() ?? []);
+        const targets = mergeVerificationTargets(baseTargets, outstandingTargets);
         console.log(chalk.gray(`Running browser verification at ${baseUrl}...`));
         console.log(chalk.gray(`Navigating to ${baseUrl}...`));
         const navResult = await state.browserSession.navigate(baseUrl);
@@ -3363,8 +3404,21 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         state.browserVerificationAttempts++;
 
         const failedTargets = (state.browserVerificationFailedTargets ??= new Map<string, string>());
+        const failedTargetObjects = (state.browserVerificationFailedTargetObjects ??= new Map<string, VerificationTarget>());
         const priorFailures = new Map(failedTargets);
         const outcome = applyVerificationOutcome(failedTargets, summary);
+        // Keep the recorded target objects in sync with the failure map.
+        for (const result of summary.results) {
+          const signature = signatureForTarget(result.target);
+          if (result.passed) {
+            failedTargetObjects.delete(signature);
+          } else {
+            failedTargetObjects.set(signature, result.target);
+          }
+        }
+        for (const signature of [...failedTargetObjects.keys()]) {
+          if (!failedTargets.has(signature)) failedTargetObjects.delete(signature);
+        }
         // Failures recorded before this attempt that are still not re-verified
         // as passing (their entry survived in the map).
         const priorStillFailed = [...priorFailures.entries()]
@@ -3385,7 +3439,11 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
               errorText += `\nPage inputs: ${inputEvidence}`;
             }
           }
-          const lines = summary.results.map(r => r.passed ? `✓ ${r.target.type}: ${r.actual}` : `✗ ${r.target.type}: ${r.error || r.actual}`);
+          const lines = summary.results.map(r =>
+            r.passed
+              ? `✓ ${r.target.type}: ${r.actual}`
+              : `${r.target.required === false ? "⚠ optional" : "✗"} ${r.target.type}: ${r.error || r.actual}`
+          );
 
           // This run's targets may all pass while earlier failures remain: a
           // smaller later run must never overwrite a previous failure with a pass.
@@ -3399,20 +3457,31 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           const criteriaNote = summary.results.some(r => !r.passed && isCriteriaDefectResult(r))
             ? `\nThis is a deterministic verification-criteria error, not a page defect: do NOT edit or rewrite source files in response. Re-run browser_verify with corrected target fields (use "selector" for CSS like #email or input[type="email"]; use "inputType" for semantic types like email/password).`
             : "";
+          const optionalNote = `\nIf a failed assertion is not a real user requirement (for example a link or element you added speculatively), resend that exact target with "required": false so it is verified and reported as an optional warning. Never silently omit a failed assertion; if it is a real requirement, fix the page instead.`;
 
           if (state.browserVerificationAttempts >= state.maxBrowserVerificationAttempts) {
-            return `Browser verification failed after ${state.browserVerificationAttempts} attempts at ${baseUrl}:\n${lines.join("\n")}${errorText}${outstandingNote}${criteriaNote}`;
+            return `Browser verification failed after ${state.browserVerificationAttempts} attempts at ${baseUrl}:\n${lines.join("\n")}${errorText}${outstandingNote}${criteriaNote}${optionalNote}`;
           }
-          return `Browser verification failed (attempt ${state.browserVerificationAttempts}/${state.maxBrowserVerificationAttempts}) at ${baseUrl}:\n${lines.join("\n")}${errorText}${outstandingNote}${criteriaNote}`;
+          return `Browser verification failed (attempt ${state.browserVerificationAttempts}/${state.maxBrowserVerificationAttempts}) at ${baseUrl}:\n${lines.join("\n")}${errorText}${outstandingNote}${criteriaNote}${optionalNote}`;
         }
 
-          const lines = summary.results.map(r => `✓ ${r.target.type}: ${r.actual}`);
+          const lines = summary.results.map(r =>
+            r.passed
+              ? `✓ ${r.target.type}: ${r.actual}`
+              : `⚠ optional ${r.target.type}: ${r.error || r.actual}`
+          );
           let warningText = "";
           if (summary.pageInfo) {
             const allErrors = [...summary.pageInfo.consoleErrors, ...summary.pageInfo.pageErrors];
             if (allErrors.length > 0) {
               warningText = `\n(Note: Passed, but had console errors:\n- ${allErrors.slice(0, 5).join("\n- ")})`;
             }
+          }
+          const optionalWarnings = summary.results.filter(r => !r.passed && r.target.required === false);
+          if (optionalWarnings.length > 0) {
+            warningText += `\n(Optional assertion warning(s):\n- ${optionalWarnings
+              .map(r => `${r.target.type}: ${r.error || r.actual}`)
+              .join("\n- ")})`;
           }
 
           const visualReport = await runVisualQualityChecks(state.browserSession, baseUrl);
@@ -3424,6 +3493,26 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
             return `Browser verification: content assertions passed (attempt ${state.browserVerificationAttempts}/${state.maxBrowserVerificationAttempts}) at ${baseUrl}, but measurable visual defects were detected:\n${visualDetail}\nFix these layout defects with targeted CSS/HTML edits, then re-run browser_verify. Do not claim visual quality until these checks pass.`;
           }
 
+          const qualityAudit = evaluateWebsiteQuality({
+            task: state.taskPrompt ?? "",
+            pageTitle: summary.pageInfo?.title,
+            visibleText: summary.pageInfo?.visibleText,
+            buttons: summary.pageInfo?.buttons,
+            inputs: summary.pageInfo?.inputs,
+            headings: summary.pageInfo?.styleAnalysis?.headings,
+            semanticCount: summary.pageInfo?.styleAnalysis?.semanticElementsCount,
+            stylesheetCount: summary.pageInfo?.styleAnalysis?.stylesheetCount,
+            totalCssRules: summary.pageInfo?.styleAnalysis?.totalRules,
+            fontFamily: summary.pageInfo?.styleAnalysis?.fontFamily,
+            criticalLayoutDefects: visualReport?.critical,
+            warningLayoutDefects: visualReport?.warnings,
+            consoleErrors: summary.pageInfo?.consoleErrors,
+            pageErrors: summary.pageInfo?.pageErrors,
+            verificationPassed: true,
+            buildPassed: true,
+          });
+          state.qualityAudit = qualityAudit;
+
           state.browserVerificationAttempts = 0;
           state.browserVerificationPassed = true;
           if (state.browserVerificationRequested) state.verificationPassed = true;
@@ -3431,11 +3520,12 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           if (visualReport) {
             visualText = visualReport.warnings.length > 0
               ? `\nMeasurable layout checks (non-blocking warnings):\n${visualReport.warnings.slice(0, 5).map(w => `- ${w.message}`).join("\n")}\n${VISUAL_METHOD_NOTE}`
-              : `\nMeasurable layout checks: no defects found across ${Object.keys(visualReport.viewports).length} viewports (320-1440px). ${VISUAL_METHOD_NOTE}`;
+              : `\nMeasurable layout checks: no defects found across ${Object.keys(visualReport.viewports).length} viewports (320-1920px). ${VISUAL_METHOD_NOTE}`;
           } else {
             visualText = `\nMeasurable layout checks could not be completed. ${VISUAL_METHOD_NOTE}`;
           }
-          return `Browser verification passed at ${baseUrl}:\n${lines.join("\n")}${warningText}${visualText}`;
+          const auditSummaryText = `\n${qualityAudit.summary}`;
+          return `Browser verification passed at ${baseUrl}:\n${lines.join("\n")}${warningText}${visualText}${auditSummaryText}`;
       }
       case "open_browser": {
         if (state.browserSession) return "Browser already open.";
@@ -3652,6 +3742,7 @@ export async function runAgent(
       browserVerificationRequested: sessionState.browserVerificationRequested,
       browserVerificationPassed: sessionState.browserVerificationPassed,
       browserVerificationFailedTargets: new Map(),
+      browserVerificationFailedTargetObjects: new Map(),
       verificationIsStrong: sessionState.verificationIsStrong ?? false,
       recentToolCalls: [],
       projectState: sessionProjectState,
@@ -3704,6 +3795,7 @@ export async function runAgent(
       browserVerificationRequested: hasBrowserVerifyStep,
       browserVerificationPassed: false,
       browserVerificationFailedTargets: new Map(),
+      browserVerificationFailedTargetObjects: new Map(),
       verificationIsStrong: isStrongVerification,
       recentToolCalls: [],
         projectState: {
@@ -3768,6 +3860,9 @@ export async function runAgent(
   if (p13DesignSpec) {
     console.log(chalk.magenta(`[Phase 13] Design Intelligence: ${p13DesignSpec.direction} / ${p13DesignSpec.productType}`));
   }
+  const principlesEval = evaluatePrinciplesApplicability(task, p13DesignSpec?.productType ?? null);
+  state.principlesSummary = principlesEval.summary;
+  console.log(chalk.cyan(`[50 Principles] ${principlesEval.summary}`));
 
   const MAX_MESSAGE_HISTORY = 60;
   let messages: ChatMessage[] = [
@@ -4363,5 +4458,7 @@ export async function runAgent(
     totalSteps,
     filesModified,
     error,
+    qualityAudit: state.qualityAudit ?? undefined,
+    principlesSummary: state.principlesSummary ?? undefined,
   };
 }

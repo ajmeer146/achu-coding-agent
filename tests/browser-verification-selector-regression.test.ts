@@ -10,7 +10,9 @@ import {
   verifyInputExists,
   runVerificationSuite,
   applyVerificationOutcome,
+  computeVerificationOverallPassed,
   signatureForTarget,
+  mergeVerificationTargets,
   isCriteriaDefectResult,
   VerificationTarget,
   BrowserVerificationSummary,
@@ -370,6 +372,123 @@ describe("Browser verification selector normalization & truthful outcome regress
       assert.equal(summary.overallPassed, true, "Both the standard button and CTA anchor button must pass verification");
       assert.equal(summary.results[0].passed, true);
       assert.equal(summary.results[1].passed, true);
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  test("13. A retry re-runs outstanding failed assertions even when its target list omits them", async () => {
+    const page = `<!DOCTYPE html>
+<html>
+<head><title>ShopNova</title></head>
+<body>
+  <h1>Discover Excellence</h1>
+  <input type="search" placeholder="Search products...">
+</body>
+</html>`;
+    const failedTarget: VerificationTarget = { type: "input", placeholder: "Search" };
+    const failures = new Map<string, string>();
+    const first = applyVerificationOutcome(failures, {
+      overallPassed: false,
+      results: [
+        {
+          passed: false,
+          target: failedTarget,
+          error: 'Input (placeholder="Search") not found',
+        },
+      ],
+    });
+    assert.equal(first.overallPassed, false);
+    assert.equal(failures.size, 1);
+
+    const { port, server } = await startPage(page);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      const merged = mergeVerificationTargets([{ type: "text", text: "Discover Excellence" }], [failedTarget]);
+      assert.equal(merged.length, 2, "The outstanding failed target must be appended to the retry run");
+      assert.equal(
+        mergeVerificationTargets(merged, [failedTarget]).length,
+        2,
+        "Merging the same outstanding target twice must not duplicate it"
+      );
+
+      const summary = await runVerificationSuite(session, `http://localhost:${port}`, merged);
+      assert.equal(summary.overallPassed, true, "The previously failed search input now matches by placeholder substring");
+      const outcome = applyVerificationOutcome(failures, summary);
+      assert.equal(outcome.overallPassed, true);
+      assert.equal(failures.size, 0, "Re-running the outstanding assertion and passing clears the failure");
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  test("14. Optional assertions warn instead of blocking, and an explicit downgrade clears an outstanding failure", () => {
+    const inventedLink: VerificationTarget = { type: "link", text: "Cart" };
+    const requiredResults = [
+      { passed: false, target: inventedLink, error: 'Link with text "Cart" not found' },
+    ];
+    assert.equal(
+      computeVerificationOverallPassed(requiredResults),
+      false,
+      "A required assertion failure must still block verification"
+    );
+
+    const failures = new Map<string, string>();
+    const first = applyVerificationOutcome(failures, {
+      overallPassed: false,
+      results: requiredResults,
+    });
+    assert.equal(first.overallPassed, false);
+    assert.equal(failures.size, 1);
+
+    const downgraded: VerificationTarget = { ...inventedLink, required: false };
+    const merged = mergeVerificationTargets([downgraded], [inventedLink]);
+    assert.equal(merged.length, 1, "The downgraded target must not be duplicated by the merge");
+    assert.equal(merged[0].required, false);
+
+    const optionalResults = [
+      { passed: false, target: downgraded, error: 'Link with text "Cart" not found' },
+    ];
+    assert.equal(
+      computeVerificationOverallPassed(optionalResults),
+      true,
+      "An optional-only failure must not block verification"
+    );
+    const outcome = applyVerificationOutcome(failures, {
+      overallPassed: true,
+      results: optionalResults,
+    });
+    assert.equal(outcome.overallPassed, true);
+    assert.equal(failures.size, 0, "Downgrading the assertion to optional clears the outstanding failure");
+  });
+
+  test("15. Uncaught inline-handler syntax errors fail verification as runtime defects", async () => {
+    const page = `<!DOCTYPE html>
+<html>
+<head><title>Broken Shop</title></head>
+<body>
+  <h1>Broken Shop</h1>
+  <img src="missing.png" onerror="this.src='fallback' font-size='14'">
+</body>
+</html>`;
+    const { port, server } = await startPage(page);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      const nav = await session.navigate(`http://localhost:${port}`);
+      assert.equal(nav.success, true);
+      const summary = await runVerificationSuite(session, `http://localhost:${port}`, [
+        { type: "heading", text: "Broken Shop" },
+      ]);
+      assert.equal(summary.overallPassed, false, "A page with an uncaught handler SyntaxError must not pass");
+      const runtimeFailure = summary.results.find(r => r.target.text === "Page runtime check");
+      assert.ok(runtimeFailure, "Verification must report a page runtime failure");
+      assert.match(runtimeFailure?.error ?? "", /SyntaxError/);
     } finally {
       await session.close();
       await closeServer(server);

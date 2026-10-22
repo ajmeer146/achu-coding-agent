@@ -83,7 +83,7 @@ export class BrowserSession {
       // Collect page runtime errors
       this.page.on('pageerror', error => {
         if (this.pageErrors.length < 50) {
-          this.pageErrors.push(error.message);
+          this.pageErrors.push(`${error.name || "Error"}: ${error.message}`);
         }
       });
 
@@ -416,14 +416,22 @@ export class BrowserSession {
   }
 
   /**
-   * Sets the browser viewport dimensions (e.g. desktop: 1280x800, mobile: 375x667).
+   * Sets the browser viewport dimensions across mobile, tablet, laptop, and desktop.
    */
-  async setViewport(viewport: "desktop" | "mobile" | { width: number; height: number }): Promise<void> {
+  async setViewport(viewport: "desktop" | "mobile" | "tablet" | "laptop" | "small_mobile" | "wide_desktop" | { width: number; height: number }): Promise<void> {
     if (!this.page) throw new Error("Browser page not initialized. Call init() first.");
-    if (viewport === "mobile") {
+    if (viewport === "small_mobile") {
+      await this.page.setViewportSize({ width: 320, height: 568 });
+    } else if (viewport === "mobile") {
       await this.page.setViewportSize({ width: 375, height: 667 });
-    } else if (viewport === "desktop") {
+    } else if (viewport === "tablet") {
+      await this.page.setViewportSize({ width: 768, height: 1024 });
+    } else if (viewport === "laptop") {
       await this.page.setViewportSize({ width: 1280, height: 800 });
+    } else if (viewport === "desktop") {
+      await this.page.setViewportSize({ width: 1440, height: 900 });
+    } else if (viewport === "wide_desktop") {
+      await this.page.setViewportSize({ width: 1920, height: 1080 });
     } else {
       await this.page.setViewportSize(viewport);
     }
@@ -432,10 +440,10 @@ export class BrowserSession {
   /**
    * Takes a screenshot of the current page.
    * @param {Object} [options]
-   * @param {"desktop"|"mobile"|{width:number, height:number}} [options.viewport]
+   * @param {"desktop"|"mobile"|"tablet"|"laptop"|"small_mobile"|"wide_desktop"|{width:number, height:number}} [options.viewport]
    * @returns {Promise<{ success: true; screenshot: string (base64) } | { success: false; error: string; recoverable: boolean }>}
    */
-  async screenshot(options?: { viewport?: "desktop" | "mobile" | { width: number; height: number } }): Promise<{ success: true; screenshot: string } | { success: false; error: string; recoverable: boolean }> {
+  async screenshot(options?: { viewport?: "desktop" | "mobile" | "tablet" | "laptop" | "small_mobile" | "wide_desktop" | { width: number; height: number } }): Promise<{ success: true; screenshot: string } | { success: false; error: string; recoverable: boolean }> {
     if (!this.page) {
       return { success: false, error: 'Browser page not initialized. Call init() first.', recoverable: true };
     }
@@ -459,9 +467,9 @@ export class BrowserSession {
    * Runs measurable layout checks against the current page at the requested
    * viewport. These checks are DOM-measurement based only; they do not attempt
    * to interpret screenshot pixels.
-   * @param viewport Preset ("desktop"|"mobile") or explicit {width, height}.
+   * @param viewport Preset or explicit {width, height}.
    */
-  async analyzeLayout(viewport: "desktop" | "mobile" | { width: number; height: number } = "desktop"): Promise<
+  async analyzeLayout(viewport: "desktop" | "mobile" | "tablet" | "laptop" | "small_mobile" | "wide_desktop" | { width: number; height: number } = "desktop"): Promise<
     | { success: true; analysis: LayoutAnalysis }
     | { success: false; error: string; recoverable: boolean }
   > {
@@ -473,11 +481,19 @@ export class BrowserSession {
       await this.page.evaluate(() => window.scrollTo(0, 0));
       // Resolve an explicit viewport name for the layout script + report.
       const vpName = typeof viewport === "string" ? viewport : `${viewport.width}x${viewport.height}`;
+      const resolvedDimensions = typeof viewport === "string"
+        ? (viewport === "small_mobile" ? { width: 320, height: 568 }
+          : viewport === "mobile" ? { width: 375, height: 667 }
+          : viewport === "tablet" ? { width: 768, height: 1024 }
+          : viewport === "laptop" ? { width: 1280, height: 800 }
+          : viewport === "wide_desktop" ? { width: 1920, height: 1080 }
+          : { width: 1440, height: 900 })
+        : viewport;
       const layoutScript = `
 (function () {
   var vp = ${JSON.stringify(vpName)};
-  var vpWidth = ${typeof viewport === "string" ? (viewport === "mobile" ? 375 : 1280) : viewport.width};
-  var vpHeight = ${typeof viewport === "string" ? (viewport === "mobile" ? 667 : 800) : viewport.height};
+  var vpWidth = ${resolvedDimensions.width};
+  var vpHeight = ${resolvedDimensions.height};
   var defects = [];
   var seen = {};
   function push(severity, type, message) {

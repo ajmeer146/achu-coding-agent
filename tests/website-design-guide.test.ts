@@ -16,6 +16,12 @@ import {
   formatGuideSectionIndex,
   buildWebsiteQualityGuidance,
   buildFullGuideReference,
+  WEBSITE_50_PRINCIPLES_VERSION,
+  WEBSITE_50_PRINCIPLES,
+  PRINCIPLE_PHASES,
+  evaluatePrinciplesApplicability,
+  format50PrinciplesChecklist,
+  evaluateWebsiteQuality,
 } from "../src/quality/website-design-guide.js";
 import { generateDesignSpec } from "../src/tools/design-planner.js";
 import { buildInitialSystemPrompt, createSystemPrompt } from "../src/agent.js";
@@ -230,5 +236,119 @@ test("Website Design Guide integration (Complete Master Website Design Guide A�
       auth.some((t) => t.type === "heading" && /login/i.test(t.text ?? "")),
       "an authentication page must still assert a login heading"
     );
+  });
+
+  await t.test("13. 50 Essential Principles coverage and phase distribution", () => {
+    assert.equal(WEBSITE_50_PRINCIPLES.length, 50, "must define exactly 50 principles");
+    assert.equal(WEBSITE_50_PRINCIPLES_VERSION, "2.0.0");
+    assert.equal(PRINCIPLE_PHASES.length, 6, "must structure principles into 6 phases");
+
+    const numbers = WEBSITE_50_PRINCIPLES.map((p) => p.number);
+    assert.deepEqual(numbers, Array.from({ length: 50 }, (_, i) => i + 1));
+
+    // Verify phase distributions match specification
+    const phase1 = WEBSITE_50_PRINCIPLES.filter((p) => p.phase === 1);
+    const phase2 = WEBSITE_50_PRINCIPLES.filter((p) => p.phase === 2);
+    const phase3 = WEBSITE_50_PRINCIPLES.filter((p) => p.phase === 3);
+    const phase4 = WEBSITE_50_PRINCIPLES.filter((p) => p.phase === 4);
+    const phase5 = WEBSITE_50_PRINCIPLES.filter((p) => p.phase === 5);
+    const phase6 = WEBSITE_50_PRINCIPLES.filter((p) => p.phase === 6);
+
+    assert.equal(phase1.length, 5, "Phase 1 must have principles 1-5");
+    assert.equal(phase2.length, 10, "Phase 2 must have principles 6-15");
+    assert.equal(phase3.length, 10, "Phase 3 must have principles 16-25");
+    assert.equal(phase4.length, 10, "Phase 4 must have principles 26-35");
+    assert.equal(phase5.length, 10, "Phase 5 must have principles 36-45");
+    assert.equal(phase6.length, 5, "Phase 6 must have principles 46-50");
+  });
+
+  await t.test("14. Principles applicability determination is tailored and recorded", () => {
+    // Static portfolio task
+    const portfolioEval = evaluatePrinciplesApplicability("create my developer portfolio website", "portfolio");
+    assert.ok(portfolioEval.applicableCount > 0);
+    assert.ok(portfolioEval.notApplicableCount > 0);
+    const pDb = portfolioEval.evaluations.find((e) => e.principle.number === 28);
+    assert.ok(pDb && !pDb.applicable, "database principle should not be applicable for static portfolio");
+    assert.ok(pDb.reason.includes("does not require persistent server database"));
+
+    // Full-stack database task
+    const dbEval = evaluatePrinciplesApplicability("create a full stack dashboard with postgres database and migrations", "dashboard");
+    const dbPrinciple = dbEval.evaluations.find((e) => e.principle.number === 28);
+    assert.ok(dbPrinciple && dbPrinciple.applicable, "database principle must be applicable for full stack task");
+
+    // Formatted checklist contains phase headers and principle entries
+    const formatted = format50PrinciplesChecklist(portfolioEval.evaluations);
+    assert.ok(formatted.includes("Phase 1 — Planning and Architecture"));
+    assert.ok(formatted.includes("Phase 6 — Reliability, Maintenance, and Final Quality"));
+    assert.ok(formatted.includes("[N/A] Principle 28:"));
+  });
+
+  await t.test("15. 12-category design quality scoring evaluates evidence and detects defects", () => {
+    // Clean website audit
+    const cleanAudit = evaluateWebsiteQuality({
+      task: "build clean modern landing page",
+      pageTitle: "Nova SaaS — AI Platform",
+      visibleText: "Experience the next generation of cloud productivity. Start your free trial today with instantaneous deployment and automated scaling across all environments.",
+      headings: ["Nova SaaS", "Features", "Pricing"],
+      buttons: ["Get Started", "Learn More"],
+      semanticCount: 5,
+      stylesheetCount: 1,
+      totalCssRules: 35,
+      fontFamily: "Inter, sans-serif",
+      criticalLayoutDefects: [],
+      warningLayoutDefects: [],
+      consoleErrors: [],
+      pageErrors: [],
+      verificationPassed: true,
+      buildPassed: true,
+      secretLeaksFound: false,
+    });
+
+    assert.equal(cleanAudit.categories.length, 12, "must score all 12 independent categories");
+    assert.ok(cleanAudit.overallScore >= 85, "clean website should achieve >= 85 quality score");
+    assert.equal(cleanAudit.overallPassed, true);
+    assert.equal(cleanAudit.blockers.length, 0);
+
+    // Broken website with critical defects
+    const brokenAudit = evaluateWebsiteQuality({
+      task: "build ecommerce store",
+      pageTitle: "Store",
+      visibleText: "Short",
+      headings: [],
+      buttons: [],
+      semanticCount: 0,
+      stylesheetCount: 0,
+      totalCssRules: 0,
+      criticalLayoutDefects: [{ type: "horizontal_overflow", message: "Page content is 45px wider than viewport" }],
+      consoleErrors: ["Uncaught TypeError: Cannot read property 'map' of undefined"],
+      verificationPassed: false,
+      buildPassed: false,
+      secretLeaksFound: true,
+    });
+
+    assert.ok(brokenAudit.overallScore < 50, "broken website must fail quality score");
+    assert.equal(brokenAudit.overallPassed, false);
+    assert.ok(brokenAudit.blockers.length >= 2, "must identify critical blockers");
+    assert.ok(brokenAudit.blockers.includes("Secret leak detected"));
+  });
+
+  await t.test("16. Multi-viewport testing targets span 320px to 1920px", () => {
+    const agentSource = fs.readFileSync(path.join(repoRoot, "src", "agent.ts"), "utf8");
+    assert.ok(agentSource.includes("320"), "must test small mobile (320px)");
+    assert.ok(agentSource.includes("375"), "must test standard mobile (375px)");
+    assert.ok(agentSource.includes("390"), "must test standard mobile large (390px)");
+    assert.ok(agentSource.includes("768"), "must test tablet (768px)");
+    assert.ok(agentSource.includes("1280"), "must test laptop (1280px)");
+    assert.ok(agentSource.includes("1440"), "must test laptop/desktop (1440px)");
+    assert.ok(agentSource.includes("1920"), "must test wide desktop (1920px)");
+  });
+
+  await t.test("17. Interactive verification targets support button clicks, form submissions, and state verification", () => {
+    const targets = generateVerificationTargetsFromTask(
+      "create a contact page with a name field, email input, message input, and Submit button that shows Thank You after sending"
+    );
+    assert.ok(targets.some((t) => t.type === "input" && /email/i.test(t.inputType || t.selector || "")));
+    assert.ok(targets.some((t) => t.type === "button" && /submit/i.test(t.text || "")));
+    assert.ok(targets.some((t) => t.type === "text" && /thank you/i.test(t.text || "")));
   });
 });

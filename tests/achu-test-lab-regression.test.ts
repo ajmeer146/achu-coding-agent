@@ -383,6 +383,18 @@ describe("Achu Test Lab Defect Regression Tests", () => {
     assert.ok(fnStr.includes("edit_file:"), "recovery loop must track edit_file failure keys separately");
   });
 
+  test("5d. browser_verify schema accepts interaction and form targets and outcome fields", async () => {
+    const source = await fs.readFile(path.join(process.cwd(), "src/agent.ts"), "utf8");
+    const enumMatches = source.match(/"interaction", "form"/g) ?? [];
+    assert.ok(
+      enumMatches.length >= 2,
+      "both the exposed tool schema and the runtime zod schema must accept interaction/form targets"
+    );
+    for (const field of ["action", "inputValue", "expectedTextAfter", "expectedUrlAfter", "expectedSelectorAfter"]) {
+      assert.ok(source.includes(field), `browser_verify schema must expose ${field}`);
+    }
+  });
+
   test("6. Safety policy: broad process killing commands are blocked", () => {
     const dangerousCommands = [
       'Get-Process | Where-Object {$_.ProcessName -eq "node"} | Stop-Process -Force',

@@ -10,8 +10,11 @@
 
 import {
   WEBSITE_DESIGN_GUIDE_VERSION,
+  WEBSITE_50_PRINCIPLES_VERSION,
   buildQualityChecklist,
+  evaluatePrinciplesApplicability,
   type QualityChecklistItem,
+  type PrincipleEvaluation,
 } from "../quality/website-design-guide.js";
 
 // ---------------------------------------------------------------------------
@@ -84,8 +87,12 @@ export interface DesignSpec {
   useAnimations: boolean;
   /** Version of the website quality standard applied to this task */
   qualityGuideVersion: string;
+  /** Version of the 50 Essential Principles framework */
+  principlesVersion?: string;
   /** Task-specific, guide-derived acceptance checklist */
   qualityChecklist: QualityChecklistItem[];
+  /** Tailored 50-principles evaluation */
+  principlesEvaluations?: PrincipleEvaluation[];
 }
 
 // ---------------------------------------------------------------------------
@@ -543,7 +550,9 @@ export function generateDesignSpec(task: string): DesignSpec {
     expectedSections,
     useAnimations: true,
     qualityGuideVersion: WEBSITE_DESIGN_GUIDE_VERSION,
+    principlesVersion: WEBSITE_50_PRINCIPLES_VERSION,
     qualityChecklist: buildQualityChecklist(productType, task),
+    principlesEvaluations: evaluatePrinciplesApplicability(task, productType).evaluations,
   };
 }
 
@@ -561,6 +570,7 @@ export function formatDesignSpecForPrompt(spec: DesignSpec): string {
 **Design Direction:** ${spec.direction.replace(/_/g, " ")} — ${spec.visualSummary}
 **Color Scheme:** ${spec.colorScheme}
 **Quality Guide Version:** ${spec.qualityGuideVersion}
+**50 Principles Framework Version:** ${spec.principlesVersion ?? WEBSITE_50_PRINCIPLES_VERSION}
 
 **CSS Design Tokens (use in :root):**
   --bg-primary:    ${t.bgPrimary}

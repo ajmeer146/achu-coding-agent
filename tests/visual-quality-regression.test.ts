@@ -192,9 +192,16 @@ describe("Phase 13.2 — Measurable visual quality checks (real browser geometry
       const desktop = await session.analyzeLayout("desktop");
       assert.equal(desktop.success, true);
       if (desktop.success) {
-        assert.equal(desktop.analysis.width, 1280, "Desktop analysis must measure the 1280px viewport");
+        assert.equal(desktop.analysis.width, 1440, "Desktop analysis must measure the 1440px viewport");
         assert.equal(desktop.analysis.horizontalOverflow, false);
         assert.equal(desktop.analysis.defects.filter(d => d.severity === "critical").length, 0);
+      }
+
+      const laptop = await session.analyzeLayout("laptop");
+      assert.equal(laptop.success, true);
+      if (laptop.success) {
+        assert.equal(laptop.analysis.width, 1280, "Laptop analysis must measure the 1280px viewport");
+        assert.equal(laptop.analysis.horizontalOverflow, false);
       }
 
       const mobile = await session.analyzeLayout("mobile");

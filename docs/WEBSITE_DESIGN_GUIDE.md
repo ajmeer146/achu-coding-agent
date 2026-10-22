@@ -340,3 +340,89 @@ every feature or effect belongs in every product.
 A master-quality website is not defined by how many animations or effects it contains. It is the result
 of a distinctive visual identity, thoughtful structure, purposeful motion, excellent usability,
 accessibility, performance, reliable functionality, security and thorough testing working together.
+
+---
+
+# Complete Website Development Guide — 50 Essential Principles
+
+Version: 2.0.0
+Runtime implementation: `src/quality/website-design-guide.ts`
+
+The agent evaluates every user request against these 50 principles across 6 phases, determining applicability and executing mandatory quality gates.
+
+### Phase 1 — Planning and Architecture
+1. **Purpose and Goals**: Define the website's purpose, target users, goals, and expected outcomes.
+2. **Requirements Extraction**: Extract functional requirements, non-functional requirements, technical constraints, and integrations.
+3. **Information Architecture**: Establish the required pages, sections, features, user journeys, and application states.
+4. **Navigation Structure**: Create a logical sitemap and navigation hierarchy.
+5. **Content Planning**: Plan page wireframes and content hierarchy before writing production UI code.
+
+### Phase 2 — UI/UX Design and Visual Consistency
+6. **Design System**: Establish a coherent design system with reusable tokens and components.
+7. **Color System**: Select an attractive, purpose-appropriate colour palette with accessible contrast.
+8. **Typography**: Define consistent typography, heading hierarchy, font sizes, and line heights.
+9. **Visual Alignment**: Apply consistent alignment and visual hierarchy across every page.
+10. **Spacing Scale**: Use a consistent spacing scale and eliminate arbitrary gaps.
+11. **Responsive Containers**: Establish responsive containers, grids, columns, and content-width rules.
+12. **Multi-Viewport Design**: Design for mobile phones (320-375px), standard mobile (390-430px), tablets (768px), laptops (1280-1440px), and wide desktop (1920px).
+13. **Meaningful Navigation**: Ensure all navigation elements have meaningful destinations and work correctly.
+14. **Component Consistency**: Create reusable, consistent buttons, cards, forms, dialogs, menus, and feedback components.
+15. **Compelling Hero/Entry**: Design a compelling homepage or primary landing page appropriate to user requirements.
+
+### Phase 3 — Frontend Development and Interactions
+16. **Modular Architecture**: Organize components, pages, hooks, utilities, styles, and assets cleanly.
+17. **Actionable Controls**: Make every visible button perform its intended action.
+18. **Form Validation**: Implement meaningful validation for all applicable forms.
+19. **Interactive Widgets**: Implement working tabs, menus, accordions, dialogs, filters, search, pagination.
+20. **Purposeful Motion**: Add purposeful transitions, animations, hover effects, and micro-interactions (prefers-reduced-motion).
+21. **Theme Switching**: Implement functional light and dark themes when required or when theme switching is offered.
+22. **Accessibility Standards**: Follow accessibility principles (semantic HTML, keyboard support, focus states, labels, contrast).
+23. **Asset Optimization**: Use appropriate images, optimized assets, consistent icons, and layout-stable containers.
+24. **State Consistency**: Keep UI state, navigation state, form values, and server data consistent.
+25. **Application States**: Implement loading, success, error, empty, disabled, offline, and no-results states.
+
+### Phase 4 — Backend, Database, and Security
+26. **Server Business Logic**: Implement reliable server-side business logic and a clear separation of concerns.
+27. **API Design**: Use appropriate API endpoints, HTTP methods, validation, response formats, and status codes.
+28. **Database Persistence**: Use a suitable database schema, relationships, constraints, and indexes when persistence is required.
+29. **Schema Migrations**: Implement and verify versioned database migrations and production schema compatibility.
+30. **Secure Authentication**: Implement secure authentication and session behaviour when required.
+31. **Authorization**: Enforce server-side authorization and ownership checks for protected operations.
+32. **Threat Controls**: Apply appropriate security controls for injection, XSS, CSRF, and access control.
+33. **Secret Protection**: Protect credentials and secrets using appropriate server-side configuration.
+34. **Upload Validation**: Validate uploads, file types, sizes, storage permissions, and download access.
+35. **Resilient Failure Handling**: Handle network errors, timeouts, database failures, rate limits, and outages safely.
+
+### Phase 5 — Performance, Testing, and Deployment
+36. **Performance Optimization**: Optimize loading performance, rendering, assets, database access, and unnecessary JavaScript.
+37. **SEO & Metadata**: Implement appropriate page metadata, semantic content, canonical URLs, and sitemap support.
+38. **Multi-Viewport Testing**: Test browser compatibility and different viewport sizes (320px to 1920px).
+39. **Journey Testing**: Test every important page, link, button, form, API integration, and user journey.
+40. **Automated Testing**: Add and run appropriate unit, integration, and end-to-end tests.
+41. **Accessibility Verification**: Verify keyboard navigation, form labels, focus order, contrast requirements.
+42. **Performance Measurement**: Measure relevant performance indicators and investigate meaningful bottlenecks.
+43. **Environment Isolation**: Validate environment-specific configuration for development, testing, preview, and production.
+44. **Build Verification**: Verify production builds, environment configuration, migrations, and deployment logs.
+45. **Release Quality Gates**: Integrate appropriate automated validation into CI/CD and block releases on critical failures.
+
+### Phase 6 — Reliability, Maintenance, and Final Quality
+46. **Sanitized Logging**: Provide useful application logging and monitoring without exposing sensitive information.
+47. **Backup and Recovery**: Preserve or establish suitable backup and recovery procedures for persistent data.
+48. **Scalable Design**: Design for reasonable scalability and reliability without unnecessary complexity.
+49. **Regression Protection**: Maintain dependencies, documentation, error fixes, and regression tests.
+50. **Final Quality Audit**: Conduct a final production-quality audit covering 12 independent categories before release.
+
+### 12-Category Quality Scoring System
+1. Information architecture and content hierarchy
+2. Visual design and design-system consistency
+3. Alignment, spacing, typography, and grid quality
+4. Colour consistency and visual accessibility
+5. Desktop layout quality (1024-1920px)
+6. Mobile and tablet layout quality (320-768px)
+7. Navigation and interaction completeness
+8. Functional correctness and data flow
+9. Error handling and application-state coverage
+10. Accessibility and keyboard usability
+11. Performance and asset optimization
+12. Security and deployment readiness
+

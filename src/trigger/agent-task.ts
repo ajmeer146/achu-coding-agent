@@ -70,6 +70,8 @@ export const AgentTaskResultSchema = z.object({
   gitCommitted: z.boolean().optional(),
   gitPushed: z.boolean().optional(),
   error: z.string().optional(),
+  qualityScore: z.number().optional(),
+  principlesSummary: z.string().optional(),
 });
 
 type AgentTaskResult = z.infer<typeof AgentTaskResultSchema>;
@@ -379,6 +381,8 @@ export const codingAgentTask = schemaTask({
         gitCommitted,
         gitPushed,
         error: finalResult.error ? sanitizeUserFacingError(finalResult.error) : undefined,
+        qualityScore: finalResult.qualityAudit?.overallScore,
+        principlesSummary: finalResult.principlesSummary,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

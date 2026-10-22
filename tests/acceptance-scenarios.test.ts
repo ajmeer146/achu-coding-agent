@@ -13,6 +13,11 @@ import { sanitizeUserFacingError } from "../src/utils/error-sanitizer.js";
 import { generateDesignSpec } from "../src/tools/design-planner.js";
 import { isToolResultFailure } from "../src/agent.js";
 import { normalizeUnixCommand } from "../src/utils/command-guard.js";
+import {
+  evaluatePrinciplesApplicability,
+  evaluateWebsiteQuality,
+  WEBSITE_50_PRINCIPLES,
+} from "../src/quality/website-design-guide.js";
 
 describe("Mandatory Acceptance Verification Suite", () => {
 
@@ -758,5 +763,307 @@ body {
     });
     assert.equal(invalidCloud.success, false);
     assert.ok(invalidCloud.error?.issues.some(i => i.message.includes("workspaceId, workspaceRoot, gitUrl, or files")));
+  });
+
+  test("Acceptance Test 6 — 50 Principles Website Generation, Multi-Viewport Verification & 12-Category Audit", async () => {
+    const taskBrief = "Create a responsive portfolio website with interactive project filter, contact form with feedback, and theme toggle";
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "achu-accept-50p-"));
+
+    try {
+      // 1. Principles applicability evaluation
+      const evalResult = evaluatePrinciplesApplicability(taskBrief, "portfolio");
+      assert.equal(evalResult.evaluations.length, 50);
+      assert.ok(evalResult.applicableCount >= 30);
+      assert.ok(evalResult.notApplicableCount > 0);
+
+      // 2. Scaffold responsive portfolio files
+      const ws = new Workspace(tmpDir);
+      const spec = generateDesignSpec(taskBrief);
+
+      const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alex Rivera — Senior Systems Architect</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="header">
+    <div class="container nav-container">
+      <a href="#home" class="logo">✦ AR.</a>
+      <nav class="nav-links">
+        <a href="#about">About</a>
+        <a href="#projects">Projects</a>
+        <a href="#contact">Contact</a>
+      </nav>
+      <button id="theme-btn" class="theme-btn" aria-label="Toggle theme">Dark Mode</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="home" class="hero section">
+      <div class="container hero-content">
+        <h1 class="hero-title">Architecting Resilient Distributed Systems</h1>
+        <p class="hero-subtitle">High-throughput event streaming, cloud infrastructure, and mission-critical software.</p>
+        <div class="hero-cta">
+          <a href="#projects" class="btn btn-primary">View Case Studies</a>
+          <a href="#contact" class="btn btn-secondary">Get in Touch</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="projects" class="section">
+      <div class="container">
+        <h2>Selected Engineering Projects</h2>
+        <div class="filter-bar">
+          <button class="filter-btn active" data-filter="all">All</button>
+          <button class="filter-btn" data-filter="cloud">Cloud</button>
+          <button class="filter-btn" data-filter="ai">AI / ML</button>
+        </div>
+        <div class="projects-grid">
+          <div class="card project-card" data-category="cloud">
+            <h3>HyperScale Ledger</h3>
+            <p>Distributed consensus engine handling 250k events/sec with sub-millisecond p99 latency.</p>
+          </div>
+          <div class="card project-card" data-category="ai">
+            <h3>Neural Router</h3>
+            <p>Adaptive LLM model routing gateway with automated token optimization and fallbacks.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="contact" class="section">
+      <div class="container">
+        <h2>Start a Conversation</h2>
+        <form id="contact-form" class="contact-form" novalidate>
+          <div class="form-group">
+            <label for="contact-name">Name</label>
+            <input type="text" id="contact-name" name="name" placeholder="Your name" required>
+          </div>
+          <div class="form-group">
+            <label for="contact-email">Email</label>
+            <input type="email" id="contact-email" name="email" placeholder="you@domain.com" required>
+          </div>
+          <button type="submit" id="btn-submit" class="btn btn-primary">Send Message</button>
+          <div id="contact-feedback" class="feedback-msg" style="display:none;">Thank you for your message!</div>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>© 2026 Alex Rivera. All rights reserved.</p>
+    </div>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>`;
+
+      const css = `:root {
+  --bg-primary: #0a0c10;
+  --bg-surface: #12161f;
+  --bg-card: #19202e;
+  --text-primary: #f0f4fc;
+  --text-secondary: #94a3b8;
+  --accent-primary: #38bdf8;
+  --accent-hover: #0284c7;
+  --border-subtle: #222f42;
+  --radius-md: 10px;
+}
+
+[data-theme="light"] {
+  --bg-primary: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-card: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --accent-primary: #0284c7;
+  --border-subtle: #cbd5e1;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.6;
+}
+
+.container { max-width: 1200px; margin: 0 auto; padding: 0 1.5rem; }
+.header { border-bottom: 1px solid var(--border-subtle); padding: 1rem 0; }
+.nav-container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+.logo { font-size: 1.5rem; font-weight: 700; color: var(--accent-primary); text-decoration: none; }
+.nav-links { display: flex; gap: 1.5rem; }
+.nav-links a { color: var(--text-secondary); text-decoration: none; }
+.nav-links a:hover { color: var(--text-primary); }
+
+.section { padding: 4rem 0; }
+.hero-title { font-size: 2.75rem; margin-bottom: 1rem; color: var(--text-primary); word-break: break-word; }
+.hero-subtitle { font-size: 1.25rem; color: var(--text-secondary); margin-bottom: 2rem; max-width: 650px; }
+.hero-cta { display: flex; gap: 1rem; flex-wrap: wrap; }
+
+.btn { display: inline-block; padding: 0.75rem 1.5rem; border-radius: var(--radius-md); text-decoration: none; font-weight: 600; cursor: pointer; border: none; }
+.btn-primary { background: var(--accent-primary); color: #000; }
+.btn-secondary { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-subtle); }
+
+.projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1.5rem; margin-top: 1.5rem; }
+.card { background: var(--bg-card); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); }
+.card h3 { margin-bottom: 0.5rem; color: var(--text-primary); }
+.card p { color: var(--text-secondary); font-size: 0.95rem; }
+
+.filter-bar { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
+.filter-btn { padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--bg-surface); color: var(--text-secondary); cursor: pointer; }
+.filter-btn.active { background: var(--accent-primary); color: #000; }
+
+.contact-form { max-width: 480px; width: 100%; margin-top: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
+.form-group { display: flex; flex-direction: column; gap: 0.35rem; }
+.form-group label { font-size: 0.9rem; font-weight: 500; }
+.form-group input { padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--bg-surface); color: var(--text-primary); width: 100%; }
+.feedback-msg { padding: 0.75rem; background: #064e3b; color: #6ee7b7; border-radius: 6px; font-weight: 500; }
+
+.footer { border-top: 1px solid var(--border-subtle); padding: 2rem 0; text-align: center; color: var(--text-secondary); font-size: 0.9rem; }
+
+@media (max-width: 768px) {
+  .hero-title { font-size: 2rem; }
+  .nav-links { gap: 0.75rem; font-size: 0.9rem; }
+  .hero-cta { flex-direction: column; }
+}
+
+@media (max-width: 480px) {
+  .container { padding: 0 0.75rem; }
+  .projects-grid { grid-template-columns: 1fr; }
+  .hero-title { font-size: 1.75rem; }
+  .hero-subtitle { font-size: 1rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}`;
+
+      const js = `document.addEventListener("DOMContentLoaded", () => {
+  const themeBtn = document.getElementById("theme-btn");
+  if (themeBtn) {
+    themeBtn.addEventListener("click", () => {
+      const current = document.documentElement.getAttribute("data-theme") || "dark";
+      const next = current === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      themeBtn.textContent = next === "dark" ? "Light Mode" : "Dark Mode";
+    });
+  }
+
+  const filterBtns = document.querySelectorAll(".filter-btn");
+  const projectCards = document.querySelectorAll(".project-card");
+  filterBtns.forEach(btn => {
+    btn.addEventListener("click", () => {
+      filterBtns.forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      const category = btn.getAttribute("data-filter");
+      projectCards.forEach(card => {
+        if (category === "all" || card.getAttribute("data-category") === category) {
+          card.style.display = "block";
+        } else {
+          card.style.display = "none";
+        }
+      });
+    });
+  });
+
+  const contactForm = document.getElementById("contact-form");
+  const feedbackMsg = document.getElementById("contact-feedback");
+  if (contactForm && feedbackMsg) {
+    contactForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      feedbackMsg.style.display = "block";
+    });
+  }
+});`;
+
+      await createFile(ws, "index.html", html);
+      await createFile(ws, "styles.css", css);
+      await createFile(ws, "script.js", js);
+
+      // 3. Playwright browser multi-viewport verification
+      const browser = await chromium.launch({ headless: true });
+      try {
+        const page = await browser.newPage();
+        await page.goto(`file://${path.resolve(tmpDir, "index.html")}`);
+
+        // Viewports test target matrix
+        const viewports = [
+          { width: 320, height: 568 },  // Small mobile
+          { width: 375, height: 667 },  // Small mobile standard
+          { width: 390, height: 844 },  // Standard mobile
+          { width: 430, height: 932 },  // Standard mobile plus
+          { width: 768, height: 1024 }, // Tablet
+          { width: 1280, height: 800 }, // Laptop
+          { width: 1440, height: 900 }, // Desktop
+          { width: 1920, height: 1080 } // Wide desktop
+        ];
+
+        for (const vp of viewports) {
+          await page.setViewportSize(vp);
+          const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+          const clientWidth = await page.evaluate(() => document.documentElement.clientWidth);
+          assert.ok(scrollWidth <= clientWidth + 2, `No horizontal overflow at ${vp.width}x${vp.height}`);
+        }
+
+        // Reset to desktop
+        await page.setViewportSize({ width: 1280, height: 800 });
+
+        // 4. Test real interactive features
+        // Theme toggle
+        await page.locator("#theme-btn").click();
+        const activeTheme = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
+        assert.equal(activeTheme, "light");
+
+        // Filter interaction
+        await page.locator('.filter-btn[data-filter="ai"]').click();
+        const cloudCardVisible = await page.locator('.project-card[data-category="cloud"]').isVisible();
+        const aiCardVisible = await page.locator('.project-card[data-category="ai"]').isVisible();
+        assert.equal(cloudCardVisible, false, "Cloud card hidden when AI filter active");
+        assert.equal(aiCardVisible, true, "AI card visible when AI filter active");
+
+        // Form submission interaction
+        await page.locator("#contact-name").fill("Dev Test");
+        await page.locator("#contact-email").fill("dev@example.com");
+        await page.locator("#btn-submit").click();
+        const feedbackVisible = await page.locator("#contact-feedback").isVisible();
+        assert.equal(feedbackVisible, true, "Feedback displayed after form submit");
+
+        // 5. Run 12-category quality audit
+        const audit = evaluateWebsiteQuality({
+          task: taskBrief,
+          pageTitle: await page.title(),
+          visibleText: await page.evaluate(() => document.body.innerText),
+          buttons: ["Dark Mode", "All", "Cloud", "AI / ML", "Send Message"],
+          inputs: [{ name: "name", type: "text", placeholder: "Your name" }, { name: "email", type: "email", placeholder: "you@domain.com" }],
+          headings: ["Architecting Resilient Distributed Systems", "Selected Engineering Projects", "Start a Conversation"],
+          semanticCount: 6,
+          stylesheetCount: 1,
+          totalCssRules: 28,
+          fontFamily: "system-ui, sans-serif",
+          criticalLayoutDefects: [],
+          warningLayoutDefects: [],
+          consoleErrors: [],
+          pageErrors: [],
+          verificationPassed: true,
+          buildPassed: true,
+          secretLeaksFound: false,
+        });
+
+        assert.equal(audit.categories.length, 12);
+        assert.ok(audit.overallScore >= 90, `Audit score must be >= 90 (got ${audit.overallScore})`);
+        assert.equal(audit.overallPassed, true);
+        assert.equal(audit.blockers.length, 0);
+      } finally {
+        await browser.close();
+      }
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
