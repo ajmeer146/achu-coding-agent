@@ -153,7 +153,7 @@ if (fs.existsSync(envSource)) {
 console.log("Writing app package.json...");
 const appPkg = {
   name: "achu-local-agent",
-  version: "1.0.0",
+  version: APP_VERSION,
   type: "module",
   dependencies: {
     "better-sqlite3": "^13.0.3"
