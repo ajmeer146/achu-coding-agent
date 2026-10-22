@@ -162,4 +162,42 @@ describe("Phase 13.2 — File syntax & truncation detection", () => {
       await cleanup(dir);
     }
   });
+
+  test("10. A broken regeneration keeps an existing valid file instead of failing the step", async () => {
+    const dir = await makeTempDir("syntax-regeneration");
+    const ws = new Workspace(dir);
+    try {
+      const validJs = "function init() {\n  return true;\n}\n";
+      await createFile(ws, "script.js", validJs, true);
+
+      // A regeneration with an unclosed block must not be written, and must not
+      // destroy the healthy artifact that is already on disk.
+      const result = await createFile(ws, "script.js", "function init() {\n  return true;\n", true);
+
+      assert.match(result, /Kept existing script\.js/);
+      assert.match(result, /NOT written/);
+      const content = await ws.read("script.js");
+      assert.equal(content, validJs, "The valid file on disk must be preserved unchanged");
+    } finally {
+      await cleanup(dir);
+    }
+  });
+
+  test("11. A broken regeneration is still rejected when no valid file exists", async () => {
+    const dir = await makeTempDir("syntax-regeneration-missing");
+    const ws = new Workspace(dir);
+    try {
+      await assert.rejects(
+        createFile(ws, "script.js", "function init() {\n  return true;\n", true),
+        /\[SYNTAX_VALIDATION_ERROR\]|\[TRUNCATED_OR_INCOMPLETE_OUTPUT\]/
+      );
+      const exists = await fs
+        .stat(path.join(dir, "script.js"))
+        .then(() => true)
+        .catch(() => false);
+      assert.equal(exists, false, "No file may be written when the content is invalid");
+    } finally {
+      await cleanup(dir);
+    }
+  });
 });

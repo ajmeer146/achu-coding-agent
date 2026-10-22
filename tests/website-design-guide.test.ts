@@ -193,4 +193,42 @@ test("Website Design Guide integration (Complete Master Website Design Guide Aâ€
       "non-e-commerce tasks must not be forced to include a cart"
     );
   });
+
+  await t.test("12. Verification controls follow the requested website type", () => {
+    const landing = generateVerificationTargetsFromTask(
+      "create a responsive landing page for a modern AI SaaS analytics product with pricing, features, testimonials and a signup form"
+    );
+    assert.ok(
+      !landing.some((t) => t.type === "button" && /cart/i.test(t.text ?? "")),
+      "a landing page must not be forced to include a cart control"
+    );
+    assert.ok(
+      !landing.some((t) => t.type === "input" && /search/i.test(t.selector ?? "")),
+      "a landing page must not be forced to include a search control"
+    );
+    assert.ok(
+      !landing.some((t) => t.type === "heading" && /login/i.test(t.text ?? "")),
+      "a landing page must not be forced to include a login heading"
+    );
+
+    const shop = generateVerificationTargetsFromTask(
+      "create a responsive landing page for our Shopify store"
+    );
+    assert.ok(
+      !shop.some((t) => t.type === "button" && /cart/i.test(t.text ?? "")),
+      "a landing page for a store must not inherit shop-only controls"
+    );
+
+    const auth = generateVerificationTargetsFromTask(
+      "create a login page with email validation and a password visibility toggle"
+    );
+    assert.ok(
+      auth.some((t) => t.type === "input" && t.inputType === "password"),
+      "an authentication page must still assert a password input"
+    );
+    assert.ok(
+      auth.some((t) => t.type === "heading" && /login/i.test(t.text ?? "")),
+      "an authentication page must still assert a login heading"
+    );
+  });
 });

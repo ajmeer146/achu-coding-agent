@@ -1,5 +1,6 @@
 import { BrowserSession } from "./browser-session.js";
 import { PageInfo } from "./browser-session.js";
+import { analyseTaskBrief } from "../tools/design-planner.js";
 
 export type VerificationTarget = {
   type: "text" | "heading" | "button" | "input" | "link" | "route";
@@ -304,7 +305,10 @@ export async function verifyButtonExists(
         }
         candidates = tied;
       } else {
-        candidates = await page.$$eval('button, [role="button"], input[type="submit"], input[type="button"]', COLLECT_DOM_ELEMENTS);
+        candidates = await page.$$eval(
+          'button, [role="button"], input[type="submit"], input[type="button"], a.btn, a.button, a[class*="btn"], a[class*="button"]',
+          COLLECT_DOM_ELEMENTS
+        );
       }
 
       // Buttons matched by plain DOM selector must be actual buttons; text-matched candidates may be any element with button role.
@@ -369,7 +373,10 @@ export async function verifyButtonExists(
 
 async function collectPageButtonEvidence(page: any): Promise<string> {
   try {
-    const els: DomElementInfo[] = await page.$$eval('button, [role="button"], input[type="submit"], input[type="button"]', COLLECT_DOM_ELEMENTS);
+    const els: DomElementInfo[] = await page.$$eval(
+      'button, [role="button"], input[type="submit"], input[type="button"], a.btn, a.button, a[class*="btn"], a[class*="button"]',
+      COLLECT_DOM_ELEMENTS
+    );
     if (els.length === 0) return "Page has no <button> elements.";
     const described = els.slice(0, 5).map((el) => `"${el.text || "(no text)"}"${el.disabled ? " (disabled)" : ""}`);
     return `Page buttons: ${described.join(", ")}`;
@@ -979,6 +986,13 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
     }
   }
 
+  // Guide-derived category controls (Complete Master Website Design Guide v1.0.0):
+  // assertions are chosen for the website type that was actually requested.
+  // The product type comes from the canonical brief classifier, so a store
+  // page inside a landing page brief does not inherit shop-only controls,
+  // and a non-shop build never gets search/cart assertions it cannot satisfy.
+  const productType = analyseTaskBrief(task);
+
   // Handle common natural-language web UI patterns
   if (/\bemail\s+(input|field)\b/i.test(task)) {
     addTarget({ type: "input", inputType: "email", selector: 'input[type="email"], #email', required: true });
@@ -992,17 +1006,17 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
     addTarget({ type: "button", text: "Submit", required: true });
   }
 
-  // If user explicitly asks for a login page or form
-  if (/\b(login|sign[\s-]?in)\s+(page|form)\b/i.test(task)) {
+  // An authentication page is only verified when its login form really exists.
+  // The strict control set belongs to an authentication build — a login link
+  // inside a landing page must not be forced to become a full login screen.
+  if (productType === "login_auth" && /\b(login|sign[\s-]?in)\s+(page|form)\b/i.test(task)) {
     addTarget({ type: "heading", text: "Login", required: true });
     addTarget({ type: "input", inputType: "email", selector: 'input[type="email"], #email', required: true });
     addTarget({ type: "input", inputType: "password", selector: 'input[type="password"], #password', required: true });
     addTarget({ type: "button", text: "Login", required: true });
   }
 
-  // Guide-derived category controls (Complete Master Website Design Guide v1.0.0):
-  // an e-commerce build is only verified when its search and cart controls exist.
-  if (/\b(e-?commerce|online\s+shop|web\s?shop|shopping|store)\b/i.test(task)) {
+  if (productType === "ecommerce") {
     addTarget({
       type: "input",
       selector: 'input[type="search"], input[placeholder*="search" i], input[name*="search" i], #search, .search-input',

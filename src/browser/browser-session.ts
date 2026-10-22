@@ -191,8 +191,11 @@ export class BrowserSession {
 
       // Get interactive elements: buttons, inputs, links, selects, textareas, styles
       const evalResults = await Promise.all([
-        // Buttons: button elements and elements with role="button"
-        this.page.$$eval('button, [role="button"]', els => els.map(el => el.textContent?.trim() ?? '').filter(t => t.length > 0)),
+        // Buttons: button elements, elements with role="button", and button-styled CTA anchors
+        this.page.$$eval(
+          'button, [role="button"], input[type="submit"], input[type="button"], a.btn, a.button, a[class*="btn"], a[class*="button"]',
+          els => els.map(el => el.textContent?.trim() ?? '').filter(t => t.length > 0)
+        ),
         // Inputs: input elements and elements with role="textbox"
         this.page.$$eval('input, [role="textbox"]', els => {
           return els.map(el => {

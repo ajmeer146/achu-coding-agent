@@ -1,6 +1,6 @@
 import { Workspace } from "./workspace.js";
 import { isProtectedFile } from "../utils/command-guard.js";
-import { assertFileSyntaxValid } from "../utils/file-syntax-validator.js";
+import { assertFileSyntaxValid, validateFileSyntax } from "../utils/file-syntax-validator.js";
 
 export async function createFile(
   workspace: Workspace,
@@ -20,7 +20,23 @@ export async function createFile(
   }
 
   // Validate syntax and check for truncated/incomplete code before writing
-  assertFileSyntaxValid(filePath, content);
+  const syntaxCheck = validateFileSyntax(filePath, content);
+  if (!syntaxCheck.valid) {
+    // A broken regeneration must not destroy or invalidate a healthy artifact
+    // that is already on disk. When the file exists and is itself valid, the
+    // file is kept and the rejected content is reported truthfully instead of
+    // failing the step (which would burn every recovery attempt on an
+    // artifact that is already correct).
+    const keepExisting = await canKeepExistingValidArtifact(workspace, filePath, normalized);
+    if (keepExisting) {
+      return (
+        `Kept existing ${filePath}: it is already on disk and syntactically valid. ` +
+        `The supplied content was rejected (${syntaxCheck.error}) and was NOT written. ` +
+        `Use edit_file to modify the file.`
+      );
+    }
+    assertFileSyntaxValid(filePath, content);
+  }
 
   if (normalized.endsWith("package.json")) {
     try {
@@ -57,4 +73,27 @@ export async function createFile(
     return `Successfully updated ${filePath} (overwrote existing file).`;
   }
   return `Successfully created ${filePath}.`;
+}
+
+/**
+ * True when the file already exists on disk, its current content is
+ * syntactically valid, and the file is not a protected/config target that
+ * must never be created automatically.
+ */
+async function canKeepExistingValidArtifact(
+  workspace: Workspace,
+  filePath: string,
+  normalizedPath: string,
+): Promise<boolean> {
+  if (normalizedPath.endsWith("package.json") || isProtectedFile(filePath)) {
+    return false;
+  }
+  if (!(await workspace.exists(filePath))) {
+    return false;
+  }
+  const existing = await workspace.read(filePath).catch(() => null);
+  if (existing === null) {
+    return false;
+  }
+  return validateFileSyntax(filePath, existing).valid;
 }

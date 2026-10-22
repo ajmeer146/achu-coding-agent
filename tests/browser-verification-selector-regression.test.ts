@@ -344,4 +344,35 @@ describe("Browser verification selector normalization & truthful outcome regress
       await closeServer(server);
     }
   });
+
+  test("12. Button verification recognizes button-styled CTA anchor tags (a.btn, a.btn-primary)", async () => {
+    const pageWithCta = `<!DOCTYPE html>
+<html>
+<head><title>CTA Page</title></head>
+<body>
+  <div class="hero">
+    <h1>Welcome</h1>
+    <a href="#signup" class="btn-primary">Start Free Trial</a>
+    <button type="submit">Submit Form</button>
+  </div>
+</body>
+</html>`;
+    const { port, server } = await startPage(pageWithCta);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      const summary = await runVerificationSuite(session, `http://localhost:${port}`, [
+        { type: "button", text: "Start Free Trial" },
+        { type: "button", text: "Submit Form" },
+      ]);
+      assert.equal(summary.overallPassed, true, "Both the standard button and CTA anchor button must pass verification");
+      assert.equal(summary.results[0].passed, true);
+      assert.equal(summary.results[1].passed, true);
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
 });

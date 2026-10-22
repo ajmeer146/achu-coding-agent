@@ -100,6 +100,67 @@ describe("Phase 13 Scenario A — Distinct Design Directions", () => {
     assert.equal(type, "landing_page");
   });
 
+  test("A7b: the requested subject decides the product type, not later component keywords", () => {
+    // A signup form is one section of a marketing landing page, not the page
+    // identity — the brief must not be classified as an authentication page.
+    const landing = analyseTaskBrief(
+      "create a responsive landing page for a modern AI SaaS analytics product with pricing, features, testimonials and a signup form"
+    );
+    assert.equal(landing, "landing_page");
+
+    // "analytics" inside the product name must not turn a landing page brief
+    // into a dashboard brief.
+    const landingWithAnalytics = analyseTaskBrief(
+      "create a landing page for an AI analytics platform with a signup form"
+    );
+    assert.equal(landingWithAnalytics, "landing_page");
+
+    // The reverse still holds: an authentication page brief stays an
+    // authentication page brief.
+    const auth = analyseTaskBrief(
+      "create a login page with email validation and a password visibility toggle"
+    );
+    assert.equal(auth, "login_auth");
+
+    // A shop brief stays a shop brief even when other archetypes are named.
+    const shop = analyseTaskBrief(
+      "create an ecommerce store with search, filtering, product details, cart, quantity validation and checkout simulation"
+    );
+    assert.equal(shop, "ecommerce");
+
+    // A portfolio brief stays a portfolio brief.
+    const portfolio = analyseTaskBrief(
+      "create a portfolio website for a freelance photographer with responsive navigation and a contact form"
+    );
+    assert.equal(portfolio, "portfolio");
+  });
+
+  test("A7c: a landing page brief produces landing page sections, not login form sections", () => {
+    const spec = generateDesignSpec(
+      "create a responsive landing page for a modern AI SaaS analytics product with pricing, features, testimonials and a signup form"
+    );
+    assert.equal(spec.productType, "landing_page");
+    const sections = spec.expectedSections.join(" ").toLowerCase();
+    assert.ok(
+      !sections.includes("password") && !sections.includes("login form"),
+      `Landing page must not require login form sections, got: ${spec.expectedSections.join(", ")}`
+    );
+    assert.ok(
+      sections.includes("hero"),
+      `Landing page must require a hero section, got: ${spec.expectedSections.join(", ")}`
+    );
+  });
+
+  test("A7d: a shop brief still produces shop sections", () => {
+    const spec = generateDesignSpec(
+      "create an ecommerce store with search, filtering, product details, cart, quantity validation and checkout simulation"
+    );
+    assert.equal(spec.productType, "ecommerce");
+    const sections = spec.expectedSections.join(" ").toLowerCase();
+    assert.ok(sections.includes("cart"), `Shop spec must require a cart section, got: ${spec.expectedSections.join(", ")}`);
+    assert.ok(sections.includes("product"), `Shop spec must require a products section, got: ${spec.expectedSections.join(", ")}`);
+  });
+
   test("A8: selectDesignDirection returns warm_organic for cafe website", () => {
     const dir = selectDesignDirection("generic_website", "Build a cafe website with warm colours");
     assert.equal(dir, "warm_organic");

@@ -92,8 +92,57 @@ export interface DesignSpec {
 // 1. analyseTaskBrief — infer ProductType from task text
 // ---------------------------------------------------------------------------
 
+/**
+ * Page archetypes that can be named directly as the subject of a request.
+ * The archetype named earliest inside the requested subject phrase wins, so a
+ * component keyword that appears later in the brief never hijacks the type.
+ */
+const SUBJECT_ARCHETYPES: ReadonlyArray<{ type: ProductType; pattern: RegExp }> = [
+  { type: "login_auth", pattern: /\b(login|log[\s-]?in|sign[\s-]?in|signin|sign[\s-]?up|signup|register|registration|authentication|auth|password)\b/ },
+  { type: "portfolio", pattern: /\b(portfolio|showcase|resume|curriculum|vitae)\b/ },
+  { type: "ecommerce", pattern: /\b(e[\s-]?commerce|store|shop|catalog|cart|checkout|marketplace)\b/ },
+  { type: "dashboard", pattern: /\b(dashboard|admin|kpi|analytics|metrics|reporting)\b/ },
+  { type: "blog", pattern: /\b(blog|article|magazine|newsletter|cms)\b/ },
+  { type: "documentation", pattern: /\b(docs|documentation|api\s+reference|developer\s+guide|readme|knowledge\s+base)\b/ },
+  { type: "landing_page", pattern: /\b(landing|marketing|home\s?page|product\s+page|startup\s+page|hero\s+section)\b/ },
+];
+
+/**
+ * Resolves the subject of a request — the noun phrase that follows the
+ * creation verb (e.g. "create a responsive landing page ..." → "a responsive
+ * landing page ..."). Keywords that appear later in the brief describe page
+ * components, not the page itself, so they must not decide the product type.
+ */
+function resolveRequestedSubject(lower: string): string {
+  const match = lower.match(
+    /\b(?:create|build|design|make|generate|develop|scaffold)\s+(?:a|an|the)?\s*([a-z0-9][a-z0-9\s_+,\-]{0,60})/
+  );
+  return match ? match[1] : "";
+}
+
+/** Returns the archetype named earliest inside the requested subject phrase. */
+function resolveSubjectArchetype(subject: string): ProductType | null {
+  let best: { type: ProductType; index: number } | null = null;
+  for (const { type, pattern } of SUBJECT_ARCHETYPES) {
+    const match = pattern.exec(subject);
+    if (!match) continue;
+    if (!best || match.index < best.index) {
+      best = { type, index: match.index };
+    }
+  }
+  return best ? best.type : null;
+}
+
 export function analyseTaskBrief(task: string): ProductType {
   const lower = task.toLowerCase();
+
+  // The requested subject decides the product type. A brief such as
+  // "landing page for a SaaS analytics product with ... a signup form" is a
+  // landing page — the signup form is one of its sections, not its identity.
+  const subjectArchetype = resolveSubjectArchetype(resolveRequestedSubject(lower));
+  if (subjectArchetype) {
+    return subjectArchetype;
+  }
 
   // Ordered from most specific to most generic
   if (/\b(login|sign[\s-]?in|sign[\s-]?up|register|auth|password|forgot\s+password)\b/.test(lower))
