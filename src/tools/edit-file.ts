@@ -16,9 +16,38 @@ function normalizeQuotes(str: string): string {
 }
 
 /**
- * Replaces one exact occurrence of target in source using index slicing.
- * Never uses String.prototype.replace(string, string) to avoid `$` pattern substitution bugs.
+ * If all matching passes fail, find lines in the current file that share
+ * significant keywords with oldText (CSS selectors, IDs, HTML tags,
+ * function names). Returns up to 5 candidates with 1-based line numbers
+ * to help the caller self-correct a stale oldText.
  */
+function findCandidateSuggestions(currentContent: string, oldText: string): string[] {
+  const lines = currentContent.split("\n");
+  // Extract meaningful keywords: CSS class/id selectors, tag names, function names.
+  const keywordSet = new Set<string>();
+  for (const kw of oldText.matchAll(/[.#][A-Za-z0-9_-]+/g)) keywordSet.add(kw[0].slice(1));
+  for (const kw of oldText.matchAll(/<([A-Za-z][A-Za-z0-9]*)\b/g)) keywordSet.add(kw[1].toLowerCase());
+  for (const kw of oldText.matchAll(/(?:function|const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)/g)) keywordSet.add(kw[1]);
+  // Also include capitalised word sequences (component/class names).
+  for (const kw of oldText.matchAll(/\b[A-Z][A-Za-z0-9]+(?:[A-Z][A-Za-z0-9]+)*\b/g)) keywordSet.add(kw[0]);
+  const keywords = [...keywordSet];
+  if (keywords.length === 0) return [];
+
+  const candidates: { line: number; text: string; score: number }[] = [];
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
+    const lower = line.toLowerCase();
+    let score = 0;
+    for (const kw of keywords) {
+      if (lower.includes(kw.toLowerCase())) score++;
+    }
+    if (score > 0) {
+      candidates.push({ line: li + 1, text: line.trim().slice(0, 120), score });
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score || a.line - b.line);
+  return candidates.slice(0, 5).map((c) => `  line ${c.line}: ${c.text} (matched ${c.score} keyword${c.score === 1 ? "" : "s"})`);
+}
 function safeReplaceOnce(source: string, target: string, replacement: string): string {
   const index = source.indexOf(target);
   if (index === -1) return source;
@@ -216,13 +245,18 @@ export async function editFile(
 
     // If all attempts failed, throw informative error with current excerpt
     const excerpt = currentNormalized.slice(0, 400).trim();
+    const suggestions = findCandidateSuggestions(currentNormalized, oldText);
+    const suggestionBlock = suggestions.length > 0
+      ? `\n\nPossible matches in current file (oldText may be stale—read the latest content first):\n${suggestions.join("\n")}`
+      : "";
     throw new Error(
       `Edit ${i + 1} failed: The expected text was not found in ${filePath}.\n` +
       `Current file content begins with:\n` +
       `----------------------------------------\n` +
       `${excerpt}\n` +
       `----------------------------------------\n` +
-      `Please ensure you have read the latest file content and provided sufficient context, or use oldText: "*" to update the entire file.`
+      `Please ensure you have read the latest file content and provided sufficient context, or use oldText: "*" to update the entire file.` +
+      suggestionBlock
     );
   }
 

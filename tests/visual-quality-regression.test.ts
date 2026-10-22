@@ -403,4 +403,124 @@ describe("Phase 13.2 — Measurable visual quality checks (real browser geometry
       await closeServer(server);
     }
   });
+
+  const SVG_FIXED_WIDTH_PAGE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>SVG Fixed Width</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    .hero-svg { width: 600px; height: 400px; }
+  </style>
+</head>
+<body>
+  <main class="main-content"><h1>Hero</h1><svg class="hero-svg"><rect width="100" height="100"/></svg></main>
+</body>
+</html>`;
+
+  const DESKTOP_DRAWER_OVERFLOW_PAGE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Drawer Overflow</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    .drawer { position: fixed; top: 0; right: -50px; width: 400px; height: 100vh; background: #111; }
+  </style>
+</head>
+<body>
+  <main class="main-content"><h1>Drawer</h1><div class="drawer"></div></main>
+</body>
+</html>`;
+
+  const LAYOUT_CORRECTION_PAGE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Layout Correction</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    .wide-img { width: 500px; height: 300px; background: crimson; }
+  </style>
+</head>
+<body>
+  <main class="main-content"><h1>Before</h1><div class="wide-img"></div></main>
+</body>
+</html>`;
+
+  test("10. Mobile SVG with fixed width exceeding viewport is reported", async () => {
+    const { port, server } = await startPage(SVG_FIXED_WIDTH_PAGE);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      const mobile320 = await session.analyzeLayout({ width: 320, height: 568 });
+      assert.equal(mobile320.success, true);
+      if (mobile320.success) {
+        const mediaDefect = mobile320.analysis.defects.find(d => d.type === "media_fixed_width");
+        assert.ok(mediaDefect, `SVG fixed width exceeding 320px viewport must be reported: ${JSON.stringify(mobile320.analysis.defects)}`);
+      }
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  test("11. Desktop fixed-position drawer extending beyond viewport is reported", async () => {
+    const { port, server } = await startPage(DESKTOP_DRAWER_OVERFLOW_PAGE);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      const desktop = await session.analyzeLayout("desktop");
+      assert.equal(desktop.success, true);
+      if (desktop.success) {
+        const fixedDefect = desktop.analysis.defects.find(d => d.type === "fixed_outside_viewport");
+        assert.ok(fixedDefect, `Fixed drawer extending beyond viewport must be reported: ${JSON.stringify(desktop.analysis.defects)}`);
+      }
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  test("12. Successful re-verification after layout correction", async () => {
+    const first = await startPage(LAYOUT_CORRECTION_PAGE);
+    const session = new BrowserSession({ headless: true });
+    let correctedServer: http.Server | undefined;
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${first.port}`);
+
+      // Before correction: wide image causes horizontal overflow on 320px mobile
+      const before = await session.analyzeLayout({ width: 320, height: 568 });
+      assert.equal(before.success, true);
+      if (before.success) {
+        const overflow = before.analysis.defects.find(d => d.type === "horizontal_overflow");
+        assert.ok(overflow, `Wide image should cause horizontal overflow on 320px: ${JSON.stringify(before.analysis.defects)}`);
+      }
+
+      // Simulate CSS correction: make image responsive
+      const correctedHtml = LAYOUT_CORRECTION_PAGE.replace(
+        ".wide-img { width: 500px; height: 300px; background: crimson; }",
+        ".wide-img { width: 100%; max-width: 100%; height: auto; background: crimson; }"
+      );
+      const corrected = await startPage(correctedHtml);
+      correctedServer = corrected.server;
+
+      await session.navigate(`http://localhost:${corrected.port}`);
+
+      // After correction: no horizontal overflow
+      const after = await session.analyzeLayout({ width: 320, height: 568 });
+      assert.equal(after.success, true);
+      if (after.success) {
+        const overflow = after.analysis.defects.find(d => d.type === "horizontal_overflow");
+        assert.ok(!overflow, `After correction, no horizontal overflow should remain: ${JSON.stringify(after.analysis.defects)}`);
+      }
+    } finally {
+      await session.close();
+      await closeServer(first.server);
+      if (correctedServer) await closeServer(correctedServer);
+    }
+  });
 });

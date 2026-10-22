@@ -459,8 +459,9 @@ export class BrowserSession {
    * Runs measurable layout checks against the current page at the requested
    * viewport. These checks are DOM-measurement based only; they do not attempt
    * to interpret screenshot pixels.
+   * @param viewport Preset ("desktop"|"mobile") or explicit {width, height}.
    */
-  async analyzeLayout(viewport: "desktop" | "mobile" = "desktop"): Promise<
+  async analyzeLayout(viewport: "desktop" | "mobile" | { width: number; height: number } = "desktop"): Promise<
     | { success: true; analysis: LayoutAnalysis }
     | { success: false; error: string; recoverable: boolean }
   > {
@@ -470,14 +471,18 @@ export class BrowserSession {
     try {
       await this.setViewport(viewport);
       await this.page.evaluate(() => window.scrollTo(0, 0));
+      // Resolve an explicit viewport name for the layout script + report.
+      const vpName = typeof viewport === "string" ? viewport : `${viewport.width}x${viewport.height}`;
       const layoutScript = `
 (function () {
-  var vp = ${JSON.stringify(viewport)};
+  var vp = ${JSON.stringify(vpName)};
+  var vpWidth = ${typeof viewport === "string" ? (viewport === "mobile" ? 375 : 1280) : viewport.width};
+  var vpHeight = ${typeof viewport === "string" ? (viewport === "mobile" ? 667 : 800) : viewport.height};
   var defects = [];
   var seen = {};
   function push(severity, type, message) {
     var key = type + "|" + message;
-    if (seen[key] || defects.length >= 12) return;
+    if (seen[key] || defects.length >= 16) return;
     seen[key] = true;
     defects.push({ severity: severity, type: type, message: message });
   }
@@ -510,7 +515,7 @@ export class BrowserSession {
       if (p.hasAttribute && p.hasAttribute("inert")) return true;
       var pr = p.getBoundingClientRect();
       var transformed = pcs.transform && pcs.transform !== "none" && pcs.transform !== "matrix(1, 0, 0, 1, 0, 0)";
-      if (transformed && pr.width >= 1 && pr.height >= 1 && (pr.left >= width - 1 || pr.right <= 1)) return true;
+      if (transformed && pr.width >= 1 && pr.height >= 1 && (pr.left >= vpWidth - 1 || pr.right <= 1)) return true;
       p = p.parentElement;
     }
     return false;
@@ -579,6 +584,18 @@ export class BrowserSession {
       }
     }
   }
+  // Fixed-position elements must not extend beyond the viewport edges.
+  var fixedEls = Array.prototype.slice.call(document.querySelectorAll("*"));
+  for (var f = 0; f < fixedEls.length; f++) {
+    var fel = fixedEls[f];
+    if (!isVisible(fel)) continue;
+    var fcs = window.getComputedStyle(fel);
+    if (fcs.position !== "fixed" && fcs.position !== "sticky") continue;
+    var frect = fel.getBoundingClientRect();
+    if (frect.right > width + 2 || frect.left < -2 || frect.bottom > height + 2 || frect.top < -2) {
+      push("warning", "fixed_outside_viewport", 'Fixed/sticky element ' + describe(fel) + " extends beyond the " + width + "x" + height + " viewport (rect: " + Math.round(frect.left) + "," + Math.round(frect.top) + "-" + Math.round(frect.right) + "," + Math.round(frect.bottom) + ").");
+    }
+  }
   var textSelector = "nav a, aside a, aside span, .sidebar *, .nav-link, .nav-links a, header a, button, .btn, .logo";
   var textCandidates = Array.prototype.slice.call(document.querySelectorAll(textSelector));
   for (var j = 0; j < textCandidates.length; j++) {
@@ -593,6 +610,27 @@ export class BrowserSession {
       push(inNav ? "critical" : "warning", "text_overflow", 'Text "' + text.slice(0, 40) + '" in ' + describe(tel) + " overflows its " + tel.clientWidth + "px container by " + (tel.scrollWidth - tel.clientWidth) + "px" + (inNav ? " and can overlap adjacent content" : "") + ".");
     }
   }
+  // Images and SVGs with fixed pixel widths that exceed their container or the
+  // viewport can cause horizontal overflow. Flag img/svg elements whose width
+  // attribute or computed width is a fixed pixel value larger than the viewport
+  // and that lack max-width: 100%.
+  var mediaEls = Array.prototype.slice.call(document.querySelectorAll("img, svg"));
+  for (var m = 0; m < mediaEls.length; m++) {
+    var mel = mediaEls[m];
+    if (!isVisible(mel)) continue;
+    var mcs = window.getComputedStyle(mel);
+    var mrect = mel.getBoundingClientRect();
+    var hasMaxWidth100 = /(^|\\s)100%(?:\\s|$)/.test(mcs.maxWidth || "");
+    var widthAttr = mel.getAttribute ? mel.getAttribute("width") : null;
+    var fixedPxWidth = widthAttr ? parseFloat(widthAttr) : 0;
+    // Also consider computed style width (e.g. from CSS class) when it is a fixed px value
+    var computedWidthStr = mcs.width || "";
+    var computedPxWidth = /^\\d+(?:\\.\\d+)?px$/.test(computedWidthStr) ? parseFloat(computedWidthStr) : 0;
+    var effectiveFixedWidth = Math.max(fixedPxWidth, computedPxWidth);
+    if (mrect.width > 8 && mrect.width > vpWidth && !hasMaxWidth100 && effectiveFixedWidth > 0) {
+      push("warning", "media_fixed_width", 'Media element ' + describe(mel) + " has a fixed width of " + effectiveFixedWidth + "px exceeding the " + vpWidth + "px viewport without max-width: 100%; add responsive sizing.");
+    }
+  }
   var navElements = Array.prototype.slice.call(document.querySelectorAll("nav, aside, [role='navigation'], .sidebar, .navbar, .nav-container"));
   var mainElements = Array.prototype.slice.call(document.querySelectorAll("main, [role='main'], .main-content, .content"));
   for (var n = 0; n < navElements.length; n++) {
@@ -600,8 +638,8 @@ export class BrowserSession {
     if (!isVisible(nav)) continue;
     var navRect = nav.getBoundingClientRect();
     if (navRect.width * navRect.height < 1) continue;
-    for (var m = 0; m < mainElements.length; m++) {
-      var main = mainElements[m];
+    for (var m2 = 0; m2 < mainElements.length; m2++) {
+      var main = mainElements[m2];
       if (!isVisible(main) || nav.contains(main) || main.contains(nav)) continue;
       var mainRect = contentRect(main);
       var overlapWidth = Math.min(navRect.right, mainRect.right) - Math.max(navRect.left, mainRect.left);

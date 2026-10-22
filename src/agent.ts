@@ -224,18 +224,8 @@ function truncateToolResult(value: string): string {
 const VISUAL_METHOD_NOTE =
   "Visual inspection method: DOM layout measurements only. This agent cannot interpret screenshot pixels, so no image-based visual judgment was performed.";
 
-function formatLayoutAnalysis(label: string, analysis: LayoutAnalysis): string {
-  const header = `${label} (${analysis.width}x${analysis.height}):`;
-  if (analysis.defects.length === 0) {
-    return `${header} no measurable layout defects.`;
-  }
-  const lines = analysis.defects.map(d => `  - [${d.severity}] ${d.message}`);
-  return `${header}\n${lines.join("\n")}`;
-}
-
 interface VisualQualityReport {
-  desktop: LayoutAnalysis;
-  mobile: LayoutAnalysis;
+  viewports: Record<string, LayoutAnalysis>;
   critical: LayoutDefect[];
   warnings: LayoutDefect[];
 }
@@ -245,30 +235,52 @@ async function runVisualQualityChecks(session: BrowserSession, baseUrl: string):
     const navResult = await session.navigate(baseUrl);
     if (!navResult.success) return null;
 
-    const desktopResult = await session.analyzeLayout("desktop");
-    const mobileResult = await session.analyzeLayout("mobile");
+    const viewports: Record<string, LayoutAnalysis> = {};
+    const mobileViewports = [{ width: 320, height: 568 }, { width: 375, height: 667 }, { width: 390, height: 844 }];
+    const desktopViewports = [{ width: 1024, height: 768 }, { width: 1280, height: 800 }, { width: 1440, height: 900 }];
+    const allViewports = [...mobileViewports, ...desktopViewports];
+    for (const vp of allViewports) {
+      const label = `${vp.width}x${vp.height}`;
+      try {
+        const result = await session.analyzeLayout(vp);
+        if (result.success) {
+          viewports[label] = result.analysis;
+        }
+      } catch {
+        // Best-effort per viewport; skip failures.
+      }
+    }
     try { await session.setViewport("desktop"); } catch { /* viewport reset is best-effort */ }
 
-    if (!desktopResult.success || !mobileResult.success) return null;
-
-    const all = [...desktopResult.analysis.defects, ...mobileResult.analysis.defects];
+    const allDefects = Object.values(viewports).flatMap(a => a.defects);
     return {
-      desktop: desktopResult.analysis,
-      mobile: mobileResult.analysis,
-      critical: all.filter(d => d.severity === "critical"),
-      warnings: all.filter(d => d.severity === "warning"),
+      viewports,
+      critical: allDefects.filter(d => d.severity === "critical"),
+      warnings: allDefects.filter(d => d.severity === "warning"),
     };
   } catch {
     return null;
   }
 }
 
+function formatLayoutAnalysis(label: string, analysis: LayoutAnalysis): string {
+  const lines = [`${label} (${analysis.width}x${analysis.height}):`];
+  for (const d of analysis.defects) {
+    lines.push(`  [${d.severity}] ${d.type}: ${d.message}`);
+  }
+  if (analysis.defects.length === 0 && !analysis.horizontalOverflow) {
+    lines.push("  no measurable layout defects");
+  }
+  return lines.join("\n");
+}
+
 function formatVisualQualityReport(report: VisualQualityReport): string {
-  return [
-    formatLayoutAnalysis("Desktop layout", report.desktop),
-    formatLayoutAnalysis("Mobile layout", report.mobile),
-    VISUAL_METHOD_NOTE,
-  ].join("\n");
+  const parts: string[] = [];
+  for (const [label, analysis] of Object.entries(report.viewports)) {
+    parts.push(formatLayoutAnalysis(label, analysis));
+  }
+  parts.push(VISUAL_METHOD_NOTE);
+  return parts.join("\n");
 }
 
 export function stripEnclosingQuotes(command: string): string {
@@ -1870,14 +1882,18 @@ export function generateRecoveryHint(state: AgentState): string | null {
       : `\n- If elements are missing or styled incorrectly, edit the React/HTML files with 'edit_file'.`;
     repeatedHint += `\n\nBROWSER VERIFICATION GUIDANCE:${failedAssertions}\n- Ensure the application server is running and ready.\n- Re-run browser_verify with target criteria that match the page's actual DOM.${fixGuidance}`;
     if (/measurable visual defects/i.test(err.errorMessage ?? "")) {
-      repeatedHint += `\n- The content assertions passed but measurable layout defects were reported (see error text). Apply targeted CSS/HTML fixes for each listed defect (overflow, clipping, overlap, text overflow, touch targets) and re-run browser_verify. Do NOT claim visual success while these defects are reported.`;
+      repeatedHint += `\n- The content assertions passed but measurable layout defects were reported (see error text). Apply targeted CSS/HTML fixes for each listed defect and re-run browser_verify. Do NOT claim visual success while these defects are reported.` +
+        `\n- Responsive correction guidance: give images/SVGs/containers 'max-width: 100%; height: auto;' and avoid fixed px widths wider than the smallest tested viewport (320px).` +
+        `\n- For horizontal overflow/clipping: set 'box-sizing: border-box' globally, use 'overflow-x: hidden' only on the specific overflowing wrapper (never to hide real content), 'min-width: 0' on flex/grid children, and 'flex-shrink: 1'.` +
+        `\n- For fixed/sticky drawers, navbars, or modals extending outside the viewport: anchor them with 'left: 0'/'right: 0' or constrain 'width: min(100%, <desired>px)'.` +
+        `\n- Re-test at 320x568, 375x667, and 390x844 in addition to desktop widths before claiming the fix works.`;
     }
     if (/placeholder/i.test(err.errorMessage ?? "")) {
       repeatedHint += `\n- Placeholder visuals were detected. Replace placeholder text/services and any large single-letter SVG graphic with a real multi-shape inline SVG illustration or product imagery. Do not rename or hide the element to pass the check.`;
     }
   }
   if (err.command === "edit_file") {
-    repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- To update the file, either read the latest content with 'read_file' first to get exact matching context, or specify 'oldText: "*"' with your new content in 'edit_file' to update the file directly.\n- If the file does not exist on disk (ENOENT / "does not exist"), do NOT retry edit_file. Use create_file with the complete corrected content.`;
+    repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- The "expected text was not found" error means your oldText is stale. Call 'read_file' on the target file and copy an exact, current excerpt for oldText. If the error lists "Possible matches in current file", use those line numbers to locate the real text.\n- Do NOT retry edit_file with the same oldText. If the edit is large or context is hard to match, use 'oldText: "*"' with the complete new content.\n- Prefer small, uniquely anchored edits over large multi-line blocks.\n- If the file does not exist on disk (ENOENT / "does not exist"), do NOT retry edit_file. Use create_file with the complete corrected content.`;
   }
   if (err.errorMessage?.includes("TRUNCATED_OR_INCOMPLETE_OUTPUT") || err.errorMessage?.includes("SYNTAX_VALIDATION_ERROR")) {
     repeatedHint += `\n\nTRUNCATION & SYNTAX ERROR RECOVERY GUIDANCE:\n- The file was truncated or contains unclosed/incomplete syntax blocks.\n- Error details: ${err.errorMessage}\n- Do NOT write empty or partial files.\n- A rejected create_file writes nothing to disk. If the file does not exist, call create_file again with the complete corrected content. Never use edit_file on a file that does not exist.\n- If the file already exists, use 'edit_file' with sufficient surrounding context or append the missing closing braces/rules to complete the file.\n- Ensure all blocks (CSS rules, HTML tags, JS functions) are properly terminated before proceeding.`;
@@ -3415,7 +3431,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           if (visualReport) {
             visualText = visualReport.warnings.length > 0
               ? `\nMeasurable layout checks (non-blocking warnings):\n${visualReport.warnings.slice(0, 5).map(w => `- ${w.message}`).join("\n")}\n${VISUAL_METHOD_NOTE}`
-              : `\nMeasurable layout checks: no defects found at desktop and mobile viewports. ${VISUAL_METHOD_NOTE}`;
+              : `\nMeasurable layout checks: no defects found across ${Object.keys(visualReport.viewports).length} viewports (320-1440px). ${VISUAL_METHOD_NOTE}`;
           } else {
             visualText = `\nMeasurable layout checks could not be completed. ${VISUAL_METHOD_NOTE}`;
           }
@@ -4190,9 +4206,29 @@ export async function runAgent(
         if (madeProgress) { lastCompletedStepCount = currentCompletedCount; state.recoveryAttempts = 0; }
         const runnableSteps = state.currentPlan.filter(s => s.status === "pending" && (!s.dependsOn || s.dependsOn.length === 0 || s.dependsOn.every(depId => { const dep = state.currentPlan.find(d => d.id === depId); return dep && dep.status === "completed"; })));
         let repeatedSameFailure = false;
-        if (state.lastError) { const failureKey = `${state.lastError.command}:${state.lastError.exitCode}:${(state.lastError.errorMessage ?? "").slice(0, 160)}`; const repeatedCount = state.repeatedFailures.get(failureKey) || 0; state.repeatedFailures.set(failureKey, repeatedCount + 1); if (repeatedCount + 1 >= 3) repeatedSameFailure = true; }
+        if (state.lastError) {
+          const failureKey = `${state.lastError.command}:${state.lastError.exitCode}:${(state.lastError.errorMessage ?? "").slice(0, 160)}`;
+          const repeatedCount = state.repeatedFailures.get(failureKey) || 0;
+          state.repeatedFailures.set(failureKey, repeatedCount + 1);
+          if (repeatedCount + 1 >= 3) repeatedSameFailure = true;
+        }
+        // Repeated identical edit_file failures indicate stale edit context
+        // (the model's oldText doesn't match the current file). These are
+        // correctable by re-reading the file, so they must NOT consume the
+        // recovery budget or terminal-fail by themselves. Only non-edit
+        // failures, or 5+ identical edit_file failures, terminal-fail.
+        if (state.lastError?.command === "edit_file") {
+          const editFailureKey = `edit_file:${state.lastError.exitCode}:${(state.lastError.errorMessage ?? "").slice(0, 160)}`;
+          const editCount = state.repeatedFailures.get(editFailureKey) || 0;
+          if (editCount >= 2) {
+            // Same edit has already failed: don't burn another recovery attempt.
+            // Give the model fresh attempts to read_file and correct oldText.
+            state.recoveryAttempts = Math.min(state.recoveryAttempts, maxRecoveryAttempts - 1);
+          }
+        }
         const recoveryExhausted = state.recoveryAttempts >= maxRecoveryAttempts;
-        const terminalFailure = recoveryExhausted || repeatedSameFailure;
+        const isRepeatedEditFailure = repeatedSameFailure && state.lastError?.command === "edit_file";
+        const terminalFailure = recoveryExhausted || (repeatedSameFailure && !isRepeatedEditFailure) || (isRepeatedEditFailure && (state.repeatedFailures.get(`edit_file:${state.lastError?.exitCode ?? 0}:${(state.lastError?.errorMessage ?? "").slice(0, 160)}`) || 0) >= 5);
 
         const isBrowserOrInfraFailure = Boolean(
           state.lastError?.command === "browser_verify" ||

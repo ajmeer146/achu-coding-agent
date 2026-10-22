@@ -21,17 +21,11 @@ import { getAppRuntime, isUrlServing, isProcessAlive, ensureAppServer, clearAppR
 import { createSessionManager } from "./session/session-manager.js";
 import { SessionData, SessionMetadata } from "./session/session-types.js";
 import { sanitizeUserFacingError } from "./utils/error-sanitizer.js";
+import { resolveAgentPackageVersion } from "./utils/package-version.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const AGENT_PACKAGE_VERSION = (() => {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-    return String(pkg.version ?? "1.0.0");
-  } catch {
-    return "1.0.0";
-  }
-})();
+const AGENT_PACKAGE_VERSION = resolveAgentPackageVersion(__dirname);
 
 function loadLocalEnv(): void {
   const candidateEnvPaths = [
@@ -772,7 +766,7 @@ wss.on("connection", (ws, req) => {
 
   sendEvent(ws, "connected", {
     message: "Connected to Achu Workspace",
-    companionVersion: "1.0.0",
+    companionVersion: AGENT_PACKAGE_VERSION,
     mode: "local",
   });
 

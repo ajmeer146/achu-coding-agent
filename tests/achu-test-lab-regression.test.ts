@@ -336,6 +336,53 @@ describe("Achu Test Lab Defect Regression Tests", () => {
     assert.ok(!hint?.includes("Stop-Process"));
   });
 
+  test("5b. Stale edit_file recovery hint demands a re-read and forbids retrying the same oldText", () => {
+    const editError = "Edit 1 failed: The expected text was not found in index.html.\nPossible matches in current file (oldText may be stale—read the latest content first):\n  line 12: <section class=\"hero\">";
+    const state: AgentState = {
+      requestedVerification: null,
+      lastVerification: null,
+      verificationPassed: false,
+      stopReason: null,
+      commandHistory: [],
+      stepsTaken: new Map(),
+      completedTasks: new Set(),
+      currentPlan: [{ id: "1", description: "Edit hero section", status: "failed", toolType: "edit_file" }],
+      phase: "recover",
+      recoveryAttempts: 2,
+      lastError: { command: "edit_file", exitCode: 1, stdout: "", stderr: "", errorMessage: editError },
+      repeatedFailures: new Map([["edit_file:1:" + editError.slice(0, 160), 2]]),
+      browserSession: null,
+      verificationMemory: new Map(),
+      appUrl: null,
+      appProcess: null,
+      browserVerificationAttempts: 0,
+      maxBrowserVerificationAttempts: 3,
+      browserVerificationRequested: false,
+      browserVerificationPassed: false,
+      verificationIsStrong: false,
+      recentToolCalls: [],
+      projectState: { hasExistingProject: true, projectType: "static", existingFiles: ["index.html"], framework: null, isFollowUpTask: false },
+      snapshotManager: null as any,
+    };
+
+    const hint = generateRecoveryHint(state);
+    assert.ok(hint !== null);
+    assert.ok(hint?.includes("Do NOT retry edit_file with the same oldText"), "hint must forbid repeating the stale oldText");
+    assert.ok(hint?.includes("Possible matches"), "hint must point at candidate matches from the error");
+    assert.ok(hint?.includes("read_file"), "hint must require re-reading the current file");
+  });
+
+  test("5c. Recovery loop exempts repeated edit_file failures from the generic terminal-failure cap", async () => {
+    const { runAgent } = await import("../src/agent.js");
+    const fnStr = runAgent.toString();
+    assert.ok(fnStr.includes("isRepeatedEditFailure"), "recovery loop must distinguish repeated edit_file failures");
+    assert.ok(
+      fnStr.includes("maxRecoveryAttempts-1") || fnStr.includes("maxRecoveryAttempts - 1"),
+      "repeated edit_file failures must not consume the recovery budget"
+    );
+    assert.ok(fnStr.includes("edit_file:"), "recovery loop must track edit_file failure keys separately");
+  });
+
   test("6. Safety policy: broad process killing commands are blocked", () => {
     const dangerousCommands = [
       'Get-Process | Where-Object {$_.ProcessName -eq "node"} | Stop-Process -Force',

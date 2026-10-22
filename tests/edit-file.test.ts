@@ -111,3 +111,52 @@ test("editFile normalizes line endings", async () => {
   
   await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
+
+test("editFile stale-context mismatch reports candidate suggestions", async () => {
+  const dir = await makeTempDir("edit-stale");
+  const ws = new Workspace(dir);
+  
+  await ws.write("styles.css", ".hero { color: red; }\n.navbar { background: blue; }\n");
+  
+  // oldText references .hero with different property value - keyword "hero" matches existing line
+  await assert.rejects(
+    editFile(ws, "styles.css", [{ oldText: ".hero { color: green; }", newText: ".hero { color: green; }" }]),
+    /Possible matches in current file/,
+    "Should report candidate suggestions when oldText is stale"
+  );
+  
+  await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+});
+
+test("editFile indentation-tolerant matching succeeds", async () => {
+  const dir = await makeTempDir("edit-indent");
+  const ws = new Workspace(dir);
+  
+  await ws.write("styles.css", "  .hero {\n      color: red;\n    }\n");
+  
+  // oldText has different indentation than the file, but same content
+  await editFile(ws, "styles.css", [{ oldText: ".hero {\ncolor: red;\n}", newText: ".hero {\ncolor: blue;\n}" }]);
+  
+  const content = await ws.read("styles.css");
+  assert.match(content, /color: blue;/);
+  
+  await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+});
+
+test("editFile preserves unrelated file content on rejected edit", async () => {
+  const dir = await makeTempDir("edit-preserve");
+  const ws = new Workspace(dir);
+  
+  const original = "header { color: red; }\n.main { padding: 1rem; }\nfooter { color: blue; }\n";
+  await ws.write("styles.css", original);
+  
+  await assert.rejects(
+    editFile(ws, "styles.css", [{ oldText: "nonexistent", newText: "replacement" }]),
+    /The expected text was not found/
+  );
+  
+  const content = await ws.read("styles.css");
+  assert.equal(content, original, "Unrelated content must be preserved");
+  
+  await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+});
