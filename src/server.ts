@@ -24,6 +24,14 @@ import { sanitizeUserFacingError } from "./utils/error-sanitizer.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const AGENT_PACKAGE_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    return String(pkg.version ?? "1.0.0");
+  } catch {
+    return "1.0.0";
+  }
+})();
 
 function loadLocalEnv(): void {
   const candidateEnvPaths = [
@@ -196,7 +204,7 @@ app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
     service: "achu-coding-agent",
-    version: "1.0.0",
+    version: AGENT_PACKAGE_VERSION,
     companionMode: "local",
     timestamp: Date.now(),
     uptime: process.uptime(),
@@ -207,7 +215,7 @@ app.get("/api/health", (_req, res) => {
   res.json({
     status: "ok",
     service: "achu-coding-agent",
-    version: "1.0.0",
+    version: AGENT_PACKAGE_VERSION,
     companionMode: "local",
     timestamp: Date.now(),
     uptime: process.uptime(),
@@ -243,7 +251,7 @@ app.get("/api/companion/status", (_req, res) => {
   res.json({
     status: "ok",
     service: "achu-coding-agent",
-    version: "1.0.0",
+    version: AGENT_PACKAGE_VERSION,
     companionMode: "local",
     activeTaskId: runningTask?.id || null,
     runningCount: Array.from(activeTasks.values()).filter(t => t.status === "RUNNING").length,
