@@ -42,7 +42,7 @@ test("AgentTaskPayloadSchema validates maxRecoveryAttempts within 0-5", async ()
   
   // Default value
   const defaultVal = AgentTaskPayloadSchema.parse({ task: "test", workspaceRoot: "/tmp" });
-  assert.equal(defaultVal.maxRecoveryAttempts, 3);
+  assert.equal(defaultVal.maxRecoveryAttempts, 5);
   
   // Invalid values - should throw
   assert.throws(() => AgentTaskPayloadSchema.parse({ task: "test", workspaceRoot: "/tmp", maxRecoveryAttempts: -1 }), /maxRecoveryAttempts/);

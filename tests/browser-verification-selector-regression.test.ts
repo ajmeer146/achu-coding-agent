@@ -13,6 +13,7 @@ import {
   computeVerificationOverallPassed,
   signatureForTarget,
   mergeVerificationTargets,
+  normalizeProvidedVerificationTargets,
   isCriteriaDefectResult,
   VerificationTarget,
   BrowserVerificationSummary,
@@ -493,5 +494,85 @@ describe("Browser verification selector normalization & truthful outcome regress
       await session.close();
       await closeServer(server);
     }
+  });
+
+  test("16. Select targets verify dropdowns and reject missing dropdowns", async () => {
+    const page = `<!DOCTYPE html>
+<html>
+<head><title>Catalog</title></head>
+<body>
+  <h1>Catalog</h1>
+  <select id="sortSelect" name="sort">
+    <option value="featured">Featured</option>
+    <option value="price">Price</option>
+  </select>
+</body>
+</html>`;
+    const { port, server } = await startPage(page);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+      const passing = await runVerificationSuite(session, `http://localhost:${port}`, [
+        { type: "select", selector: "#sortSelect" },
+      ]);
+      assert.equal(passing.overallPassed, true, "An existing dropdown with options must pass verification");
+      assert.match(passing.results[0].actual ?? "", /2 option/);
+
+      const missing = await runVerificationSuite(session, `http://localhost:${port}`, [
+        { type: "select", selector: "#noSuchSelect" },
+      ]);
+      assert.equal(missing.overallPassed, false, "A missing dropdown must fail verification");
+      assert.match(missing.results[0].error ?? "", /not found/i);
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+  test("17. Structural failures are re-checked live, not persisted as literal targets", () => {
+    const outstanding = new Map<string, string>();
+    const failedSummary: BrowserVerificationSummary = {
+      overallPassed: false,
+      results: [
+        {
+          passed: false,
+          target: { type: "text", text: "Page runtime check" },
+          error: "TypeError: Cannot read properties of undefined",
+          structural: true,
+        },
+        { passed: true, target: { type: "heading", text: "NovaMart" } },
+      ],
+    };
+    const failedOutcome = applyVerificationOutcome(outstanding, failedSummary);
+    assert.equal(failedOutcome.overallPassed, false, "A live runtime defect must still block this attempt");
+    assert.equal(outstanding.size, 0, "Structural checks must not become outstanding literal text targets");
+
+    const fixedOutcome = applyVerificationOutcome(outstanding, {
+      overallPassed: true,
+      results: [{ passed: true, target: { type: "heading", text: "NovaMart" } }],
+    });
+    assert.equal(fixedOutcome.overallPassed, true, "A fixed live check must allow the next attempt to pass");
+  });
+
+  test("18. Task-derived assertions stay required while invented extras are advisory by default", () => {
+    const taskTargets: VerificationTarget[] = [
+      { type: "input", selector: 'input[type="search"]', required: true },
+      { type: "button", text: "cart", required: true },
+    ];
+    const provided: VerificationTarget[] = [
+      { type: "button", text: "Cart" },
+      { type: "input", placeholder: "real-time search" },
+      { type: "link", text: "Checkout" },
+      { type: "text", text: "Free shipping", required: true },
+    ];
+    const normalized = normalizeProvidedVerificationTargets(provided, taskTargets);
+    assert.equal(normalized[0].required, true, "A check matching a task-derived assertion must stay required");
+    assert.equal(normalized[1].required, false, "An invented check must be advisory even without an explicit flag");
+    assert.equal(normalized[2].required, false, "Invented links must not block verification");
+    assert.equal(normalized[3].required, true, "An explicit required:true must be honored");
+
+    const merged = mergeVerificationTargets(taskTargets, normalized);
+    assert.equal(merged.filter(t => signatureForTarget(t) === signatureForTarget(taskTargets[1])).length, 1);
+    assert.equal(merged.find(t => signatureForTarget(t) === signatureForTarget(taskTargets[1]))?.required, true);
   });
 });

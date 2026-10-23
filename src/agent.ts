@@ -24,7 +24,7 @@ import {
 import { navigate } from "./browser/browser-tools.js";
 import { BrowserSession, type LayoutAnalysis, type LayoutDefect } from "./browser/browser-session.js";
 import { detectStartCommand, spawnAppProcess, waitForReadiness, stopAppProcess, getAppUrl, readAppOutput, cleanupAppOutputFile, hasAppProcessExited, extractUrlFromOutput, extractPortFromOutput, AppProcessInfo, detachAppProcess, isServerStartupCommand, isUrlServing, probePortRange, discoverNewServerUrl, getAppRuntime, saveAppRuntime, clearAppRuntime, resolveProjectEntryUrl, isProcessAlive, allocateAvailablePort, isPortAvailable, replacePortInCommand, detectPackageManager } from "./tools/app-lifecycle.js";
-import { verifyTextExists as verify_text, verifyHeadingExists as verify_heading, verifyInputExists as verify_input, verifyLinkExists as verify_link, runVerificationSuite, generateVerificationTargetsFromTask, applyVerificationOutcome, isCriteriaDefectResult, mergeVerificationTargets, signatureForTarget, VerificationTarget } from "./browser/browser-verification.js";
+import { verifyTextExists as verify_text, verifyHeadingExists as verify_heading, verifyInputExists as verify_input, verifyLinkExists as verify_link, runVerificationSuite, generateVerificationTargetsFromTask, applyVerificationOutcome, isCriteriaDefectResult, mergeVerificationTargets, normalizeProvidedVerificationTargets, signatureForTarget, VerificationTarget } from "./browser/browser-verification.js";
 import { open_browser, close_browser, inspect_page } from "./browser/browser-tools.js";
 import { loadSessionState, saveSessionState } from "./session/session-persistence.js";
 import { SessionState } from "./session/session-types.js";
@@ -193,7 +193,7 @@ export interface ExecutionLedger {
 }
 
 const DEFAULT_MAX_STEPS = 30;
-const DEFAULT_MAX_RECOVERY_ATTEMPTS = 3;
+const DEFAULT_MAX_RECOVERY_ATTEMPTS = 5;
 const MAX_OUTPUT = 12000;
 const MAX_TOOL_RESULT_SIZE = 1024 * 1024;
 
@@ -220,7 +220,7 @@ const AGENT_TOOLS: Array<{ type: "function"; function: { name: string; descripti
   { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "open_browser", description: "Open a browser session for live preview verification.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "close_browser", description: "Close the browser session.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-  { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks expected text, headings, buttons, inputs, links, routes, and click/form interactions. Provide optional baseUrl and a targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Verification targets. Use type=interaction (click) with expectedTextAfter/expectedUrlAfter/expectedSelectorAfter to prove a control changes state. Use type=form with inputValue and expectedTextAfter to submit a form.", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "link", "route", "interaction", "form"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" }, action: { type: "string", enum: ["click", "type", "submit"], description: "Interaction action for an interaction target." }, inputValue: { type: "string", description: "Value to type for a form target." }, expectedTextAfter: { type: "string", description: "Text expected in the page after the action." }, expectedUrlAfter: { type: "string", description: "URL fragment expected after the action." }, expectedSelectorAfter: { type: "string", description: "Element selector expected to appear after the action." } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
+  { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks expected text, headings, buttons, inputs, dropdowns, links, routes, and click/form interactions. Provide optional baseUrl and a targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Verification targets. Use type=interaction (click) with expectedTextAfter/expectedUrlAfter/expectedSelectorAfter to prove a control changes state. Use type=form with inputValue and expectedTextAfter to submit a form. Use type=select with a selector to verify a dropdown.", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "select", "link", "route", "interaction", "form"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" }, action: { type: "string", enum: ["click", "type", "submit"], description: "Interaction action for an interaction target." }, inputValue: { type: "string", description: "Value to type for a form target." }, expectedTextAfter: { type: "string", description: "Text expected in the page after the action." }, expectedUrlAfter: { type: "string", description: "URL fragment expected after the action." }, expectedSelectorAfter: { type: "string", description: "Element selector expected to appear after the action." } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "take_screenshot", description: "Captures a PNG screenshot of the current browser page for human review. Returns only the image size; the agent cannot visually interpret screenshot pixels. Use inspect_visual_quality for measurable layout checks.", parameters: { type: "object", properties: { viewport: { type: "string", enum: ["desktop", "mobile"], description: "Optional viewport to capture: 'desktop' (1280x800) or 'mobile' (375x667)." } }, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "inspect_visual_quality", description: "Runs measurable layout checks (horizontal overflow, clipped interactive elements, navigation overlap, text overflow, small touch targets) at desktop and mobile viewports. Use after browser_verify to find real layout defects. Does not interpret screenshot pixels.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
 ];
@@ -2455,12 +2455,13 @@ LIVE PREVIEW VERIFICATION (Phase 19):
   3. browser_verify: Verify the running application (checks text, headings, buttons, inputs, links, routes)
   4. close_browser: Close the browser session when done
   5. stop_app: Stop the development server when done
-- Use browser_verify with specific targets array for precise checks (type: text|heading|button|input|link|route|interaction|form)
+- Use browser_verify with specific targets array for precise checks (type: text|heading|button|input|select|link|route|interaction|form)
   - For working controls, use type=interaction with text or selector plus expectedTextAfter/expectedUrlAfter/expectedSelectorAfter to prove the click changes state.
   - For forms, use type=form with a submit button (text), inputValue and expectedTextAfter feedback.
+  - For dropdowns, use type=select with a selector (e.g. #sortSelect).
   - Only these type values are valid; never invent other target types.
-  - Assertions derived from the user's task are required (omit "required" or set true). Mark a target "required": false only when you invented it speculatively and the task does not actually require it; optional failures are reported as warnings and do not block completion. If a required assertion fails, fix the page or correct that target's criteria instead of omitting it.
-- Browser verification retries up to 3 times on failure before reporting failure
+  - Checks derived from the user's task are always required and cannot be downgraded. Extra checks you invent are advisory by default (reported as optional warnings) unless you set "required": true. Do not rewrite working HTML merely to satisfy a speculative assertion you added; correct or drop the assertion instead. If a required assertion fails, fix the real page defect.
+- Browser verification retries up to 5 times on failure before reporting failure. Each retry must fix a real defect or correct an optional assertion; do not repeat the same failing check unchanged.
 - Only stop processes you own (tracked by PID) - never kill unrelated processes
 - CRITICAL: After start_app succeeds, it returns the application URL (e.g., "App started and ready at http://localhost:5173"). You MUST use this exact URL for all subsequent navigate and browser_verify calls. Do NOT assume the port (e.g., do not use port 3000 unless start_app returns it).
 - The browser_verify tool auto-detects the base URL from the running app process if not provided explicitly.
@@ -2682,7 +2683,7 @@ const schemas = {
   browser_verify: z.object({
     baseUrl: z.string().optional(),
     targets: z.array(z.object({
-      type: z.enum(["text", "heading", "button", "input", "link", "route", "interaction", "form"]),
+      type: z.enum(["text", "heading", "button", "input", "select", "link", "route", "interaction", "form"]),
       text: z.string().optional(),
       url: z.string().optional(),
       selector: z.string().optional(),
@@ -3378,11 +3379,19 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         if (!baseUrl) return "No base URL available. Start app first.";
         // An explicitly provided empty targets array is treated the same as no
         // targets: derive assertions from the plan instead of trivially passing.
-        const providedTargets = Array.isArray(args.targets) ? (args.targets as VerificationTarget[]) : null;
+        const providedTargets = Array.isArray(args.targets) ? (args.targets as VerificationTarget[]) : [];
         const promptForTargets = [state.taskPrompt, state.currentPlan.map(s => s.description).join(" ")].filter(Boolean).join(" ");
-        const baseTargets = providedTargets && providedTargets.length > 0
-          ? providedTargets
-          : generateVerificationTargetsFromTask(promptForTargets);
+        // Task-derived checks are authoritative requirements. Extra checks the
+        // model invents are advisory by default: they are still executed and
+        // reported, but a failure does not block completion unless the model
+        // explicitly marks that target "required": true. This prevents the
+        // agent from rewriting a working page just to satisfy a speculative
+        // assertion it added itself.
+        const taskTargets = generateVerificationTargetsFromTask(promptForTargets).map(
+          target => ({ ...target, required: true as const })
+        );
+        const normalizedProvided = normalizeProvidedVerificationTargets(providedTargets, taskTargets);
+        const baseTargets = mergeVerificationTargets(taskTargets, normalizedProvided);
         // Always re-run assertions that failed in earlier attempts. The model
         // may supply a smaller target list on retry; without this merge the
         // recorded failure could never be cleared and verification would loop
@@ -3409,6 +3418,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         const outcome = applyVerificationOutcome(failedTargets, summary);
         // Keep the recorded target objects in sync with the failure map.
         for (const result of summary.results) {
+          if (result.structural) continue;
           const signature = signatureForTarget(result.target);
           if (result.passed) {
             failedTargetObjects.delete(signature);
@@ -3438,6 +3448,12 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
                 .join(", ");
               errorText += `\nPage inputs: ${inputEvidence}`;
             }
+            if (summary.pageInfo.buttons && summary.pageInfo.buttons.length > 0) {
+              errorText += `\nPage buttons: ${summary.pageInfo.buttons.slice(0, 10).map(b => `"${b}"`).join(", ")}`;
+            }
+            if (summary.pageInfo.links && summary.pageInfo.links.length > 0) {
+              errorText += `\nPage links: ${summary.pageInfo.links.slice(0, 10).map(l => `"${l}"`).join(", ")}`;
+            }
           }
           const lines = summary.results.map(r =>
             r.passed
@@ -3457,12 +3473,33 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           const criteriaNote = summary.results.some(r => !r.passed && isCriteriaDefectResult(r))
             ? `\nThis is a deterministic verification-criteria error, not a page defect: do NOT edit or rewrite source files in response. Re-run browser_verify with corrected target fields (use "selector" for CSS like #email or input[type="email"]; use "inputType" for semantic types like email/password).`
             : "";
+          const roleMismatch = summary.results.find(r => {
+            if (r.passed || !r.target.text) return false;
+            const text = r.target.text.toLowerCase();
+            const buttons = summary.pageInfo?.buttons ?? [];
+            const links = summary.pageInfo?.links ?? [];
+            if (r.target.type === "link" && buttons.some(b => b.toLowerCase().includes(text))) return true;
+            if (r.target.type === "button" && links.some(l => l.toLowerCase().includes(text))) return true;
+            return false;
+          });
+          const roleNote = roleMismatch
+            ? `\n"${roleMismatch.target.text}" exists under a different role than the target type. Correct that target's type to match the page instead of rewriting working HTML.`
+            : "";
           const optionalNote = `\nIf a failed assertion is not a real user requirement (for example a link or element you added speculatively), resend that exact target with "required": false so it is verified and reported as an optional warning. Never silently omit a failed assertion; if it is a real requirement, fix the page instead.`;
+          const failedRequired = summary.results.filter(r => !r.passed && r.target.required !== false);
+          const actionNote = failedRequired.length > 0
+            ? `\nFix these required failures:\n- ${failedRequired
+                .map(r => `${r.target.type}${r.target.text ? ` "${r.target.text}"` : ""}: ${r.error || r.actual}`)
+                .join("\n- ")}\n`
+            : "";
+          const svgPathHint = failedRequired.some(r => /<path> attribute d|Expected number/i.test(r.error || ""))
+            ? `\nMalformed SVG path data: copy the numeric fragment quoted in the error and use search_code with that fragment to locate the exact file and line. Replace the entire d attribute with valid path data instead of guessing which SVG is broken.`
+            : "";
 
           if (state.browserVerificationAttempts >= state.maxBrowserVerificationAttempts) {
-            return `Browser verification failed after ${state.browserVerificationAttempts} attempts at ${baseUrl}:\n${lines.join("\n")}${errorText}${outstandingNote}${criteriaNote}${optionalNote}`;
+            return `Browser verification failed after ${state.browserVerificationAttempts} attempts at ${baseUrl}:${actionNote}${svgPathHint}\n${lines.join("\n")}${errorText}${outstandingNote}${criteriaNote}${roleNote}${optionalNote}`;
           }
-          return `Browser verification failed (attempt ${state.browserVerificationAttempts}/${state.maxBrowserVerificationAttempts}) at ${baseUrl}:\n${lines.join("\n")}${errorText}${outstandingNote}${criteriaNote}${optionalNote}`;
+          return `Browser verification failed (attempt ${state.browserVerificationAttempts}/${state.maxBrowserVerificationAttempts}) at ${baseUrl}:${actionNote}${svgPathHint}\n${lines.join("\n")}${errorText}${outstandingNote}${criteriaNote}${roleNote}${optionalNote}`;
         }
 
           const lines = summary.results.map(r =>
@@ -3791,7 +3828,7 @@ export async function runAgent(
       appUrl: null,
       appProcess: null,
       browserVerificationAttempts: 0,
-      maxBrowserVerificationAttempts: 3,
+      maxBrowserVerificationAttempts: 5,
       browserVerificationRequested: hasBrowserVerifyStep,
       browserVerificationPassed: false,
       browserVerificationFailedTargets: new Map(),
@@ -4046,7 +4083,8 @@ export async function runAgent(
       } else {
         const tName = toolCall.function.name;
         const isInspection = (tName === "read_file" || tName === "list_directory" || tName === "search_code") && !isToolResultFailure(tName, result);
-        if (!isInspection) {
+        const isInvalidToolArguments = result.startsWith("Tool error: Invalid arguments for");
+        if (!isInspection && !isInvalidToolArguments) {
           stepsWithoutPlanProgress++;
           if (stepsWithoutPlanProgress === 3 || stepsWithoutPlanProgress === 5) {
             const nextPlanStep = state.currentPlan.find(s => s.status === "running") ||
@@ -4187,7 +4225,16 @@ export async function runAgent(
         }
         const currentCompletedCount = state.currentPlan.filter(s => s.status === "completed").length;
         const madeProgress = currentCompletedCount > lastCompletedStepCount;
-        if (!madeProgress) state.recoveryAttempts += 1; else { state.recoveryAttempts = 0; lastCompletedStepCount = currentCompletedCount; }
+        // Invalid tool arguments are a formatting mistake the model can correct
+        // immediately; they must not consume the recovery budget or the model
+        // never gets a chance to run a valid verification.
+        const isInvalidToolArguments = result.startsWith("Tool error: Invalid arguments for");
+        if (madeProgress) {
+          state.recoveryAttempts = 0;
+          lastCompletedStepCount = currentCompletedCount;
+        } else if (!isInvalidToolArguments) {
+          state.recoveryAttempts += 1;
+        }
 
         let extractedError = "";
         if (result.startsWith("Tool error:")) {

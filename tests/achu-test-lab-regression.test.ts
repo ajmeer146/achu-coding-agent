@@ -390,9 +390,24 @@ describe("Achu Test Lab Defect Regression Tests", () => {
       enumMatches.length >= 2,
       "both the exposed tool schema and the runtime zod schema must accept interaction/form targets"
     );
+    const selectEnums = source.match(/"input", "select", "link"/g) ?? [];
+    assert.ok(
+      selectEnums.length >= 2,
+      "both the exposed tool schema and the runtime zod schema must accept select targets"
+    );
     for (const field of ["action", "inputValue", "expectedTextAfter", "expectedUrlAfter", "expectedSelectorAfter"]) {
       assert.ok(source.includes(field), `browser_verify schema must expose ${field}`);
     }
+  });
+
+  test("5e. Invalid tool arguments do not consume the recovery budget", async () => {
+    const { runAgent } = await import("../src/agent.js");
+    const fnStr = runAgent.toString();
+    assert.ok(fnStr.includes("isInvalidToolArguments"), "tool-argument validation failures must be distinguished");
+    assert.ok(
+      fnStr.includes("Tool error: Invalid arguments for"),
+      "recovery loop must recognize invalid tool arguments"
+    );
   });
 
   test("6. Safety policy: broad process killing commands are blocked", () => {

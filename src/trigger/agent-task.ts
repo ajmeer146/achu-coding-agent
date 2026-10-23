@@ -40,7 +40,7 @@ export const AgentTaskPayloadSchema = z.object({
   sessionId: z.string().optional(),
   requestedVerification: z.string().optional(),
   maxSteps: z.number().int().positive().max(50).optional().default(30),
-  maxRecoveryAttempts: z.number().int().nonnegative().max(5).optional().default(3),
+  maxRecoveryAttempts: z.number().int().nonnegative().max(5).optional().default(5),
   // Model configuration (optional - can be set via env vars or passed directly)
   nvidiaApiKey: z.string().optional(),
   nvidiaBaseUrl: z.string().optional(),

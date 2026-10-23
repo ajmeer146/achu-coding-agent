@@ -80,10 +80,20 @@ export class BrowserSession {
         }
       });
 
-      // Collect page runtime errors
+      // Collect page runtime errors with the first application stack frame so
+      // the agent can navigate to the exact file and line that threw.
       this.page.on('pageerror', error => {
         if (this.pageErrors.length < 50) {
-          this.pageErrors.push(`${error.name || "Error"}: ${error.message}`);
+          const stack = typeof error.stack === "string" ? error.stack : "";
+          const appFrame = stack
+            .split("\n")
+            .map(line => line.trim())
+            .find(line =>
+              line.startsWith("at ") &&
+              /[^\s()]+\.(?:js|mjs|cjs|jsx|ts|tsx):\d+:\d+/.test(line)
+            );
+          const location = appFrame ? ` (${appFrame.replace(/^at\s+/, "")})` : "";
+          this.pageErrors.push(`${error.name || "Error"}: ${error.message}${location}`);
         }
       });
 

@@ -3,7 +3,7 @@ import { PageInfo } from "./browser-session.js";
 import { analyseTaskBrief } from "../tools/design-planner.js";
 
 export type VerificationTarget = {
-  type: "text" | "heading" | "button" | "input" | "link" | "route" | "interaction" | "form";
+  type: "text" | "heading" | "button" | "input" | "select" | "link" | "route" | "interaction" | "form";
   selector?: string;
   text?: string;
   url?: string;
@@ -24,6 +24,8 @@ export type VerificationResult = {
   target: VerificationTarget;
   actual?: string;
   error?: string;
+  /** Synthetic check re-run on every attempt; never persisted as a target. */
+  structural?: boolean;
 };
 
 export type BrowserVerificationSummary = {
@@ -412,6 +414,80 @@ async function collectPageButtonEvidence(page: any): Promise<string> {
  * type), label, placeholder, name. Resolution prefers the live DOM; a mock
  * session providing only inspectPage() still works (aggregate fallback).
  */
+export async function verifySelectExists(
+  session: BrowserSession,
+  criteria: { selector?: string; name?: string; label?: string }
+): Promise<VerificationResult> {
+  const target: VerificationTarget = {
+    type: "select",
+    ...(criteria.selector ? { selector: criteria.selector } : {}),
+    ...(criteria.name ? { name: criteria.name } : {}),
+    ...(criteria.label ? { label: criteria.label } : {}),
+  };
+  const desc = criteria.selector
+    ? `selector "${criteria.selector}"`
+    : criteria.name
+      ? `name "${criteria.name}"`
+      : criteria.label
+        ? `label "${criteria.label}"`
+        : "";
+  if (!desc) {
+    return {
+      passed: false,
+      target,
+      error: 'Invalid select verification criteria: provide a "selector", "name", or "label" for the dropdown.',
+    };
+  }
+
+  const page = typeof (session as any).getPage === "function" ? (session as any).getPage() : null;
+  if (!page) {
+    return { passed: false, target, error: "Select verification unavailable: no browser page." };
+  }
+
+  try {
+    let locator: any;
+    if (criteria.selector) {
+      locator = page.locator(criteria.selector);
+    } else if (criteria.name) {
+      locator = page.locator(`select[name*="${escapeCssAttrValue(criteria.name)}"]`);
+    } else {
+      locator = page.getByLabel(criteria.label, { exact: false });
+    }
+
+    const selects: Array<{ id: string; name: string; options: number }> = await locator.evaluateAll((elements: Element[]) =>
+      elements
+        .filter(element => element.tagName === "SELECT")
+        .map(element => {
+          const select = element as HTMLSelectElement;
+          return { id: select.id, name: select.name, options: select.options.length };
+        })
+    );
+
+    if (selects.length === 0) {
+      return { passed: false, target, error: `Select (${desc}) not found.` };
+    }
+    const withOptions = selects.filter(select => select.options > 0);
+    if (withOptions.length === 0) {
+      return { passed: false, target, error: `Select (${desc}) was found but has no options.` };
+    }
+    return {
+      passed: true,
+      target,
+      actual: `Found select (${desc}) with ${withOptions[0].options} option(s)`,
+    };
+  } catch (err: any) {
+    const shortMessage = String(err?.message ?? err).split("\n")[0].trim();
+    if (criteria.selector && /not a valid selector|syntaxerror/i.test(shortMessage)) {
+      return {
+        passed: false,
+        target,
+        error: `Invalid select verification criteria: "${criteria.selector}" is not a valid CSS selector. Use a selector such as #sortSelect or select[name="category"].`,
+      };
+    }
+    return { passed: false, target, error: `Select verification failed: ${shortMessage}` };
+  }
+}
+
 export async function verifyInputExists(
   session: BrowserSession,
   attributes: InputCriteria
@@ -843,6 +919,13 @@ export async function runVerificationSuite(
           text: target.text,
         });
         break;
+      case "select":
+        result = await verifySelectExists(session, {
+          selector: selector || undefined,
+          name: target.name,
+          label: target.label,
+        });
+        break;
       case "link":
         if (!text) {
           result = invalidTargetResult(target, 'a non-empty "text" value');
@@ -884,7 +967,7 @@ export async function runVerificationSuite(
   );
 
   if (isDirectoryListing) {
-    results.push({
+    results.push({ structural: true,
       passed: false,
       target: { type: "text", text: "Application rendering" },
       error: `Server served a directory listing ("${pageInfo?.title}") instead of a rendered web application. Ensure an index.html file exists and the dev server is properly configured.`,
@@ -899,7 +982,7 @@ export async function runVerificationSuite(
       !isDirectoryListing &&
       (pageInfo.title.trim().length > 0 || pageInfo.visibleText.trim().length > 0)
     );
-    results.push({
+    results.push({ structural: true,
       passed: loadedCleanly,
       target: { type: "text", text: "Page content" },
       actual: loadedCleanly
@@ -913,13 +996,13 @@ export async function runVerificationSuite(
 
       // Check if stylesheet is loaded and active
       if (stylesheetCount === 0 && totalRules === 0) {
-        results.push({
+        results.push({ structural: true,
           passed: false,
           target: { type: "text", text: "CSS Stylesheet Check" },
           error: "Page is completely unstyled. No external stylesheets or active CSS rules were found. Link styles.css in index.html (<link rel=\"stylesheet\" href=\"styles.css\">) and implement modern CSS rules.",
         });
       } else if (totalRules < 8) {
-        results.push({
+        results.push({ structural: true,
           passed: false,
           target: { type: "text", text: "CSS Styling Completeness" },
           error: `Page styling is basic or minimal (only ${totalRules} CSS rule(s) found). Implement comprehensive modern styling in styles.css covering colors, layout, typography, cards, and responsive media queries.`,
@@ -929,7 +1012,7 @@ export async function runVerificationSuite(
       // Check if body is using unstyled default serif
       const isUnstyledSerif = !fontFamily || /^(times new roman|times|serif)$/i.test(fontFamily.trim().toLowerCase());
       if (isUnstyledSerif && totalRules < 20) {
-        results.push({
+        results.push({ structural: true,
           passed: false,
           target: { type: "text", text: "Typography Styling Check" },
           error: `Page is using default unstyled browser serif typography ("${fontFamily || 'none'}"). Set a modern font family in styles.css (e.g. system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif).`,
@@ -938,7 +1021,7 @@ export async function runVerificationSuite(
 
       // Check for semantic structural richness
       if (pageInfo.visibleText && pageInfo.visibleText.trim().split(/\s+/).length < 15 && semanticElementsCount < 2) {
-        results.push({
+        results.push({ structural: true,
           passed: false,
           target: { type: "text", text: "Page Content Completeness" },
           error: "Page content appears incomplete or bare (fewer than 15 words of text and minimal semantic layout). Implement full content sections (header, hero, sections, footer) requested by the user.",
@@ -951,7 +1034,7 @@ export async function runVerificationSuite(
   // assertions were supplied. They must be replaced with real content before
   // verification can pass.
   if (pageInfo?.qualityIssues && pageInfo.qualityIssues.length > 0) {
-    results.push({
+    results.push({ structural: true,
       passed: false,
       target: { type: "text", text: "Placeholder visual quality check" },
       error: `Placeholder or low-effort visual content detected: ${pageInfo.qualityIssues.slice(0, 3).join("; ")} Replace it with substantive inline SVG artwork or real product imagery, then re-run browser_verify.`,
@@ -960,7 +1043,7 @@ export async function runVerificationSuite(
 
   // Check for fatal console errors
   if (pageInfo && pageInfo.consoleErrors && pageInfo.consoleErrors.length > 0) {
-    results.push({
+    results.push({ structural: true,
       passed: false,
       target: { type: "text", text: "Console clean check" },
       error: `Page loaded with browser console error(s): ${pageInfo.consoleErrors.slice(0, 3).join("; ")}`,
@@ -971,10 +1054,10 @@ export async function runVerificationSuite(
   // the requested content is present. Failed requests are checked separately.
   const runtimeErrors = (pageInfo?.pageErrors ?? []).filter(e => !e.startsWith("Failed request:"));
   if (runtimeErrors.length > 0) {
-    results.push({
+    results.push({ structural: true,
       passed: false,
       target: { type: "text", text: "Page runtime check" },
-      error: `Page raised uncaught JavaScript error(s): ${runtimeErrors.slice(0, 3).join("; ")}. Inspect inline event handlers and script files for conflicting quotes or malformed expressions, then re-run browser_verify.`,
+      error: `Page raised uncaught JavaScript error(s): ${runtimeErrors.slice(0, 3).join("; ")}. When a file:line location is shown, read that line and fix the underlying undefined value or malformed expression; otherwise inspect inline event handlers and script files for conflicting quotes. Then re-run browser_verify.`,
     });
   }
 
@@ -982,7 +1065,7 @@ export async function runVerificationSuite(
   if (pageInfo && Array.isArray((pageInfo as any).pageErrors) && (pageInfo as any).pageErrors.length > 0) {
     const failedAssets = ((pageInfo as any).pageErrors as string[]).filter(e => /Failed request|404|net::ERR/i.test(e));
     if (failedAssets.length > 0) {
-      results.push({
+      results.push({ structural: true,
         passed: false,
         target: { type: "text", text: "Asset loading check" },
         error: `Required project assets failed to load: ${failedAssets.slice(0, 3).join("; ")}`,
@@ -1203,6 +1286,26 @@ export function signatureForTarget(target: VerificationTarget): string {
 }
 
 /**
+ * Task-derived assertions are authoritative. A model-supplied assertion that
+ * is not derived from the task is advisory unless the model explicitly marks
+ * it required, so invented checks cannot force unrelated rewrites of a
+ * working page.
+ */
+export function normalizeProvidedVerificationTargets(
+  provided: VerificationTarget[],
+  taskTargets: VerificationTarget[]
+): VerificationTarget[] {
+  const taskSignatures = new Set(taskTargets.map(signatureForTarget));
+  return provided.map(target => ({
+    ...target,
+    required:
+      target.required === undefined
+        ? taskSignatures.has(signatureForTarget(target))
+        : target.required,
+  }));
+}
+
+/**
  * Combine this run's targets with assertions that failed in earlier attempts.
  * Verification is only complete once every earlier failure has been re-run and
  * passed, so a retry that supplies a smaller target list must never silently
@@ -1258,6 +1361,10 @@ export function applyVerificationOutcome(
   const failedThisAttempt: VerificationResult[] = [];
 
   for (const result of summary.results) {
+    // Structural checks are re-evaluated from the live page on every attempt;
+    // persisting their synthetic target would turn them into a literal text
+    // assertion that can never pass once the live check is fixed.
+    if (result.structural) continue;
     const signature = signatureForTarget(result.target);
     // Passing clears a failure; an explicit downgrade to optional also clears
     // it because optional assertions are warnings, not outstanding blockers.
