@@ -592,6 +592,8 @@ export async function verifyInputExists(
           const escaped = escapeCssAttrValue(norm.text);
           locator = page.locator(`input[placeholder*="${escaped}"], input[name*="${escaped}"]`);
         }
+      } else if (norm.inputType === "search") {
+        locator = page.locator('input[type="search"], input[placeholder*="search" i], input[name*="search" i], input[id*="search" i], [role="searchbox"]');
       } else {
         const built = buildInputSelector(norm);
         if (!built) {
@@ -604,11 +606,43 @@ export async function verifyInputExists(
         locator = page.locator(built);
       }
 
-      const candidates: DomElementInfo[] = await locator.evaluateAll(COLLECT_DOM_ELEMENTS);
+      const candidates: DomElementInfo[] = await locator.evaluateAll((elements: Element[]) => {
+        const results: Element[] = [];
+        for (const el of elements) {
+          const tag = el.tagName ? el.tagName.toLowerCase() : "";
+          if (tag === "input" || tag === "textarea") {
+            results.push(el);
+          } else {
+            // If the selector matched a container (e.g. #search div, .search-bar, form), gather nested inputs
+            const inner = el.querySelectorAll('input, textarea, [role="textbox"], [role="searchbox"]');
+            for (let i = 0; i < inner.length; i++) {
+              results.push(inner[i]);
+            }
+          }
+        }
+        return results.map((el: any) => ({
+          tag: el.tagName ? String(el.tagName).toLowerCase() : "",
+          type: el.type !== undefined && el.type !== null ? String(el.type) : (el.getAttribute?.("type") || ""),
+          placeholder: el.placeholder !== undefined && el.placeholder !== null ? String(el.placeholder) : (el.getAttribute?.("placeholder") || ""),
+          name: el.name !== undefined && el.name !== null ? String(el.name) : (el.getAttribute?.("name") || ""),
+          id: el.id !== undefined && el.id !== null ? String(el.id) : (el.getAttribute?.("id") || ""),
+          text: el.textContent ? String(el.textContent).trim() : "",
+          disabled: el.disabled === true || el.getAttribute?.("aria-disabled") === "true",
+        }));
+      });
       const matches = candidates.filter((el) => {
         const isInputLike = el.tag === "input" || (el.tag === "textarea" && !norm.inputType);
         if (!isInputLike) return false;
-        if (norm.inputType && el.type.toLowerCase() !== norm.inputType) return false;
+        if (norm.inputType) {
+          const isExactType = el.type.toLowerCase() === norm.inputType;
+          const isSearchSemantic = norm.inputType === "search" && (
+            el.type.toLowerCase() === "search" ||
+            el.placeholder.toLowerCase().includes("search") ||
+            el.name.toLowerCase().includes("search") ||
+            el.id.toLowerCase().includes("search")
+          );
+          if (!isExactType && !isSearchSemantic) return false;
+        }
         if (norm.placeholder && !el.placeholder.toLowerCase().includes(norm.placeholder.toLowerCase())) return false;
         if (norm.name && !el.name.toLowerCase().includes(norm.name.toLowerCase())) return false;
         return true;
@@ -660,14 +694,28 @@ export async function verifyInputExists(
   }
 
   const passed = result.info.inputs.some(input => {
-    if (norm.inputType && input.type !== norm.inputType) return false;
+    if (norm.inputType) {
+      const isExactType = input.type.toLowerCase() === norm.inputType;
+      const isSearchSemantic = norm.inputType === "search" && (
+        input.type.toLowerCase() === "search" ||
+        input.placeholder.toLowerCase().includes("search") ||
+        input.name.toLowerCase().includes("search")
+      );
+      if (!isExactType && !isSearchSemantic) return false;
+    }
     if (norm.placeholder && !input.placeholder.toLowerCase().includes(norm.placeholder.toLowerCase())) return false;
     if (norm.name && !input.name.toLowerCase().includes(norm.name.toLowerCase())) return false;
     if (!norm.inputType && !norm.placeholder && !norm.name) {
       const hint = (norm.label ?? norm.text ?? "").toLowerCase();
-      if (!hint) return false;
-      const fields = `${input.type} ${input.placeholder} ${input.name}`.toLowerCase();
-      return fields.includes(hint);
+      if (hint) {
+        const fields = `${input.type} ${input.placeholder} ${input.name}`.toLowerCase();
+        if (!fields.includes(hint)) return false;
+      } else if (norm.selector && norm.selector.toLowerCase().includes("search")) {
+        const fields = `${input.type} ${input.placeholder} ${input.name}`.toLowerCase();
+        if (!fields.includes("search")) return false;
+      } else {
+        return false;
+      }
     }
     return true;
   });
@@ -1331,7 +1379,7 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
   if (productType === "ecommerce") {
     addTarget({
       type: "input",
-      selector: 'input[type="search"], input[placeholder*="search" i], input[name*="search" i], #search, .search-input',
+      selector: 'input[type="search"], input[placeholder*="search" i], input[name*="search" i], input[id*="search" i], input[class*="search" i], input[aria-label*="search" i], [role="searchbox"], #search, .search-input, .search-bar, .search-box',
       required: true,
     });
     addTarget({ type: "button", text: "cart", required: true });

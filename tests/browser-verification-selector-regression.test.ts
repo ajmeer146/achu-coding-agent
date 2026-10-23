@@ -575,4 +575,77 @@ describe("Browser verification selector normalization & truthful outcome regress
     assert.equal(merged.filter(t => signatureForTarget(t) === signatureForTarget(taskTargets[1])).length, 1);
     assert.equal(merged.find(t => signatureForTarget(t) === signatureForTarget(taskTargets[1]))?.required, true);
   });
+
+  test("19. Search input nested inside a container (div#search, .search-input) resolves and passes", async () => {
+    const pageWithContainer = `<!DOCTYPE html>
+<html>
+<head><title>Search Page</title></head>
+<body>
+  <h1>Store</h1>
+  <div class="search-input" id="search">
+    <input type="text" id="searchInput" name="q" placeholder="Search catalog..." />
+  </div>
+</body>
+</html>`;
+    const { port, server } = await startPage(pageWithContainer);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      // Verify with container selector: unwraps to nested input
+      const containerRes = await verifyInputExists(session, { selector: "#search" });
+      assert.equal(containerRes.passed, true, `Nested input inside #search must be resolved: ${containerRes.error}`);
+
+      const classContainerRes = await verifyInputExists(session, { selector: ".search-input" });
+      assert.equal(classContainerRes.passed, true, `Nested input inside .search-input must be resolved: ${classContainerRes.error}`);
+
+      // Verify with semantic search inputType
+      const semanticRes = await verifyInputExists(session, { inputType: "search" });
+      assert.equal(semanticRes.passed, true, `Input with search placeholder/id must satisfy search inputType: ${semanticRes.error}`);
+
+      // Verify e-commerce task target
+      const targets: VerificationTarget[] = [
+        {
+          type: "input",
+          selector: 'input[type="search"], input[placeholder*="search" i], input[name*="search" i], input[id*="search" i], input[class*="search" i], input[aria-label*="search" i], [role="searchbox"], #search, .search-input, .search-bar, .search-box',
+          required: true,
+        },
+      ];
+      const summary = await runVerificationSuite(session, `http://localhost:${port}`, targets);
+      assert.equal(summary.overallPassed, true, `E-commerce search target must pass against nested search input`);
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  test("20. Truly missing search input fails with DOM evidence", async () => {
+    const pageWithoutSearch = `<!DOCTYPE html>
+<html>
+<head><title>No Search Page</title></head>
+<body>
+  <h1>Store</h1>
+  <div class="newsletter">
+    <input type="email" name="email" placeholder="Subscribe to newsletter..." />
+  </div>
+</body>
+</html>`;
+    const { port, server } = await startPage(pageWithoutSearch);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      const semanticRes = await verifyInputExists(session, { inputType: "search" });
+      assert.equal(semanticRes.passed, false, "Page without search must fail search assertion");
+      assert.ok(semanticRes.error?.includes("not found"), `Error must state not found: ${semanticRes.error}`);
+
+      const targetRes = await verifyInputExists(session, { selector: "#search" });
+      assert.equal(targetRes.passed, false, "Missing #search must fail");
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
 });

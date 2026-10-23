@@ -149,6 +149,7 @@ export type AgentState = {
     rollbackRequested?: boolean;
     taskPrompt?: string;
     taskScope?: TaskScope;
+    designSpec?: DesignSpec | null;
     scopedTargetFiles?: string[];
     executionLedger?: ExecutionLedger;
   };
@@ -261,6 +262,7 @@ async function runVisualQualityChecks(session: BrowserSession, baseUrl: string):
     ];
     const desktopViewports = [
       { width: 1280, height: 800 }, // Laptop (1280-1440px)
+      { width: 1366, height: 768 }, // Standard desktop (1366x768)
       { width: 1440, height: 900 }, // Laptop / Desktop
       { width: 1920, height: 1080 }, // Wide desktop (1920px)
     ];
@@ -3064,9 +3066,9 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         console.log(chalk.cyan(`Scaffolding project template '${template}' (${name})...`));
         let scaffoldRes;
         if (template === "react-vite") {
-          scaffoldRes = await scaffoldReactViteProject(workspace, name);
+          scaffoldRes = await scaffoldReactViteProject(workspace, name, state.designSpec ?? undefined);
         } else {
-          scaffoldRes = await scaffoldStaticProject(workspace, name);
+          scaffoldRes = await scaffoldStaticProject(workspace, name, state.designSpec ?? undefined);
         }
         if (!scaffoldRes.success) {
           return `Scaffold failed: ${scaffoldRes.error}`;
@@ -3925,6 +3927,7 @@ export async function runAgent(
 
   // Phase 13: Generate design spec for UI tasks
   const p13DesignSpec: DesignSpec | null = isUITask(task) ? generateDesignSpec(task) : null;
+  state.designSpec = p13DesignSpec;
   if (p13DesignSpec) {
     console.log(chalk.magenta(`[Phase 13] Design Intelligence: ${p13DesignSpec.direction} / ${p13DesignSpec.productType}`));
   }
