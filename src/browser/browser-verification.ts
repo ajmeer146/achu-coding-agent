@@ -1148,15 +1148,28 @@ export async function runVerificationSuite(
     }
   }
 
-  // Placeholder visuals are a quality failure regardless of which content
+  // Placeholder and broken visual content are a quality failure regardless of which content
   // assertions were supplied. They must be replaced with real content before
   // verification can pass.
   if (pageInfo?.qualityIssues && pageInfo.qualityIssues.length > 0) {
-    results.push({ structural: true,
-      passed: false,
-      target: { type: "text", text: "Placeholder visual quality check" },
-      error: `Placeholder or low-effort visual content detected: ${pageInfo.qualityIssues.slice(0, 3).join("; ")} Replace it with substantive inline SVG artwork or real product imagery, then re-run browser_verify.`,
-    });
+    const brokenImgIssues = pageInfo.qualityIssues.filter(q => q.toLowerCase().includes("broken image"));
+    const placeholderIssues = pageInfo.qualityIssues.filter(q => !q.toLowerCase().includes("broken image"));
+
+    if (brokenImgIssues.length > 0) {
+      results.push({ structural: true,
+        passed: false,
+        target: { type: "text", text: "Image asset rendering check" },
+        error: `Broken image(s) detected: ${brokenImgIssues.slice(0, 3).join("; ")} Ensure all image URLs are valid and reachable, or replace them with verified local assets or substantive inline SVG artwork, then re-run browser_verify.`,
+      });
+    }
+
+    if (placeholderIssues.length > 0) {
+      results.push({ structural: true,
+        passed: false,
+        target: { type: "text", text: "Placeholder visual quality check" },
+        error: `Placeholder or low-effort visual content detected: ${placeholderIssues.slice(0, 3).join("; ")} Replace it with substantive inline SVG artwork or real product imagery, then re-run browser_verify.`,
+      });
+    }
   }
 
   // Check for fatal console errors
@@ -1170,7 +1183,7 @@ export async function runVerificationSuite(
 
   // Uncaught JavaScript errors mean the page is not actually working, even if
   // the requested content is present. Failed requests are checked separately.
-  const runtimeErrors = (pageInfo?.pageErrors ?? []).filter(e => !e.startsWith("Failed request:"));
+  const runtimeErrors = (pageInfo?.pageErrors ?? []).filter(e => !e.startsWith("Failed request:") && !e.startsWith("Failed "));
   if (runtimeErrors.length > 0) {
     results.push({ structural: true,
       passed: false,
@@ -1181,7 +1194,7 @@ export async function runVerificationSuite(
 
   // Check for asset loading failures (missing styles.css, script.js, images)
   if (pageInfo && Array.isArray((pageInfo as any).pageErrors) && (pageInfo as any).pageErrors.length > 0) {
-    const failedAssets = ((pageInfo as any).pageErrors as string[]).filter(e => /Failed request|404|net::ERR/i.test(e));
+    const failedAssets = ((pageInfo as any).pageErrors as string[]).filter(e => /Failed request|Failed \w+ request|404|net::ERR/i.test(e));
     if (failedAssets.length > 0) {
       results.push({ structural: true,
         passed: false,
@@ -1383,6 +1396,11 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
       required: true,
     });
     addTarget({ type: "button", text: "cart", required: true });
+    addTarget({
+      type: "section",
+      selector: '#catalog, #productGrid, .catalog-section, .products-grid, .product-grid, .cards-grid, [data-section*="product" i]',
+      required: true,
+    });
   }
 
   return targets;

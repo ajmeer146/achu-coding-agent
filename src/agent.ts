@@ -128,6 +128,8 @@ export type AgentState = {
   maxBrowserVerificationAttempts: number;
   browserVerificationRequested: boolean;
   browserVerificationPassed: boolean;
+  browserVerificationBlocked?: boolean;
+  browserVerificationBlockReason?: string;
   // Persistent record of failed browser assertions (signature -> error message).
   // A later verification run can only clear an entry by re-running the same
   // assertion and having it pass — failures are never silently overwritten.
@@ -1551,6 +1553,8 @@ export function isToolResultFailure(toolName: string, result: string): boolean {
     if (toolName === "browser_verify" && result.includes("Browser verification failed")) return true;
     if (toolName === "browser_verify" && result.includes("Browser verification incomplete")) return true;
     if (toolName === "browser_verify" && result.includes("measurable visual defects")) return true;
+    if (toolName === "browser_verify" && result.includes("critical blocker")) return true;
+    if (toolName === "browser_verify" && result.includes("quality audit detected")) return true;
   }
   if (toolName === "navigate" && result.includes("Navigation failed:")) return true;
   if (toolName === "start_app" && (result.includes("failed to become ready") || result.includes("No start command found") || result.includes("App failed to become ready"))) return true;
@@ -3364,6 +3368,8 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           const session = new BrowserSession();
           const availability = await session.isAvailable();
           if (!availability.available) {
+            state.browserVerificationBlocked = true;
+            state.browserVerificationBlockReason = availability.error;
             state.browserVerificationRequested = false;
             state.browserVerificationPassed = false;
             const deterministic = await runDeterministicUIChecks(workspace, state.appUrl);
@@ -3373,6 +3379,8 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           if (openRes.success) {
             state.browserSession = session;
           } else {
+            state.browserVerificationBlocked = true;
+            state.browserVerificationBlockReason = openRes.error;
             state.browserVerificationRequested = false;
             state.browserVerificationPassed = false;
             const deterministic = await runDeterministicUIChecks(workspace, state.appUrl);
@@ -3381,6 +3389,8 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         }
         const availability = await state.browserSession.isAvailable();
         if (!availability.available) {
+          state.browserVerificationBlocked = true;
+          state.browserVerificationBlockReason = availability.error;
           state.browserVerificationRequested = false;
           state.browserVerificationPassed = false;
           const deterministic = await runDeterministicUIChecks(workspace, state.appUrl);
@@ -3592,6 +3602,8 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         const session = new BrowserSession();
         const availability = await session.isAvailable();
         if (!availability.available) {
+          state.browserVerificationBlocked = true;
+          state.browserVerificationBlockReason = availability.error;
           state.browserVerificationRequested = false;
           state.browserVerificationPassed = false;
           state.browserSession = session;
@@ -3607,6 +3619,8 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           state.browserSession = session;
           return "Browser opened successfully";
         }
+        state.browserVerificationBlocked = true;
+        state.browserVerificationBlockReason = result.error;
         state.browserVerificationRequested = false;
         state.browserVerificationPassed = false;
         for (const s of state.currentPlan) {
@@ -4516,7 +4530,10 @@ export async function runAgent(
     .filter(t => t.startsWith("edit_file:") || t.startsWith("create_file:"))
     .map(t => t.split(":")[1] || t);
 
-  const browserVerificationIncomplete = isWebAppLifecycle && state.browserVerificationRequested && !state.browserVerificationPassed;
+  const browserVerificationIncomplete = isWebAppLifecycle && (
+    (state.browserVerificationRequested && !state.browserVerificationPassed) ||
+    Boolean(state.browserVerificationBlocked)
+  );
   const appNotStarted = isWebAppLifecycle && !state.appUrl;
   const hasFailedSteps = state.currentPlan?.some(s => s.status === "failed") ?? false;
   const allRequiredStepsComplete = state.currentPlan ? state.currentPlan.every(s => s.status === "completed" || (s.toolType === "stop_app" && isWebAppLifecycle)) : true;
@@ -4532,7 +4549,7 @@ export async function runAgent(
     evidence.verified;
 
   const rawError = !success
-    ? state.stopReason || (browserVerificationIncomplete ? "Browser verification did not pass" : appNotStarted ? "Application server could not be started for Live Preview" : hasFailedSteps ? "One or more plan steps failed" : !allRequiredStepsComplete ? "Task steps were incomplete" : !evidence.verified ? `Incomplete task: ${evidence.missingRequirements.join("; ")}` : "Task could not be completed successfully")
+    ? state.stopReason || (state.browserVerificationBlocked ? `Browser verification blocked: ${state.browserVerificationBlockReason || "browser automation service unavailable"}` : browserVerificationIncomplete ? "Browser verification did not pass" : appNotStarted ? "Application server could not be started for Live Preview" : hasFailedSteps ? "One or more plan steps failed" : !allRequiredStepsComplete ? "Task steps were incomplete" : !evidence.verified ? `Incomplete task: ${evidence.missingRequirements.join("; ")}` : "Task could not be completed successfully")
     : undefined;
 
   const error = rawError ? sanitizeUserFacingError(rawError) : undefined;

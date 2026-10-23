@@ -548,9 +548,11 @@ export async function scaffoldStaticProject(
           autocomplete="off"
         />
       </div>
-      <nav class="nav-links">
-        <a href="#catalog" class="nav-link">Catalog</a>
-        <a href="#about" class="nav-link">About</a>
+      <nav class="nav-links" aria-label="Main Navigation">
+        <ul class="nav-menu">
+          <li><a href="#catalog" class="nav-link">Catalog</a></li>
+          <li><a href="#about" class="nav-link">About</a></li>
+        </ul>
         <button id="cartBtn" class="btn btn-primary btn-sm cart-btn" aria-label="Shopping Cart">
           🛒 Cart (<span id="cartCount">0</span>)
         </button>
@@ -560,12 +562,48 @@ export async function scaffoldStaticProject(
 
   <main>
     <section class="hero-section">
-      <div class="hero-badge">Curated Collection &bull; Instant Delivery</div>
-      <h1 class="hero-title">${title} Store</h1>
-      <p class="hero-subtitle">Discover premium essentials, smart tech, and accessories designed for modern everyday living.</p>
-      <div class="hero-actions">
-        <a href="#catalog" class="btn btn-primary">Shop Now</a>
-        <a href="#categories" class="btn btn-secondary">Explore Categories</a>
+      <div class="hero-grid">
+        <div class="hero-content">
+          <div class="hero-badge">⚡ Curated Collection &bull; Instant Delivery</div>
+          <h1 class="hero-title">${title} Store</h1>
+          <p class="hero-subtitle">Discover premium essentials, smart tech, and accessories designed for modern everyday living.</p>
+          <div class="hero-actions">
+            <a href="#catalog" class="btn btn-primary">Shop Now</a>
+            <a href="#categories" class="btn btn-secondary">Explore Categories</a>
+          </div>
+          <div class="hero-trust-chips">
+            <span class="trust-chip">✓ Free Express Shipping</span>
+            <span class="trust-chip">✓ 2-Year Warranty</span>
+            <span class="trust-chip">✓ 30-Day Returns</span>
+          </div>
+        </div>
+        <div class="hero-visual">
+          <div class="hero-showcase-card">
+            <div class="showcase-glow"></div>
+            <div class="showcase-badge">Flagship Device</div>
+            <div class="showcase-svg-wrapper">
+              <svg viewBox="0 0 200 200" fill="none" class="hero-flagship-svg" aria-label="Flagship Wireless Acoustic Headphones">
+                <circle cx="100" cy="100" r="85" fill="var(--bg-surface)" stroke="var(--border-subtle)" stroke-width="2"/>
+                <path d="M45 110 C45 45, 155 45, 155 110" stroke="var(--text-primary)" stroke-width="10" stroke-linecap="round" fill="none"/>
+                <path d="M55 105 C55 58, 145 58, 145 105" stroke="var(--accent-primary)" stroke-width="4" stroke-linecap="round" fill="none"/>
+                <rect x="30" y="95" width="28" height="52" rx="14" fill="var(--bg-primary)" stroke="var(--accent-primary)" stroke-width="3"/>
+                <rect x="36" y="103" width="16" height="36" rx="8" fill="var(--accent-primary)" opacity="0.4"/>
+                <circle cx="44" cy="121" r="5" fill="var(--accent-primary)"/>
+                <rect x="142" y="95" width="28" height="52" rx="14" fill="var(--bg-primary)" stroke="var(--accent-primary)" stroke-width="3"/>
+                <rect x="148" y="103" width="16" height="36" rx="8" fill="var(--accent-primary)" opacity="0.4"/>
+                <circle cx="156" cy="121" r="5" fill="var(--accent-primary)"/>
+                <path d="M18 105 C14 115, 14 127, 18 137" stroke="var(--accent-primary)" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+                <path d="M182 105 C186 115, 186 127, 182 137" stroke="var(--accent-primary)" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+              </svg>
+            </div>
+            <div class="showcase-details">
+              <span class="showcase-title">Acoustic Pro Wireless</span>
+              <span class="showcase-price">$249.99</span>
+            </div>
+            <div class="showcase-pill showcase-pill-top">Active Noise Cancelling</div>
+            <div class="showcase-pill showcase-pill-bottom">★ 4.9 Rating &bull; 48h Battery</div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -866,6 +904,12 @@ export async function scaffoldStaticProject(
   padding: 0;
 }
 
+ul, ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
 html, body {
   max-width: 100%;
   overflow-x: hidden;
@@ -936,6 +980,27 @@ body {
   align-items: center;
   gap: 1.25rem;
 }
+.navbar ul,
+.nav-links ul,
+nav ul,
+ul.nav-menu,
+ul.nav-links {
+  list-style: none !important;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+.navbar li,
+.nav-links li,
+nav li {
+  list-style: none !important;
+  margin: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+}
 .nav-links a:not(.btn) {
   color: var(--text-secondary);
   text-decoration: none;
@@ -989,10 +1054,21 @@ body {
 
 /* Hero Section */
 .hero-section {
-  text-align: center;
   padding: ${heroV} 1.25rem 3.5rem;
-  max-width: 840px;
+  max-width: 1200px;
   margin: 0 auto;
+}
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 3rem;
+  align-items: center;
+}
+.hero-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
 }
 .hero-badge {
   display: inline-block;
@@ -1002,7 +1078,7 @@ body {
   color: var(--accent-primary);
   font-size: 0.85rem;
   font-weight: 600;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.25rem;
   border: 1px solid var(--border-subtle);
 }
 .hero-title {
@@ -1015,16 +1091,120 @@ body {
 .hero-subtitle {
   font-size: 1.15rem;
   color: var(--text-secondary);
-  margin-bottom: 2rem;
-  max-width: 680px;
-  margin-left: auto;
-  margin-right: auto;
+  margin-bottom: 1.75rem;
+  max-width: 580px;
 }
 .hero-actions {
   display: flex;
-  justify-content: center;
   gap: 1rem;
   flex-wrap: wrap;
+}
+.hero-trust-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.75rem;
+}
+.trust-chip {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  padding: 0.35rem 0.75rem;
+  border-radius: 9999px;
+}
+.hero-visual {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  width: 100%;
+}
+.hero-showcase-card {
+  position: relative;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-shadow: var(--shadow-card);
+  width: 100%;
+  max-width: 380px;
+}
+.showcase-glow {
+  position: absolute;
+  inset: -10px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent-primary) 25%, transparent) 0%, transparent 70%);
+  z-index: 0;
+  pointer-events: none;
+}
+.showcase-badge {
+  position: relative;
+  z-index: 1;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent-primary);
+  margin-bottom: 0.5rem;
+}
+.showcase-svg-wrapper {
+  position: relative;
+  z-index: 1;
+  width: 180px;
+  height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hero-flagship-svg {
+  width: 100%;
+  height: 100%;
+}
+.showcase-details {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-subtle);
+}
+.showcase-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.showcase-price {
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: var(--accent-primary);
+}
+.showcase-pill {
+  position: absolute;
+  z-index: 2;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.4rem 0.85rem;
+  border-radius: 9999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  white-space: nowrap;
+}
+.showcase-pill-top {
+  top: 1rem;
+  right: -0.5rem;
+}
+.showcase-pill-bottom {
+  bottom: 3.5rem;
+  left: -0.5rem;
 }
 
 /* Catalog & Controls */
@@ -1483,10 +1663,25 @@ body {
 
 /* Responsive Media Queries */
 @media (max-width: 768px) {
+  .hero-grid {
+    grid-template-columns: 1fr;
+    gap: 2.5rem;
+  }
+  .hero-content {
+    align-items: center;
+    text-align: center;
+  }
+  .hero-actions {
+    justify-content: center;
+  }
+  .hero-trust-chips {
+    justify-content: center;
+  }
   .hero-title {
     font-size: calc(${heroFontSize} * 0.72);
   }
-  .nav-links a:not(.btn) {
+  .nav-links a:not(.btn),
+  .nav-menu {
     display: none;
   }
   .hero-section {
@@ -1497,6 +1692,12 @@ body {
   }
   .cards-grid {
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  }
+  .showcase-pill-top {
+    right: 0;
+  }
+  .showcase-pill-bottom {
+    left: 0;
   }
 }
 
@@ -1567,6 +1768,12 @@ ${reducedMotionBlock}
   padding: 0;
 }
 
+ul, ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
 html, body {
   max-width: 100%;
   overflow-x: hidden;
@@ -1609,6 +1816,27 @@ body {
   display: flex;
   align-items: center;
   gap: 1.5rem;
+}
+.navbar ul,
+.nav-links ul,
+nav ul,
+ul.nav-menu,
+ul.nav-links {
+  list-style: none !important;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+.navbar li,
+.nav-links li,
+nav li {
+  list-style: none !important;
+  margin: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
 }
 .nav-links a:not(.btn) {
   color: var(--text-secondary);

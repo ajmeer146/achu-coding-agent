@@ -104,6 +104,20 @@ export class BrowserSession {
           this.pageErrors.push(`Failed request: ${request.url()} - ${failure.errorText}`);
         }
       });
+
+      // Collect failed HTTP responses (4xx, 5xx) for assets and documents
+      this.page.on('response', response => {
+        const status = response.status();
+        if (status >= 400 && this.pageErrors.length < 50) {
+          const req = response.request();
+          const rType = req.resourceType();
+          // Filter out automatic browser-initiated favicon 404s that are not project assets
+          if (response.url().includes("favicon.ico")) return;
+          if (["image", "stylesheet", "script", "media", "font", "document"].includes(rType)) {
+            this.pageErrors.push(`Failed ${rType} request: ${response.url()} (HTTP ${status})`);
+          }
+        }
+      });
     }
   }
 
@@ -192,6 +206,21 @@ export class BrowserSession {
     try {
       const url = this.page.url();
       const title = await this.page.title();
+
+      // Settle pending images so natural dimensions and layout reflect final visual state
+      await this.page.evaluate(() => {
+        return Promise.all(
+          Array.from(document.images || []).map(img => {
+            if (img.complete) return Promise.resolve();
+            return new Promise(resolve => {
+              img.addEventListener("load", resolve, { once: true });
+              img.addEventListener("error", resolve, { once: true });
+              setTimeout(resolve, 1500);
+            });
+          })
+        );
+      }).catch(() => {});
+
       // Get visible text (we'll limit to a reasonable length)
       const visibleText = await this.page.evaluate(() => {
         // We'll use innerText as a simple approximation of visible text
@@ -280,7 +309,7 @@ export class BrowserSession {
             semanticElementsCount: semanticTags.length,
           };
         }),
-        // Placeholder and low-effort visual content detection
+        // Placeholder, broken, and low-effort visual content detection
         this.page.evaluate(() => {
           const issues: string[] = [];
           const bodyText = (document.body?.innerText || "").toLowerCase();
@@ -288,10 +317,17 @@ export class BrowserSession {
             if (bodyText.includes(phrase)) issues.push(`Placeholder text "${phrase}" is visible.`);
           }
           for (const img of Array.from(document.querySelectorAll("img"))) {
-            const src = (img.getAttribute("src") || "").toLowerCase();
-            const alt = (img.getAttribute("alt") || "").toLowerCase();
-            if (/placeholder|placehold\.co|dummyimage|lorempixel/.test(src) || /placeholder/.test(alt)) {
+            const rawSrc = img.getAttribute("src");
+            const src = (rawSrc || "").trim();
+            const alt = (img.getAttribute("alt") || "").trim();
+            const srcLower = src.toLowerCase();
+            const altLower = alt.toLowerCase();
+            if (!rawSrc || src === "" || src === "#") {
+              issues.push(`Broken image: <img> has missing or empty src attribute (alt: "${alt || 'none'}").`);
+            } else if (/placeholder|placehold\.co|dummyimage|lorempixel/.test(srcLower) || /placeholder/.test(altLower)) {
               issues.push(`Image uses a placeholder source or alt text: ${src || alt || "(empty)"}`);
+            } else if (img.complete && (img.naturalWidth === 0 || img.naturalHeight === 0)) {
+              issues.push(`Broken image: <img> with src "${src.slice(0, 80)}" failed to load (naturalWidth=0).`);
             }
           }
           for (const svg of Array.from(document.querySelectorAll("svg"))) {
@@ -489,6 +525,21 @@ export class BrowserSession {
     try {
       await this.setViewport(viewport);
       await this.page.evaluate(() => window.scrollTo(0, 0));
+
+      // Settle pending images so natural dimensions and layout reflect final visual state
+      await this.page.evaluate(() => {
+        return Promise.all(
+          Array.from(document.images || []).map(img => {
+            if (img.complete) return Promise.resolve();
+            return new Promise(resolve => {
+              img.addEventListener("load", resolve, { once: true });
+              img.addEventListener("error", resolve, { once: true });
+              setTimeout(resolve, 1500);
+            });
+          })
+        );
+      }).catch(() => {});
+
       // Resolve an explicit viewport name for the layout script + report.
       const vpName = typeof viewport === "string" ? viewport : `${viewport.width}x${viewport.height}`;
       const resolvedDimensions = typeof viewport === "string"
@@ -678,6 +729,61 @@ export class BrowserSession {
       }
     }
   }
+  // Broken image detection on rendered page
+  var imgElements = Array.prototype.slice.call(document.querySelectorAll("img"));
+  for (var ie = 0; ie < imgElements.length; ie++) {
+    var imEl = imgElements[ie];
+    if (!isVisible(imEl)) continue;
+    var rawSrc = imEl.getAttribute("src");
+    var trimSrc = (rawSrc || "").trim();
+    if (!rawSrc || trimSrc === "" || trimSrc === "#") {
+      push("critical", "broken_image", "Visible image " + describe(imEl) + " has an empty or missing src attribute.");
+    } else if (imEl.complete && (imEl.naturalWidth === 0 || imEl.naturalHeight === 0)) {
+      push("critical", "broken_image", "Visible image " + describe(imEl) + ' with src "' + trimSrc.slice(0, 60) + '" failed to load (rendered: ' + Math.round(imEl.getBoundingClientRect().width) + 'px, naturalWidth: 0).');
+    }
+  }
+  // Navigation layout quality: detect unstyled bulleted lists or accidental vertical stacking in headers
+  var navContainers = Array.prototype.slice.call(document.querySelectorAll("header nav, .navbar nav, nav.nav-links, .nav-container nav, header .nav-links, .navbar .nav-links, nav[role='navigation']"));
+  for (var nc = 0; nc < navContainers.length; nc++) {
+    var navContainer = navContainers[nc];
+    if (!isVisible(navContainer)) continue;
+    // Sidebar navigation in aside/sidebar is intentionally vertical, do not flag as defect
+    var isSidebar = Boolean(navContainer.closest("aside, .sidebar, [class*='sidebar'], [class*='drawer']"));
+    if (isSidebar) continue;
+    var uls = Array.prototype.slice.call(navContainer.querySelectorAll("ul"));
+    for (var u = 0; u < uls.length; u++) {
+      var ul = uls[u];
+      if (!isVisible(ul)) continue;
+      var ucs = window.getComputedStyle(ul);
+      if (ucs.listStyleType && ucs.listStyleType !== "none") {
+        push("critical", "bulleted_navigation", "Header navigation contains an unstyled bulleted list (list-style: " + ucs.listStyleType + "). Set 'list-style: none' on nav list elements.");
+      }
+      var lis = Array.prototype.slice.call(ul.querySelectorAll("li")).filter(isVisible);
+      if (lis.length >= 2 && vpWidth >= 768) {
+        var firstLiRect = lis[0].getBoundingClientRect();
+        var secondLiRect = lis[1].getBoundingClientRect();
+        if (secondLiRect.top >= firstLiRect.bottom - 2 && Math.abs(secondLiRect.left - firstLiRect.left) < 15) {
+          push("critical", "vertical_navigation_list", "Header navigation items are stacked vertically in a " + vpWidth + "px viewport instead of aligned horizontally. Use flexbox with horizontal flow ('display: flex; align-items: center; gap: 1rem;') on nav list.");
+        }
+      }
+    }
+  }
+  // Hero section composition: check for collapsed visual containers in hero
+  var heroes = Array.prototype.slice.call(document.querySelectorAll(".hero-section, [class*='hero']"));
+  for (var hi = 0; hi < heroes.length; hi++) {
+    var heroEl = heroes[hi];
+    if (!isVisible(heroEl)) continue;
+    var heroVisuals = Array.prototype.slice.call(heroEl.querySelectorAll(".hero-visual, .hero-image, .hero-showcase, .hero-media, [class*='hero-visual'], [class*='hero-image']"));
+    for (var hvi = 0; hvi < heroVisuals.length; hvi++) {
+      var hVisual = heroVisuals[hvi];
+      var vcs = window.getComputedStyle(hVisual);
+      if (vcs.display === "none" || vcs.visibility === "hidden") continue;
+      var vRect = hVisual.getBoundingClientRect();
+      if (vRect.width > 50 && vRect.height < 10) {
+        push("critical", "collapsed_hero_visual", "Hero visual container " + describe(hVisual) + " collapsed to " + Math.round(vRect.height) + "px height, creating an unintended blank area. Provide explicit height or visible visual content.");
+      }
+    }
+  }
   return { viewport: vp, width: width, height: height, horizontalOverflow: overflowPx > 1, overflowPx: overflowPx, defects: defects };
 })()
 `;
@@ -744,7 +850,11 @@ export interface LayoutDefect {
     | "offscreen_interactive"
     | "small_touch_target"
     | "text_overflow"
-    | "navigation_overlap";
+    | "navigation_overlap"
+    | "bulleted_navigation"
+    | "vertical_navigation_list"
+    | "broken_image"
+    | "collapsed_hero_visual";
   message: string;
 }
 

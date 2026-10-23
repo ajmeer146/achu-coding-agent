@@ -271,4 +271,263 @@ describe("AMS E-Commerce Storefront Acceptance & Verification Suite", () => {
       await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
   });
+
+  test("Regression: Broken product images are detected as critical defects and FAIL browser verification instead of falsely passing", async () => {
+    const port = await findFreePort();
+    const brokenHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Store with Broken Image</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #0f172a; color: #fff; }
+    .navbar { padding: 1rem; }
+    .product-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; padding: 1rem; }
+    .card { background: #1e293b; padding: 1rem; border-radius: 8px; }
+    img { width: 100%; height: 160px; object-fit: cover; }
+  </style>
+</head>
+<body>
+  <header class="navbar"><h1>Store</h1></header>
+  <main class="product-grid">
+    <div class="card">
+      <img src="http://localhost:${port}/nonexistent-product-image.jpg" alt="Broken Product">
+      <h3>Premium Headphones</h3>
+    </div>
+  </main>
+</body>
+</html>`;
+
+    const server = await listenOn(port, (req, res) => {
+      const urlPath = req.url?.split("?")[0] || "/";
+      if (urlPath === "/" || urlPath === "/index.html") {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(brokenHtml);
+      } else {
+        res.writeHead(404);
+        res.end("Not Found");
+      }
+    });
+
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      const appUrl = `http://localhost:${port}`;
+      await session.navigate(appUrl);
+
+      // 1. inspectPage must detect broken image in qualityIssues
+      const inspectRes = await session.inspectPage();
+      assert.equal(inspectRes.success, true);
+      if (inspectRes.success) {
+        const brokenIssue = inspectRes.info.qualityIssues?.find(q => q.toLowerCase().includes("broken image") || q.toLowerCase().includes("failed to load"));
+        assert.ok(brokenIssue, `inspectPage must detect broken image in qualityIssues: ${JSON.stringify(inspectRes.info.qualityIssues)}`);
+      }
+
+      // 2. analyzeLayout must report broken_image as critical defect
+      const layoutRes = await session.analyzeLayout("desktop");
+      assert.equal(layoutRes.success, true);
+      if (layoutRes.success) {
+        const brokenDefect = layoutRes.analysis.defects.find(d => d.type === "broken_image");
+        assert.ok(brokenDefect, `analyzeLayout must report broken_image defect: ${JSON.stringify(layoutRes.analysis.defects)}`);
+        assert.equal(brokenDefect!.severity, "critical", "broken_image must have critical severity");
+      }
+
+      // 3. runVerificationSuite must FAIL overall verification
+      const summary = await runVerificationSuite(session, appUrl, []);
+      assert.equal(summary.overallPassed, false, "Verification must FAIL when page contains broken images");
+      const imgCheck = summary.results.find(r => r.target.text?.includes("Image asset rendering") || r.target.text?.includes("Asset loading"));
+      assert.ok(imgCheck, `Must report image asset failure: ${JSON.stringify(summary.results)}`);
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  test("Regression: Unintended vertical bulleted navigation in header is detected as critical defect and FAILS browser verification", async () => {
+    const port = await findFreePort();
+    const unstyledNavHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Store with Vertical Nav</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #0f172a; color: #fff; }
+    header.navbar { padding: 1rem; }
+    .hero-section { padding: 2rem; }
+  </style>
+</head>
+<body>
+  <header class="navbar">
+    <nav class="nav-links">
+      <ul>
+        <li><a href="#catalog">Catalog</a></li>
+        <li><a href="#about">About</a></li>
+        <li><a href="#contact">Contact</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main>
+    <section class="hero-section"><h1>Store Title</h1></section>
+  </main>
+</body>
+</html>`;
+
+    const server = await listenOn(port, (_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(unstyledNavHtml);
+    });
+
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      const appUrl = `http://localhost:${port}`;
+      await session.navigate(appUrl);
+
+      const layoutRes = await session.analyzeLayout({ width: 1280, height: 800 });
+      assert.equal(layoutRes.success, true);
+      if (layoutRes.success) {
+        const navDefect = layoutRes.analysis.defects.find(d => d.type === "bulleted_navigation" || d.type === "vertical_navigation_list");
+        assert.ok(navDefect, `analyzeLayout must report bulleted_navigation or vertical_navigation_list: ${JSON.stringify(layoutRes.analysis.defects)}`);
+        assert.equal(navDefect!.severity, "critical", "Nav layout defect must have critical severity");
+      }
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  test("Regression: Collapsed hero visual container is detected as critical layout defect", async () => {
+    const port = await findFreePort();
+    const collapsedHeroHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Store with Collapsed Hero</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #0f172a; color: #fff; }
+    .hero-section { display: grid; grid-template-columns: 1fr 1fr; padding: 2rem; }
+    .hero-visual { width: 300px; height: 0px; overflow: hidden; }
+  </style>
+</head>
+<body>
+  <header><nav><a href="#">Home</a></nav></header>
+  <main>
+    <section class="hero-section">
+      <div class="hero-content"><h1>Welcome to AMS</h1><p>Gadgets and Tech</p></div>
+      <div class="hero-visual"></div>
+    </section>
+  </main>
+</body>
+</html>`;
+
+    const server = await listenOn(port, (_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(collapsedHeroHtml);
+    });
+
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      const appUrl = `http://localhost:${port}`;
+      await session.navigate(appUrl);
+
+      const layoutRes = await session.analyzeLayout({ width: 1280, height: 800 });
+      assert.equal(layoutRes.success, true);
+      if (layoutRes.success) {
+        const heroDefect = layoutRes.analysis.defects.find(d => d.type === "collapsed_hero_visual");
+        assert.ok(heroDefect, `analyzeLayout must report collapsed_hero_visual: ${JSON.stringify(layoutRes.analysis.defects)}`);
+        assert.equal(heroDefect!.severity, "critical", "collapsed_hero_visual must have critical severity");
+      }
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  test("Regression: Enhanced AMS Storefront renders flagship hero visual and passes all viewports with zero critical defects", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "achu-ams-enhanced-"));
+    const workspace = new Workspace(tempDir);
+    const spec = generateDesignSpec("build a modern ecommerce website named AMS for premium electronics and gadgets");
+
+    const scaffoldRes = await scaffoldStaticProject(workspace, "AMS", spec);
+    assert.equal(scaffoldRes.success, true);
+
+    const htmlContent = await workspace.read("index.html");
+    const cssContent = await workspace.read("styles.css");
+    const jsContent = await workspace.read("script.js");
+
+    assert.ok(htmlContent.includes("hero-showcase-card"), "Must include hero showcase card");
+    assert.ok(htmlContent.includes("hero-flagship-svg"), "Must include hero flagship SVG");
+    assert.ok(htmlContent.includes("hero-trust-chips"), "Must include trust chips in hero");
+    assert.ok(cssContent.includes(".hero-grid"), "Must include responsive hero grid styles");
+    assert.ok(cssContent.includes(".hero-showcase-card"), "Must include showcase card styling");
+
+    const port = await findFreePort();
+    const server = await listenOn(port, (req, res) => {
+      const urlPath = req.url?.split("?")[0] || "/";
+      if (urlPath === "/" || urlPath === "/index.html") {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(htmlContent);
+      } else if (urlPath === "/styles.css") {
+        res.writeHead(200, { "Content-Type": "text/css" });
+        res.end(cssContent);
+      } else if (urlPath === "/script.js") {
+        res.writeHead(200, { "Content-Type": "application/javascript" });
+        res.end(jsContent);
+      } else {
+        res.writeHead(404);
+        res.end("Not Found");
+      }
+    });
+
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      const appUrl = `http://localhost:${port}`;
+      await session.navigate(appUrl);
+      const page = session.getPage()!;
+
+      // Viewport test across 320px, 375px, 768px, 1024px, 1366px
+      const viewports = [
+        { width: 320, height: 568 },
+        { width: 375, height: 667 },
+        { width: 768, height: 1024 },
+        { width: 1024, height: 768 },
+        { width: 1366, height: 768 },
+      ];
+
+      for (const vp of viewports) {
+        const layoutRes = await session.analyzeLayout(vp);
+        assert.equal(layoutRes.success, true);
+        if (layoutRes.success) {
+          const criticals = layoutRes.analysis.defects.filter(d => d.severity === "critical");
+          assert.equal(criticals.length, 0, `Viewport ${vp.width}x${vp.height} must have zero critical layout defects. Found: ${criticals.map(d => d.message).join("; ")}`);
+        }
+      }
+
+      // Check hero showcase is rendered and visible
+      const heroSvg = page.locator(".hero-flagship-svg");
+      assert.ok(await heroSvg.isVisible(), "Hero flagship SVG must be visible");
+      const heroSvgBox = await heroSvg.boundingBox();
+      assert.ok(heroSvgBox && heroSvgBox.width > 50 && heroSvgBox.height > 50, "Hero SVG must have substantial dimensions");
+
+      // Verify all product cards have valid visuals
+      const productVisuals = await page.locator(".product-visual svg").all();
+      assert.equal(productVisuals.length, 8, "All 8 products must have valid inline SVG illustrations");
+
+      // Run verification suite
+      const summary = await runVerificationSuite(session, appUrl, [
+        { type: "heading", text: "AMS" },
+        { type: "input", selector: 'input[type="search"]', required: true },
+        { type: "button", text: "Cart", required: true },
+        { type: "button", text: "Shop Now", required: true },
+        { type: "section", selector: "#catalog", required: true },
+      ]);
+      assert.equal(summary.overallPassed, true, `AMS Storefront must pass verification: ${summary.results.filter(r => !r.passed).map(r => r.error).join("; ")}`);
+    } finally {
+      await session.close();
+      await closeServer(server);
+      await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  });
 });

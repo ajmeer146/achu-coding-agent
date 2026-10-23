@@ -1708,6 +1708,8 @@ export function evaluateWebsiteQuality(params: {
     if (textOverflows.length > 0) { score -= 40 * textOverflows.length; defects.push(`${textOverflows.length} text overflow defect(s)`); }
     const navOverlaps = criticalDefects.filter((d) => d.type === "navigation_overlap");
     if (navOverlaps.length > 0) { score -= 40 * navOverlaps.length; defects.push(`${navOverlaps.length} navigation overlap defect(s)`); }
+    const heroVisualDefects = criticalDefects.filter((d) => d.type === "collapsed_hero_visual");
+    if (heroVisualDefects.length > 0) { score -= 35 * heroVisualDefects.length; defects.push(...heroVisualDefects.map((d) => d.message)); }
     if (criticalDefects.some((d) => d.type === "horizontal_overflow")) { score -= 40; defects.push("Horizontal overflow disrupts page alignment"); }
     if (score === 100) evidence.push("Alignment, grid flow, and typography wrapping cleanly");
     score = Math.max(0, score);
@@ -1836,6 +1838,11 @@ export function evaluateWebsiteQuality(params: {
       score -= Math.min(40, clippedControls.length * 20);
       defects.push(`${clippedControls.length} interactive control(s) clipped off-screen`);
     }
+    const navDefects = criticalDefects.filter((d) => d.type === "bulleted_navigation" || d.type === "vertical_navigation_list");
+    if (navDefects.length > 0) {
+      score -= Math.min(50, navDefects.length * 25);
+      defects.push(...navDefects.map((d) => d.message));
+    }
     score = Math.max(0, score);
     categories.push({
       categoryNumber: 7,
@@ -1952,6 +1959,12 @@ export function evaluateWebsiteQuality(params: {
       defects.push(`${assetErrors.length} failed asset request(s): ${assetErrors.slice(0, 2).join("; ")}`);
     } else {
       evidence.push("Zero failed asset requests; all referenced resources resolved");
+    }
+    const brokenImgDefects = criticalDefects.filter((d) => d.type === "broken_image");
+    if (brokenImgDefects.length > 0) {
+      score -= Math.min(60, brokenImgDefects.length * 30);
+      defects.push(`${brokenImgDefects.length} broken image defect(s): ${brokenImgDefects.slice(0, 2).map((d) => d.message).join("; ")}`);
+      blockers.push(`${brokenImgDefects.length} broken image(s) detected on page`);
     }
     const mediaWarnings = warningDefects.filter((d) => d.type === "media_fixed_width");
     if (mediaWarnings.length > 0) {
