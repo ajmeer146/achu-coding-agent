@@ -1730,6 +1730,8 @@ export function evaluateWebsiteQuality(params: {
     const defects: string[] = [];
     if (stylesheetCount === 0 && totalCssRules === 0) {
       defects.push("No color system or theme defined");
+    } else {
+      evidence.push(`Stylesheets loaded with ${totalCssRules} rules defining color theme`);
     }
     const font = params.fontFamily || "";
     if (font.toLowerCase().includes("times new roman") && totalCssRules < 15) {
@@ -1737,6 +1739,10 @@ export function evaluateWebsiteQuality(params: {
       defects.push("Unstyled browser serif default font detected");
     } else if (score > 0) {
       evidence.push(`Active typography: "${font || "system default"}"`);
+    }
+    if (totalCssRules < 8 && totalCssRules > 0) {
+      score -= 25;
+      defects.push("Insufficient CSS rules to establish an accessible color palette and contrast");
     }
     score = Math.max(0, score);
     categories.push({
@@ -1751,12 +1757,20 @@ export function evaluateWebsiteQuality(params: {
     });
   }
 
+  // Helper for viewport defect partitioning
+  const isMobileOrTabletDefect = (d: { type: string; message: string }) => {
+    if (d.message.includes("mobile") || d.message.includes("tablet")) return true;
+    if (/\b(320|375|390|430|768)px\b/.test(d.message)) return true;
+    if (/\b(1024|1280|1440|1920)px\b/.test(d.message)) return false;
+    return d.type === "horizontal_overflow";
+  };
+
   // 5. Desktop layout quality
   {
     let score = 100;
     const evidence: string[] = [];
     const defects: string[] = [];
-    const desktopDefects = criticalDefects.filter((d) => !d.message.includes("mobile") && !d.message.includes("375") && !d.message.includes("320"));
+    const desktopDefects = criticalDefects.filter((d) => !isMobileOrTabletDefect(d));
     if (desktopDefects.length > 0) {
       score -= desktopDefects.length * 35;
       defects.push(...desktopDefects.map((d) => d.message));
@@ -1781,7 +1795,7 @@ export function evaluateWebsiteQuality(params: {
     let score = 100;
     const evidence: string[] = [];
     const defects: string[] = [];
-    const mobileDefects = criticalDefects.filter((d) => d.message.includes("mobile") || d.message.includes("375") || d.message.includes("320") || d.type === "horizontal_overflow");
+    const mobileDefects = criticalDefects.filter((d) => isMobileOrTabletDefect(d));
     if (mobileDefects.length > 0) {
       score -= mobileDefects.length * 35;
       defects.push(...mobileDefects.map((d) => d.message));
@@ -1816,6 +1830,11 @@ export function evaluateWebsiteQuality(params: {
       defects.push("No interactive buttons found on page");
     } else {
       evidence.push(`Found ${buttons.length} button/CTA control(s)`);
+    }
+    const clippedControls = criticalDefects.filter((d) => d.type === "clipped_interactive");
+    if (clippedControls.length > 0) {
+      score -= Math.min(40, clippedControls.length * 20);
+      defects.push(`${clippedControls.length} interactive control(s) clipped off-screen`);
     }
     score = Math.max(0, score);
     categories.push({
@@ -1888,9 +1907,27 @@ export function evaluateWebsiteQuality(params: {
     const evidence: string[] = [];
     const defects: string[] = [];
     if (inputs.length > 0) {
-      evidence.push(`Found ${inputs.length} form input(s) with semantic types`);
+      const unnamedInputs = inputs.filter((i) => !i.name && !i.placeholder);
+      if (unnamedInputs.length > 0) {
+        score -= Math.min(30, unnamedInputs.length * 15);
+        defects.push(`${unnamedInputs.length} input(s) lack accessible name, label, or placeholder`);
+      } else {
+        evidence.push(`All ${inputs.length} form input(s) have semantic types and labels/placeholders`);
+      }
+    } else {
+      evidence.push("Semantic form controls structured cleanly");
     }
-    evidence.push("Semantic HTML landmarks and keyboard focus rules configured");
+    if (semanticCount < 2) {
+      score -= 25;
+      defects.push("Missing semantic landmark elements (<main>, <header>, <nav>, <footer>) for screen readers");
+    } else {
+      evidence.push(`Found ${semanticCount} semantic landmark element(s)`);
+    }
+    const touchDefects = warningDefects.filter((d) => d.type === "small_touch_target");
+    if (touchDefects.length > 2) {
+      score -= 15;
+      defects.push(`${touchDefects.length} controls below recommended 44x44px touch target size`);
+    }
     score = Math.max(0, score);
     categories.push({
       categoryNumber: 10,
@@ -1909,7 +1946,20 @@ export function evaluateWebsiteQuality(params: {
     let score = 100;
     const evidence: string[] = [];
     const defects: string[] = [];
-    evidence.push("Local CSS/JS assets structured with fast delivery");
+    const assetErrors = pageErrors.filter((e) => /Failed request|404|net::ERR/i.test(e));
+    if (assetErrors.length > 0) {
+      score -= Math.min(50, assetErrors.length * 25);
+      defects.push(`${assetErrors.length} failed asset request(s): ${assetErrors.slice(0, 2).join("; ")}`);
+    } else {
+      evidence.push("Zero failed asset requests; all referenced resources resolved");
+    }
+    const mediaWarnings = warningDefects.filter((d) => d.type === "media_fixed_width");
+    if (mediaWarnings.length > 0) {
+      score -= Math.min(25, mediaWarnings.length * 10);
+      defects.push(`${mediaWarnings.length} media element(s) lack max-width: 100% responsive constraint`);
+    } else {
+      evidence.push("Media assets constrained with responsive sizing");
+    }
     score = Math.max(0, score);
     categories.push({
       categoryNumber: 11,
@@ -1941,6 +1991,8 @@ export function evaluateWebsiteQuality(params: {
       blockers.push("Build compilation failed");
     } else if (params.buildPassed === true) {
       evidence.push("Production build command completed cleanly (exit code 0)");
+    } else {
+      evidence.push("Static client deployment ready (no standalone compilation required)");
     }
     score = Math.max(0, score);
     categories.push({

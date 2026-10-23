@@ -220,7 +220,7 @@ const AGENT_TOOLS: Array<{ type: "function"; function: { name: string; descripti
   { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "open_browser", description: "Open a browser session for live preview verification.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "close_browser", description: "Close the browser session.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
-  { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks expected text, headings, buttons, inputs, dropdowns, links, routes, and click/form interactions. Provide optional baseUrl and a targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Verification targets. Use type=interaction (click) with expectedTextAfter/expectedUrlAfter/expectedSelectorAfter to prove a control changes state. Use type=form with inputValue and expectedTextAfter to submit a form. Use type=select with a selector to verify a dropdown.", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "button", "input", "select", "link", "route", "interaction", "form"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" }, action: { type: "string", enum: ["click", "type", "submit"], description: "Interaction action for an interaction target." }, inputValue: { type: "string", description: "Value to type for a form target." }, expectedTextAfter: { type: "string", description: "Text expected in the page after the action." }, expectedUrlAfter: { type: "string", description: "URL fragment expected after the action." }, expectedSelectorAfter: { type: "string", description: "Element selector expected to appear after the action." } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
+  { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks expected text, headings, sections, buttons, inputs, dropdowns, links, routes, and click/form interactions. Provide optional baseUrl and a targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Verification targets. Use type=interaction (click) with expectedTextAfter/expectedUrlAfter/expectedSelectorAfter to prove a control changes state. Use type=form with inputValue and expectedTextAfter to submit a form. Use type=select with a selector to verify a dropdown. Use type=section with text/selector to verify a section exists.", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "section", "button", "input", "select", "link", "route", "interaction", "form"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" }, action: { type: "string", enum: ["click", "type", "submit"], description: "Interaction action for an interaction target." }, inputValue: { type: "string", description: "Value to type for a form target." }, expectedTextAfter: { type: "string", description: "Text expected in the page after the action." }, expectedUrlAfter: { type: "string", description: "URL fragment expected after the action." }, expectedSelectorAfter: { type: "string", description: "Element selector expected to appear after the action." } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "take_screenshot", description: "Captures a PNG screenshot of the current browser page for human review. Returns only the image size; the agent cannot visually interpret screenshot pixels. Use inspect_visual_quality for measurable layout checks.", parameters: { type: "object", properties: { viewport: { type: "string", enum: ["desktop", "mobile"], description: "Optional viewport to capture: 'desktop' (1280x800) or 'mobile' (375x667)." } }, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "inspect_visual_quality", description: "Runs measurable layout checks (horizontal overflow, clipped interactive elements, navigation overlap, text overflow, small touch targets) at desktop and mobile viewports. Use after browser_verify to find real layout defects. Does not interpret screenshot pixels.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
 ];
@@ -1910,6 +1910,8 @@ export function generateRecoveryHint(state: AgentState): string | null {
     if (/measurable visual defects/i.test(err.errorMessage ?? "")) {
       repeatedHint += `\n- The content assertions passed but measurable layout defects were reported (see error text). Apply targeted CSS/HTML fixes for each listed defect and re-run browser_verify. Do NOT claim visual success while these defects are reported.` +
         `\n- Responsive correction guidance: give images/SVGs/containers 'max-width: 100%; height: auto;' and avoid fixed px widths wider than the smallest tested viewport (320px).` +
+        `\n- For 320px/mobile horizontal overflow: set '.container { padding: 0 0.75rem; }' in a mobile media query, use 'word-break: break-word; overflow-wrap: break-word;' and reduce font size on large headings (e.g. h1 { font-size: clamp(1.75rem, 5vw, 2.5rem); }), and set 'flex-wrap: wrap; gap: 0.5rem;' on navbar/nav-link lists.` +
+        `\n- For CSS structure: NEVER nest an @media block inside another @media block in vanilla CSS (standard CSS will ignore inner nested media queries). Keep all @media (max-width: 768px) and @media (max-width: 480px) blocks at the top level of styles.css.` +
         `\n- For horizontal overflow/clipping: set 'box-sizing: border-box' globally, use 'overflow-x: hidden' only on the specific overflowing wrapper (never to hide real content), 'min-width: 0' on flex/grid children, and 'flex-shrink: 1'.` +
         `\n- For fixed/sticky drawers, navbars, or modals extending outside the viewport: anchor them with 'left: 0'/'right: 0' or constrain 'width: min(100%, <desired>px)'.` +
         `\n- Re-test at 320x568, 375x667, and 390x844 in addition to desktop widths before claiming the fix works.`;
@@ -2195,12 +2197,16 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
      - Modern typography stack (system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif) with clear hierarchy and comfortable line-height.
      - Design tokens at :root (--bg, --card-bg, --text-primary, --text-secondary, --accent, --accent-hover, --border, --shadow).
      - Cohesive modern color palette: dark slate aesthetic (e.g. #0b0f19 background, #1e293b card, #38bdf8 / #3b82f6 accent) or crisp clean light theme.
-     - Responsive layouts: Flexbox for navigation and toolbars; CSS Grid (grid-template-columns: repeat(auto-fit, minmax(280px, 1fr))) for cards and features.
-     - Card design: subtle borders, soft shadows, rounded corners (8-12px), and smooth hover lift transitions (transform: translateY(-4px)).
-     - Form design: full-width inputs with comfortable padding, visible focus rings with transitions (outline: none; border-color: accent; box-shadow: 0 0 0 3px rgba(accent, 0.2)).
-     - Action buttons: prominent primary buttons with hover/active transitions, cursor: pointer, and accessible contrast.
-     - Mobile responsiveness: media queries ensuring touch targets (min 44px) and stacked layouts for mobile screens (@media (max-width: 768px)).
-     - Stylesheet must contain comprehensive rules covering all page elements (at least 25-50 CSS rules).
+      - Responsive layouts: Flexbox for navigation and toolbars; CSS Grid (grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr))) for cards and features (never a fixed minmax(280px, 1fr) which overflows 320px screens).
+      - Responsive containers: .container { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 1rem; } with mobile padding: @media (max-width: 480px) { .container { padding: 0 0.75rem; } }. Never use 2rem (32px) padding on small mobile screens.
+      - Fluid typography: h1 { font-size: clamp(2rem, 5vw, 3.5rem); word-break: break-word; overflow-wrap: break-word; } ensuring single long bold words do not force container expansion beyond 320px.
+      - Mobile navigation: On screens below 768px, nav links must wrap (flex-wrap: wrap; gap: 0.5rem;) or collapse behind a working mobile menu toggle button with .nav-links.open class.
+      - CSS structure: Write clean vanilla CSS. NEVER nest @media blocks inside another @media block.
+      - Card design: subtle borders, soft shadows, rounded corners (8-12px), and smooth hover lift transitions (transform: translateY(-4px)).
+      - Form design: full-width inputs with comfortable padding, visible focus rings with transitions (outline: none; border-color: accent; box-shadow: 0 0 0 3px rgba(accent, 0.2)).
+      - Action buttons: prominent primary buttons with hover/active transitions, cursor: pointer, and accessible contrast.
+      - Mobile responsiveness: media queries ensuring touch targets (min 44px) and stacked layouts for mobile screens (@media (max-width: 768px)).
+      - Stylesheet must contain comprehensive rules covering all page elements (at least 25-50 CSS rules).
   5. Implement functional, clean client-side logic in script.js:
      - Form submit handlers preventing default reload (e.preventDefault()) and demonstrating interactive validation feedback.
      - Interactive toggles: theme toggle (dark/light mode), mobile menu toggle, or filter tabs.
@@ -2455,10 +2461,11 @@ LIVE PREVIEW VERIFICATION (Phase 19):
   3. browser_verify: Verify the running application (checks text, headings, buttons, inputs, links, routes)
   4. close_browser: Close the browser session when done
   5. stop_app: Stop the development server when done
-- Use browser_verify with specific targets array for precise checks (type: text|heading|button|input|select|link|route|interaction|form)
+- Use browser_verify with specific targets array for precise checks (type: text|heading|section|button|input|select|link|route|interaction|form)
   - For working controls, use type=interaction with text or selector plus expectedTextAfter/expectedUrlAfter/expectedSelectorAfter to prove the click changes state.
   - For forms, use type=form with a submit button (text), inputValue and expectedTextAfter feedback.
   - For dropdowns, use type=select with a selector (e.g. #sortSelect).
+  - For sections, use type=section with text (e.g. "Pricing", "Features") or selector (e.g. "#pricing").
   - Only these type values are valid; never invent other target types.
   - Checks derived from the user's task are always required and cannot be downgraded. Extra checks you invent are advisory by default (reported as optional warnings) unless you set "required": true. Do not rewrite working HTML merely to satisfy a speculative assertion you added; correct or drop the assertion instead. If a required assertion fails, fix the real page defect.
 - Browser verification retries up to 5 times on failure before reporting failure. Each retry must fix a real defect or correct an optional assertion; do not repeat the same failing check unchanged.
@@ -2683,7 +2690,7 @@ const schemas = {
   browser_verify: z.object({
     baseUrl: z.string().optional(),
     targets: z.array(z.object({
-      type: z.enum(["text", "heading", "button", "input", "select", "link", "route", "interaction", "form"]),
+      type: z.enum(["text", "heading", "section", "button", "input", "select", "link", "route", "interaction", "form"]),
       text: z.string().optional(),
       url: z.string().optional(),
       selector: z.string().optional(),
@@ -3530,6 +3537,11 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
             return `Browser verification: content assertions passed (attempt ${state.browserVerificationAttempts}/${state.maxBrowserVerificationAttempts}) at ${baseUrl}, but measurable visual defects were detected:\n${visualDetail}\nFix these layout defects with targeted CSS/HTML edits, then re-run browser_verify. Do not claim visual quality until these checks pass.`;
           }
 
+          const hasBuildStep = state.currentPlan.some(s => s.toolType === "run_command" && s.description.toLowerCase().includes("build"));
+          const buildPassed = hasBuildStep
+            ? state.currentPlan.find(s => s.description.toLowerCase().includes("build"))?.status === "completed"
+            : undefined;
+
           const qualityAudit = evaluateWebsiteQuality({
             task: state.taskPrompt ?? "",
             pageTitle: summary.pageInfo?.title,
@@ -3546,9 +3558,16 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
             consoleErrors: summary.pageInfo?.consoleErrors,
             pageErrors: summary.pageInfo?.pageErrors,
             verificationPassed: true,
-            buildPassed: true,
+            buildPassed,
           });
           state.qualityAudit = qualityAudit;
+
+          if (qualityAudit.blockers.length > 0) {
+            if (state.browserVerificationAttempts >= state.maxBrowserVerificationAttempts) {
+              return `Browser verification failed after ${state.browserVerificationAttempts} attempts at ${baseUrl}: quality audit detected critical blockers:\n${qualityAudit.blockers.map(b => `- ${b}`).join("\n")}\nReport these blockers honestly.`;
+            }
+            return `Browser verification: quality audit detected critical blocker(s) (attempt ${state.browserVerificationAttempts}/${state.maxBrowserVerificationAttempts}):\n${qualityAudit.blockers.map(b => `- ${b}`).join("\n")}\nResolve these blockers, then re-run browser_verify.`;
+          }
 
           state.browserVerificationAttempts = 0;
           state.browserVerificationPassed = true;

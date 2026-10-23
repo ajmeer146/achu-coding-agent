@@ -287,4 +287,89 @@ test("Complete Website Development Guide — 50 Essential Principles Master Suit
     assert.ok(failingAudit.overallScore <= 40, "Secret leak must cap score at failing grade");
     assert.ok(failingAudit.blockers.includes("Secret leak detected"));
   });
+
+  await t.test("7. Section target verification and evidence-based defect partitioning", async () => {
+    const pageHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sections Test</title>
+</head>
+<body>
+  <header><h1>Header</h1></header>
+  <main>
+    <section id="features">
+      <h2>Features</h2>
+      <p>Feature details here.</p>
+    </section>
+    <section id="pricing">
+      <h2>Pricing Plans</h2>
+      <p>Choose your plan.</p>
+    </section>
+  </main>
+  <footer><p>Footer</p></footer>
+</body>
+</html>`;
+
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(pageHtml);
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as any).port;
+    const url = `http://localhost:${port}`;
+
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(url);
+
+      // Verify section by text (heading match)
+      const res1 = await runVerificationSuite(session, url, [
+        { type: "section", text: "Features" },
+        { type: "section", selector: "#pricing" },
+      ]);
+      assert.equal(res1.overallPassed, true);
+      assert.equal(res1.results[0].passed, true);
+      assert.equal(res1.results[1].passed, true);
+
+      // Verify non-existent section fails
+      const res2 = await runVerificationSuite(session, url, [
+        { type: "section", selector: "#nonexistent" },
+      ]);
+      assert.equal(res2.overallPassed, false);
+      assert.equal(res2.results[0].passed, false);
+    } finally {
+      await session.close();
+      await new Promise((resolve) => server.close(resolve));
+    }
+
+    // Verify desktop vs mobile layout defect partitioning
+    const auditWithDefects = evaluateWebsiteQuality({
+      task: "test audit",
+      criticalLayoutDefects: [
+        { type: "horizontal_overflow", message: "Page content is 14px wider than the 320px viewport" },
+        { type: "clipped_interactive", message: "Interactive element is clipped at the right edge of the 1440px viewport" },
+      ],
+      warningLayoutDefects: [
+        { type: "small_touch_target", message: "Touch target is 24x24px" },
+        { type: "small_touch_target", message: "Touch target is 20x20px" },
+        { type: "small_touch_target", message: "Touch target is 22x22px" },
+      ],
+      stylesheetCount: 1,
+      totalCssRules: 20,
+      semanticCount: 4,
+    });
+
+    const cat5 = auditWithDefects.categories.find(c => c.categoryNumber === 5);
+    const cat6 = auditWithDefects.categories.find(c => c.categoryNumber === 6);
+    const cat10 = auditWithDefects.categories.find(c => c.categoryNumber === 10);
+    assert.ok(cat5, "Desktop category exists");
+    assert.ok(cat6, "Mobile category exists");
+    assert.ok(cat10, "Accessibility category exists");
+    assert.ok(cat5!.score < 100, "Desktop defect must reduce desktop category score");
+    assert.ok(cat6!.score < 100, "320px overflow must reduce mobile category score");
+    assert.ok(cat10!.score < 100, "Touch target warnings must reduce accessibility score");
+  });
 });

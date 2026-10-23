@@ -596,6 +596,14 @@ export function formatDesignSpecForPrompt(spec: DesignSpec): string {
   Section vertical padding: ${sp.sectionVertical}
   Card padding:             ${sp.cardPadding}
 
+**Responsive Layout Rules (MANDATORY for 320px to 1920px viewports):**
+  Container: .container { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 1rem; }
+  Mobile Container: @media (max-width: 480px) { .container { padding: 0 0.75rem; } } (never 2rem/32px on mobile)
+  Fluid Heading: h1 { font-size: clamp(2rem, 5vw, ${ty.heroSize}); word-break: break-word; overflow-wrap: break-word; }
+  Adaptive Grid: grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); (fits 320px screens)
+  Mobile Navigation: @media (max-width: 768px) { .navbar .container { flex-wrap: wrap; } .nav-links { flex-wrap: wrap; gap: 0.5rem; } }
+  CSS Nesting: Never nest @media blocks inside other @media blocks in standard CSS.
+
 **Expected Sections (verify these exist):**
   ${spec.expectedSections.join(", ")}
 

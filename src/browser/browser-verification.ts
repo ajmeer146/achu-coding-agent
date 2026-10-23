@@ -3,7 +3,7 @@ import { PageInfo } from "./browser-session.js";
 import { analyseTaskBrief } from "../tools/design-planner.js";
 
 export type VerificationTarget = {
-  type: "text" | "heading" | "button" | "input" | "select" | "link" | "route" | "interaction" | "form";
+  type: "text" | "heading" | "button" | "input" | "select" | "section" | "link" | "route" | "interaction" | "form";
   selector?: string;
   text?: string;
   url?: string;
@@ -488,6 +488,70 @@ export async function verifySelectExists(
   }
 }
 
+export async function verifySectionExists(
+  session: BrowserSession,
+  criteria: { selector?: string; text?: string }
+): Promise<VerificationResult> {
+  const target: VerificationTarget = {
+    type: "section",
+    ...(criteria.selector ? { selector: criteria.selector } : {}),
+    ...(criteria.text ? { text: criteria.text } : {}),
+  };
+  const desc = criteria.selector ? `selector "${criteria.selector}"` : criteria.text ? `section "${criteria.text}"` : "";
+  if (!desc) {
+    return {
+      passed: false,
+      target,
+      error: 'Invalid section verification criteria: provide a "text" or "selector" for the section.',
+    };
+  }
+
+  const page = typeof (session as any).getPage === "function" ? (session as any).getPage() : null;
+  if (!page) {
+    if (criteria.text) {
+      return verifyTextExists(session, criteria.text);
+    }
+    return { passed: false, target, error: "Section verification unavailable: no browser page." };
+  }
+
+  try {
+    let passed = false;
+    let actual = "";
+    if (criteria.selector) {
+      const el = await page.$(criteria.selector);
+      if (el) {
+        passed = true;
+        actual = `Found section matching "${criteria.selector}"`;
+      }
+    }
+    if (!passed && criteria.text) {
+      const slug = criteria.text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const byId = await page.$(`section#${slug}, #${slug}, section[aria-label*="${criteria.text}" i]`);
+      if (byId) {
+        passed = true;
+        actual = `Found section "#${slug}"`;
+      } else {
+        const headingMatch = await page.evaluate((titleText: string) => {
+          const lower = titleText.toLowerCase();
+          const headings = Array.from(document.querySelectorAll("h1, h2, h3, h4, section, div[id]"));
+          return headings.some(h => (h.textContent || "").toLowerCase().includes(lower) || (h.id || "").toLowerCase().includes(lower));
+        }, criteria.text);
+        if (headingMatch) {
+          passed = true;
+          actual = `Found section content with heading/id "${criteria.text}"`;
+        }
+      }
+    }
+
+    if (!passed) {
+      return { passed: false, target, error: `Section (${desc}) not found in page.` };
+    }
+    return { passed: true, target, actual };
+  } catch (err: any) {
+    return { passed: false, target, error: `Section verification failed: ${err?.message || err}` };
+  }
+}
+
 export async function verifyInputExists(
   session: BrowserSession,
   attributes: InputCriteria
@@ -924,6 +988,12 @@ export async function runVerificationSuite(
           selector: selector || undefined,
           name: target.name,
           label: target.label,
+        });
+        break;
+      case "section":
+        result = await verifySectionExists(session, {
+          selector: selector || undefined,
+          text: target.text,
         });
         break;
       case "link":
