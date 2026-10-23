@@ -1495,7 +1495,8 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
         for (let j = 0; j < matchedIndex; j++) {
           const prior = updatedPlan[j];
           if (prior.status === "completed" || prior.status === "failed") continue;
-          if (prior.toolType === "read_file" || prior.toolType === "list_directory" || prior.toolType === "search_code") {
+          if (prior.toolType === "read_file" || prior.toolType === "list_directory" || prior.toolType === "search_code" ||
+              (step.toolType === "browser_verify" && prior.toolType === "open_browser")) {
             prior.status = "completed";
           }
         }
@@ -1584,7 +1585,7 @@ export function isToolResultSuccess(toolName: string, result: string): boolean {
   if (isToolResultFailure(toolName, result)) return false;
   switch (toolName) {
     case "start_app": return /ready at (https?:\/\/\S+)/i.test(result) || result.includes("reused active server") || result.includes("reused existing server");
-    case "open_browser": return result.includes("Browser opened successfully") || result.includes("Browser already open");
+    case "open_browser": return result.includes("Browser opened successfully") || result.includes("Browser already open") || result.includes("Browser session skipped");
     case "browser_verify": return result.includes("Browser verification passed");
     case "close_browser": return result.includes("Browser closed") || result.includes("Browser not open");
     case "stop_app": return result.includes("App process stopped") || result.includes("No app process running") || result.includes("remains running for Live Preview");
@@ -2200,7 +2201,7 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
       - Responsive layouts: Flexbox for navigation and toolbars; CSS Grid (grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr))) for cards and features (never a fixed minmax(280px, 1fr) which overflows 320px screens).
       - Responsive containers: .container { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 1rem; } with mobile padding: @media (max-width: 480px) { .container { padding: 0 0.75rem; } }. Never use 2rem (32px) padding on small mobile screens.
       - Fluid typography: h1 { font-size: clamp(2rem, 5vw, 3.5rem); word-break: break-word; overflow-wrap: break-word; } ensuring single long bold words do not force container expansion beyond 320px.
-      - Mobile navigation: On screens below 768px, nav links must wrap (flex-wrap: wrap; gap: 0.5rem;) or collapse behind a working mobile menu toggle button with .nav-links.open class.
+      - Mobile navigation: On screens below 768px, nav links must wrap (flex-wrap: wrap; gap: 0.5rem;) or collapse behind a working mobile menu toggle button with .nav-links.open class. When using fixed/off-canvas mobile menus with transform: translateY(-100%), the closed menu MUST have 'pointer-events: none; visibility: hidden;' (and 'pointer-events: auto; visibility: visible;' on .nav-links.open) so it never intercepts pointer clicks on the hamburger button or header logo when closed.
       - CSS structure: Write clean vanilla CSS. NEVER nest @media blocks inside another @media block.
       - Card design: subtle borders, soft shadows, rounded corners (8-12px), and smooth hover lift transitions (transform: translateY(-4px)).
       - Form design: full-width inputs with comfortable padding, visible focus rings with transitions (outline: none; border-color: accent; box-shadow: 0 0 0 3px rgba(accent, 0.2)).
@@ -2410,6 +2411,7 @@ TOOL SELECTION RULES (CRITICAL):
 - FOR CLOSING BROWSER: You MUST use the 'close_browser' tool.
 - FOR STOPPING DEVELOPMENT SERVER: You MUST use the 'stop_app' tool. Do NOT use 'run_command' with kill/pkill.
 - FOR CREATING package.json: You MUST use the 'create_file' tool. Do NOT use 'run_command' with 'npm init'.
+- FOR CREATING OR MODIFYING SOURCE FILES: You MUST use 'create_file' (for new files) or 'edit_file' (for existing files). Do NOT use 'run_command' with shell redirection ('cat >', 'echo >', 'tee'). Shell here-docs are non-interactive and fail in the container runtime.
 - FOR RUNNING EXACT VERIFICATION COMMAND: You MUST use the 'run_verification' tool. Do NOT use 'run_command' for the user's requested verification command.
 - FOR RUNNING THE BUILD COMMAND (e.g. 'npm run build') when the user did NOT request an exact command: Use 'run_command' (or 'run_verification' if that is the toolType shown for the build step in your plan). Follow the toolType shown in the plan steps.
 - FOR GENERIC SHELL COMMANDS (ls, mkdir, etc.): Use 'run_command' only when no specialized tool exists.
@@ -3591,6 +3593,11 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           state.browserVerificationRequested = false;
           state.browserVerificationPassed = false;
           state.browserSession = session;
+          for (const s of state.currentPlan) {
+            if (s.toolType === "open_browser" || s.toolType === "browser_verify" || s.toolType === "close_browser") {
+              s.status = "completed";
+            }
+          }
           return `Browser session skipped: Browser automation service unavailable (${availability.error}). Application edits remain intact.`;
         }
         const result = await open_browser(session);
@@ -3600,6 +3607,11 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         }
         state.browserVerificationRequested = false;
         state.browserVerificationPassed = false;
+        for (const s of state.currentPlan) {
+          if (s.toolType === "open_browser" || s.toolType === "browser_verify" || s.toolType === "close_browser") {
+            s.status = "completed";
+          }
+        }
         return `Browser session skipped: Browser automation service unavailable (${result.error}). Application edits remain intact.`;
       }
       case "close_browser": { if (!state.browserSession) return "Browser not open."; const result = await close_browser(state.browserSession); state.browserSession = null; return result.success ? "Browser closed" : `Failed to close browser: ${result.error}`; }
@@ -4062,6 +4074,18 @@ export async function runAgent(
         continue;
       }
       if (pendingLifecycle.length > 0 && hasToolWorkNow && !state.stopReason) {
+        if (pendingLifecycle[0].toolType === "open_browser") {
+          console.log(chalk.gray(`Auto-executing lifecycle step: open_browser`));
+          const openCall: ToolCall = {
+            id: `call_${Date.now()}_open_browser`,
+            type: "function",
+            function: { name: "open_browser", arguments: "{}" },
+          };
+          const openRes = await executeTool(workspace, openCall, state);
+          messages.push({ role: "tool", content: openRes, tool_call_id: openCall.id });
+          state.currentPlan = updatePlanProgress(state.currentPlan, state.completedTasks, openCall, openRes);
+          continue;
+        }
         console.log(chalk.yellow(`\nContinuing: ${pendingLifecycle.length} required lifecycle step(s) still pending.`));
         messages.push({
           role: "user",

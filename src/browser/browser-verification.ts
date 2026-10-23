@@ -1243,7 +1243,7 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
       // Exclude current keyword from stop keywords to allow "heading My Title"
       const otherKeywords = allElementKeywords.filter(k => k !== keyword && k !== (keyword === "heading" ? "title" : keyword === "title" ? "heading" : ""));
       const keywordPattern = otherKeywords.map(k => `\\b${k}\\b`).join("|");
-      const regex = new RegExp(`${keyword}\\s+((?:(?!${keywordPattern}|[.,;:]).)+)`, "gi");
+      const regex = new RegExp(`(?<![-\\w])${keyword}\\s+((?:(?!${keywordPattern}|[.,;:]).)+)`, "gi");
       let match;
       while ((match = regex.exec(task)) !== null) {
         let text = match[1].trim();
@@ -1252,8 +1252,9 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
         if (stopMatch && stopMatch.index !== undefined) {
           text = text.substring(0, stopMatch.index).trim();
         }
-        // Filter out generic/non-concrete text
-        if (text && text.length > 1 && !/^(a|an|the|with|and|or|to|for|that|this|my|your|our|their)$/i.test(text)) {
+        // Filter out generic/non-concrete text and functional terms (e.g. "validation", "handling", "prevention")
+        const isGenericOrFunctional = /^(a|an|the|with|and|or|to|for|that|this|my|your|our|their|validation|validations|handling|detection|prevention|feedback|requirements?|checks?|logic|rules?|formatting|styling|errors?|success|state|states|elements?|controls?|options?)$/i.test(text);
+        if (text && text.length > 1 && !isGenericOrFunctional) {
           // Only add if text doesn't contain quoted strings (already handled)
           if (!/["'`]/.test(text)) {
             addTarget({ type, text, required: true });

@@ -156,7 +156,8 @@ const appPkg = {
   version: APP_VERSION,
   type: "module",
   dependencies: {
-    "better-sqlite3": "^13.0.3"
+    "better-sqlite3": "^13.0.3",
+    "playwright": "^1.63.0"
   }
 };
 fs.writeFileSync(path.join(stagingDir, "package.json"), JSON.stringify(appPkg, null, 2));
@@ -168,14 +169,23 @@ fs.mkdirSync(binDir, { recursive: true });
 const nodeSource = process.execPath;
 fs.copyFileSync(nodeSource, path.join(binDir, "node.exe"));
 
-// Copy only native binary modules needed at runtime (better-sqlite3)
-console.log("Copying native runtime modules (better-sqlite3)...");
+// Copy runtime modules (better-sqlite3 and playwright)
+console.log("Copying native runtime modules (better-sqlite3 and playwright)...");
 const targetNodeModules = path.join(stagingDir, "node_modules");
 fs.mkdirSync(targetNodeModules, { recursive: true });
 
 const betterSqliteSrc = path.join(AGENT_ROOT, "node_modules", "better-sqlite3");
 const betterSqliteDest = path.join(targetNodeModules, "better-sqlite3");
 fs.cpSync(betterSqliteSrc, betterSqliteDest, { recursive: true });
+
+const playwrightSrc = path.join(AGENT_ROOT, "node_modules", "playwright");
+if (fs.existsSync(playwrightSrc)) {
+  fs.cpSync(playwrightSrc, path.join(targetNodeModules, "playwright"), { recursive: true });
+}
+const playwrightCoreSrc = path.join(AGENT_ROOT, "node_modules", "playwright-core");
+if (fs.existsSync(playwrightCoreSrc)) {
+  fs.cpSync(playwrightCoreSrc, path.join(targetNodeModules, "playwright-core"), { recursive: true });
+}
 
 // 3. Create Windows Launcher and Control Scripts
 console.log("\n[3/6] Copying launcher and control scripts from templates...");

@@ -656,6 +656,13 @@ export function validateCommand(
     };
   }
 
+  if (/\bcat\s*(?:<<|>)|(?:>>|>)\s*([a-zA-Z0-9_\-./\\]+\.(?:html|css|js|jsx|ts|tsx|json|md))\b/i.test(normalized) || /\becho\s+.*>\s*([a-zA-Z0-9_\-./\\]+\.(?:html|css|js|jsx|ts|tsx|json|md))\b/i.test(normalized)) {
+    return {
+      allowed: false,
+      reason: "Creating or modifying project files via shell redirection ('cat >', 'echo >') is blocked. Always use the 'create_file' or 'edit_file' tools directly.",
+    };
+  }
+
   if (/\b(?:touch|echo|set-content|add-content|out-file)\b.*\.env/i.test(normalized) || />\s*.*\.env/i.test(normalized)) {
     return {
       allowed: false,

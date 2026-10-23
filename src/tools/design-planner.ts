@@ -601,7 +601,7 @@ export function formatDesignSpecForPrompt(spec: DesignSpec): string {
   Mobile Container: @media (max-width: 480px) { .container { padding: 0 0.75rem; } } (never 2rem/32px on mobile)
   Fluid Heading: h1 { font-size: clamp(2rem, 5vw, ${ty.heroSize}); word-break: break-word; overflow-wrap: break-word; }
   Adaptive Grid: grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); (fits 320px screens)
-  Mobile Navigation: @media (max-width: 768px) { .navbar .container { flex-wrap: wrap; } .nav-links { flex-wrap: wrap; gap: 0.5rem; } }
+  Mobile Navigation: @media (max-width: 768px) { .navbar .container { flex-wrap: wrap; } .nav-links { pointer-events: none; visibility: hidden; } .nav-links.open { pointer-events: auto; visibility: visible; transform: translateY(0); } }
   CSS Nesting: Never nest @media blocks inside other @media blocks in standard CSS.
 
 **Expected Sections (verify these exist):**
