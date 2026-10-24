@@ -370,6 +370,17 @@ constructor(
    * Mirrors the Workspace.resolve() interface for compatibility.
    */
   resolve(relativePath: string): string {
+    const norm = relativePath.replace(/\\/g, "/").replace(/^\.\/+/, "");
+    const normalizedRootStr = this.root.replace(/\\/g, "/").replace(/^[a-zA-Z]:/, "").replace(/^[\\/]+/, "").toLowerCase();
+    const normalizedNorm = norm.toLowerCase();
+    if (normalizedNorm.startsWith(normalizedRootStr + "/")) {
+      const stripped = norm.slice(normalizedRootStr.length + 1);
+      return this.resolve(stripped);
+    }
+    if (normalizedNorm === normalizedRootStr) {
+      return this.root;
+    }
+
     const target = path.resolve(this.root, relativePath);
 
     // Basic containment check - ensure path stays within workspace root

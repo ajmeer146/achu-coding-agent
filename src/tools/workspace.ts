@@ -253,6 +253,19 @@ export class Workspace {
     const currentFolder = path.basename(this.root).toLowerCase();
     const folderPrefix = currentFolder + "/";
 
+    // If relativePath includes the entire workspace root path without a leading slash or drive letter
+    // (e.g. "tmp/achu-workspace/ws-xxx/index.html" when this.root is "/tmp/achu-workspace/ws-xxx"),
+    // strip the root path prefix so it resolves cleanly to this.root without duplicating directory segments.
+    const normalizedRootStr = this.root.replace(/\\/g, "/").replace(/^[a-zA-Z]:/, "").replace(/^[\\/]+/, "").toLowerCase();
+    const normalizedNorm = norm.toLowerCase();
+    if (normalizedNorm.startsWith(normalizedRootStr + "/")) {
+      const stripped = norm.slice(normalizedRootStr.length + 1);
+      return this.resolve(stripped);
+    }
+    if (normalizedNorm === normalizedRootStr) {
+      return this.root;
+    }
+
     let target = path.resolve(this.root, relativePath);
 
     // If relativePath is prefixed with current directory name (e.g. "achu-test-lab/package.json" when this.root is already ".../achu-test-lab"),

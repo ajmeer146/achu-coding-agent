@@ -33,3 +33,27 @@ test("getWorkspaceRoot fallback works when getRoot is missing", async () => {
   const root = getWorkspaceRoot(mockWorkspace as any);
   assert.equal(root, "/mock/path");
 });
+
+test("Workspace.resolve and GitWorkspace.resolve de-duplicate paths prefixed with full workspace root missing a leading slash", async () => {
+  const { Workspace } = await import("../src/tools/workspace.js");
+  const path = await import("node:path");
+  const os = await import("node:os");
+  const fs = await import("node:fs/promises");
+  
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "achu-ws-dedup-"));
+  const ws = new Workspace(rootDir);
+  
+  const rootNoDrive = rootDir.replace(/^[a-zA-Z]:/, "").replace(/\\/g, "/").replace(/^[\\/]+/, "");
+  const testRelPath = `${rootNoDrive}/index.html`;
+  
+  const resolved = ws.resolve(testRelPath);
+  assert.equal(resolved, path.resolve(ws.root, "index.html"));
+  assert.ok(!resolved.includes(path.join(path.basename(rootDir), rootNoDrive)), "Must not duplicate workspace path segments");
+
+  const { GitWorkspace } = await import("../src/tools/git-workspace.js");
+  const gw = new GitWorkspace("https://github.com/test/test.git", { tempDir: rootDir });
+  const resolvedGw = gw.resolve(testRelPath);
+  assert.equal(resolvedGw, path.resolve(rootDir, "index.html"));
+
+  await fs.rm(rootDir, { recursive: true, force: true });
+});
