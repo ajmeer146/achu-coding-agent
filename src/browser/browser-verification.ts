@@ -1313,8 +1313,9 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
         if (stopMatch && stopMatch.index !== undefined) {
           text = text.substring(0, stopMatch.index).trim();
         }
-        // Filter out generic/non-concrete text and functional terms (e.g. "validation", "handling", "prevention")
-        const isGenericOrFunctional = /^(a|an|the|with|and|or|to|for|that|this|my|your|our|their|validation|validations|handling|detection|prevention|feedback|requirements?|checks?|logic|rules?|formatting|styling|errors?|success|state|states|elements?|controls?|options?)$/i.test(text);
+        // Filter out generic/non-concrete text and functional terms (e.g. "validation", "handling", "prevention", lifecycle actions)
+        const isGenericOrFunctional = /^(a|an|the|with|and|or|to|for|that|this|my|your|our|their|validation|validations|handling|detection|prevention|feedback|requirements?|checks?|logic|rules?|formatting|styling|errors?|success|state|states|elements?|controls?|options?)$/i.test(text)
+          || /^(discover|inspect|check|create|start|verify|scaffold|examine|read|edit|update|close|stop|run|execute)\b/i.test(text);
         if (text && text.length > 1 && !isGenericOrFunctional) {
           // Only add if text doesn't contain quoted strings (already handled)
           if (!/["'`]/.test(text)) {

@@ -3401,7 +3401,7 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         // An explicitly provided empty targets array is treated the same as no
         // targets: derive assertions from the plan instead of trivially passing.
         const providedTargets = Array.isArray(args.targets) ? (args.targets as VerificationTarget[]) : [];
-        const promptForTargets = [state.taskPrompt, state.currentPlan.map(s => s.description).join(" ")].filter(Boolean).join(" ");
+        const promptForTargets = state.taskPrompt || state.currentPlan.map(s => s.description).join(". ");
         // Task-derived checks are authoritative requirements. Extra checks the
         // model invents are advisory by default: they are still executed and
         // reported, but a failure does not block completion unless the model
