@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { Workspace } from "./workspace.js";
+import { Workspace, isInsideRoot } from "./workspace.js";
 
 /**
  * Allowed git repository hosts for cloud execution.
@@ -383,11 +383,7 @@ constructor(
 
     const target = path.resolve(this.root, relativePath);
 
-    // Basic containment check - ensure path stays within workspace root
-    const normalizedRoot = path.resolve(this.root);
-    const normalizedTarget = path.resolve(target);
-    
-    if (!normalizedTarget.startsWith(normalizedRoot + path.sep) && normalizedTarget !== normalizedRoot) {
+    if (!isInsideRoot(this.root, target)) {
       throw new Error(`Path outside workspace is not allowed: ${relativePath}`);
     }
 

@@ -202,6 +202,9 @@ type DomElementInfo = {
   name: string;
   id: string;
   text: string;
+  ariaLabel?: string;
+  title?: string;
+  className?: string;
   disabled: boolean;
 };
 
@@ -213,6 +216,9 @@ const COLLECT_DOM_ELEMENTS = (els: any[]): DomElementInfo[] =>
     name: el.name !== undefined && el.name !== null ? String(el.name) : "",
     id: el.id !== undefined && el.id !== null ? String(el.id) : "",
     text: el.textContent ? String(el.textContent).trim() : "",
+    ariaLabel: el.getAttribute?.("aria-label") || el.getAttribute?.("aria-labelledby") || "",
+    title: el.getAttribute?.("title") || "",
+    className: el.className ? String(el.className) : "",
     disabled: el.disabled === true || el.getAttribute?.("aria-disabled") === "true",
   }));
 
@@ -304,12 +310,24 @@ export async function verifyButtonExists(
 ): Promise<VerificationResult> {
   const target: VerificationTarget = { type: "button" as const, text, ...(selector ? { selector } : {}) };
 
-  const matchesText = (btnText: string, expected: string): boolean => {
-    const btn = btnText.toLowerCase();
-    const exp = expected.toLowerCase();
-    return btn.includes(exp)
-      || (exp === "sign in" && (btn.includes("login") || btn.includes("sign in")))
-      || (exp === "login" && (btn.includes("sign in") || btn.includes("login")));
+  const matchesText = (candidate: DomElementInfo | string, expected: string): boolean => {
+    const exp = expected.toLowerCase().trim();
+    const btn = (typeof candidate === "string" ? candidate : candidate.text || "").toLowerCase();
+    const aria = (typeof candidate === "string" ? "" : candidate.ariaLabel || "").toLowerCase();
+    const title = (typeof candidate === "string" ? "" : candidate.title || "").toLowerCase();
+    const cls = (typeof candidate === "string" ? "" : candidate.className || "").toLowerCase();
+    const id = (typeof candidate === "string" ? "" : candidate.id || "").toLowerCase();
+
+    // Direct content or accessible name match
+    if (btn.includes(exp) || aria.includes(exp) || title.includes(exp)) return true;
+
+    // Semantic equivalences
+    if (exp === "sign in" && (btn.includes("login") || aria.includes("login") || btn.includes("sign in") || aria.includes("sign in"))) return true;
+    if (exp === "login" && (btn.includes("sign in") || aria.includes("sign in") || btn.includes("login") || aria.includes("login"))) return true;
+    if (exp === "cart" && (btn.includes("cart") || aria.includes("cart") || title.includes("cart") || cls.includes("cart") || id.includes("cart") || btn.includes("🛍") || btn.includes("🛒"))) return true;
+    if (exp === "search" && (btn.includes("search") || aria.includes("search") || title.includes("search") || cls.includes("search") || id.includes("search") || btn.includes("🔍"))) return true;
+
+    return false;
   };
 
   // Preferred path: resolve against the live DOM when Playwright access is available.
@@ -335,7 +353,7 @@ export async function verifyButtonExists(
       }
 
       // Buttons matched by plain DOM selector must be actual buttons; text-matched candidates may be any element with button role.
-      const match = candidates.find((c) => (text ? matchesText(c.text, text) : true));
+      const match = candidates.find((c) => (text ? matchesText(c, text) : true));
 
       if (!match) {
         return {
@@ -627,6 +645,8 @@ export async function verifyInputExists(
           name: el.name !== undefined && el.name !== null ? String(el.name) : (el.getAttribute?.("name") || ""),
           id: el.id !== undefined && el.id !== null ? String(el.id) : (el.getAttribute?.("id") || ""),
           text: el.textContent ? String(el.textContent).trim() : "",
+          ariaLabel: el.getAttribute?.("aria-label") || el.getAttribute?.("aria-labelledby") || "",
+          className: el.className ? String(el.className) : "",
           disabled: el.disabled === true || el.getAttribute?.("aria-disabled") === "true",
         }));
       });
@@ -639,7 +659,9 @@ export async function verifyInputExists(
             el.type.toLowerCase() === "search" ||
             el.placeholder.toLowerCase().includes("search") ||
             el.name.toLowerCase().includes("search") ||
-            el.id.toLowerCase().includes("search")
+            el.id.toLowerCase().includes("search") ||
+            (el.ariaLabel && el.ariaLabel.toLowerCase().includes("search")) ||
+            (el.className && el.className.toLowerCase().includes("search"))
           );
           if (!isExactType && !isSearchSemantic) return false;
         }

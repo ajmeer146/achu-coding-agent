@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 
 import { getModelConfig, DEFAULT_MODEL } from "./router.js";
 import { sanitizeUserFacingError } from "./utils/error-sanitizer.js";
-import { Workspace } from "./tools/workspace.js";
+import { Workspace, isNewWebsiteTask } from "./tools/workspace.js";
 import { readFile } from "./tools/read-file.js";
 import { searchCode } from "./tools/search-code.js";
 import { editFile } from "./tools/edit-file.js";
@@ -260,7 +260,8 @@ async function runVisualQualityChecks(session: BrowserSession, baseUrl: string):
       { width: 430, height: 932 }, // Standard mobile plus
     ];
     const tabletViewports = [
-      { width: 768, height: 1024 }, // Tablet (768px)
+      { width: 768, height: 1024 }, // Tablet portrait (768px)
+      { width: 1024, height: 768 }, // Tablet landscape / Desktop small (1024px)
     ];
     const desktopViewports = [
       { width: 1280, height: 800 }, // Laptop (1280-1440px)
@@ -633,21 +634,34 @@ export function inferVerificationCommand(task: string, workspaceRoot: string): s
 
 export async function inferVerificationFromPackageJson(workspaceRoot: string): Promise<string | null> {
   try {
+    const ws = new Workspace(workspaceRoot);
     const packageJsonPath = `${workspaceRoot}/package.json`;
-    const content = await readFile(new Workspace(workspaceRoot), packageJsonPath);
+    if (!(await ws.exists("package.json"))) {
+      // Static HTML or non-npm project: never run npx tsc blindly
+      return null;
+    }
+    const content = await readFile(ws, packageJsonPath);
     const pkg = JSON.parse(content);
 
     // Prefer test script, then build script
-    if (pkg.scripts?.test && pkg.scripts.test !== "echo \"Error: no test specified\" && exit 1") {
+    if (pkg.scripts?.test && pkg.scripts.test !== 'echo "Error: no test specified" && exit 1') {
       return "npm test";
     }
     if (pkg.scripts?.build) {
       return "npm run build";
     }
-    // Fallback to TypeScript compilation check
-    return "npx tsc --noEmit";
+
+    // Only fallback to TypeScript if tsconfig.json exists or typescript is a declared dependency
+    const hasTsConfig = (await ws.exists("tsconfig.json")) || fs.existsSync(path.join(workspaceRoot, "tsconfig.json"));
+    const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+    const hasTsDep = Boolean(deps.typescript);
+    if (hasTsConfig || hasTsDep) {
+      return "npx tsc --noEmit";
+    }
+
+    return null;
   } catch {
-    return "npx tsc --noEmit";
+    return null;
   }
 }
 
@@ -877,17 +891,41 @@ export function classifyTask(
     };
   }
 
-  // Check primary creation intent for new projects (e.g. "Create a task manager...", "Build a website...")
-  const isCreationIntent = /^\s*(?:create|build|scaffold|generate|setup|make)\s+(?:a|an)\s+(?:new\s+)?(?:small\s+|polished\s+|responsive\s+|modern\s+)?(?:task\s+manager|website|web\s*app|app|landing\s+page|portfolio|dashboard|project|site)/i.test(lower) ||
-    (/\b(?:from\s+scratch|brand\s+new|build\s+(?:a|an)\s+(?:landing|website|app|portfolio|dashboard))\b/i.test(lower) && !hasProject);
+  // 1b. Targeted edit on explicitly specified file(s)
+  const isExplicitFileTargetEdit = targetFiles.length > 0 && /\b(change|update|edit|replace|modify|rename|tweak|adjust|add\s+to|remove\s+from|delete\s+from)\b/i.test(lower);
+  if (isExplicitFileTargetEdit) {
+    return {
+      classification: "targeted_edit",
+      targetFiles,
+      isTargetedEdit: true,
+      confidence: 0.95,
+      reason: `Task explicitly targeted edits in: ${targetFiles.join(", ")}.`
+    };
+  }
 
-  if (isCreationIntent && !hasProject) {
+  // Check primary creation intent for new projects
+  const hasCreationWord = /\b(create|build|scaffold|generate|setup|make|develop|implement)\b/i.test(lower);
+  const hasTargetEntity = /\b(website|web\s*app|app|landing\s*page|portfolio|dashboard|project|site|store|storefront|ecommerce|e-commerce|platform|application|ui)\b/i.test(lower);
+  const isCreationIntent = (hasCreationWord && hasTargetEntity) || /\b(?:from\s+scratch|brand\s+new)\b/i.test(lower);
+
+  // If workspace has no project and no explicit target files, creation intent is a new_project
+  if (!hasProject && targetFiles.length === 0) {
+    return {
+      classification: "new_project",
+      targetFiles,
+      isTargetedEdit: false,
+      confidence: 0.98,
+      reason: "Workspace contains no existing project files."
+    };
+  }
+
+  if (isCreationIntent && /new\s+(?:project|workspace|website|app|store)|from\s+scratch/i.test(lower)) {
     return {
       classification: "new_project",
       targetFiles,
       isTargetedEdit: false,
       confidence: 0.95,
-      reason: "Task requested creating a complete new application from scratch."
+      reason: "Task requested creating a complete new application."
     };
   }
 
@@ -1007,7 +1045,7 @@ export function initializePlan(task: string, existingProjectInfo?: { hasProject:
   const hasExplicitFile = hasFilePath || /calculator|utils|helper|service|api|component|module/.test(lowerTask);
   const hasExplicitVerification = /verify\s+with|run\s+(npm|npx|yarn)\s+test|exact\s+command/.test(lowerTask);
 
-  const appTargets = 'portfolio|landing page|dashboard|website|web app|webapp|full stack|todo app|react app|component library|site|page|application';
+  const appTargets = 'portfolio|landing page|dashboard|website|web app|webapp|full stack|todo app|react app|component library|site|page|application|ecommerce|e-commerce|storefront|store|shop';
   const hasAppBuild = new RegExp(`\\b(build|scaffold|setup)\\b[^\\n.!?]*\\b(?:${appTargets})\\b`, 'i').test(lowerTask);
   const hasAppCreate = new RegExp(`\\b(create|generate)\\b[^\\n.!?]*\\b(?:${appTargets})\\b`, 'i').test(lowerTask);
   const hasAppAdd = new RegExp(`add\\s+(a|an)\\s+(?:landing page|page|component|feature|route|view)`, 'i').test(lowerTask);
@@ -1926,6 +1964,18 @@ export function generateRecoveryHint(state: AgentState): string | null {
     if (/placeholder/i.test(err.errorMessage ?? "")) {
       repeatedHint += `\n- Placeholder visuals were detected. Replace placeholder text/services and any large single-letter SVG graphic with a real multi-shape inline SVG illustration or product imagery. Do not rename or hide the element to pass the check.`;
     }
+    if (/ReferenceError|is not defined|TypeError/i.test(err.errorMessage ?? "")) {
+      repeatedHint += `\n- JAVASCRIPT RUNTIME DEFECT DETECTED: A function or variable was referenced before it was defined, or was not exposed in global scope (e.g. inline onclick handler calling an unexported or module-scoped function).` +
+        `\n- Define the missing function at the top level of script.js before any callers or event listeners.` +
+        `\n- If called from an inline onclick attribute in HTML, explicitly attach it to window (e.g. window.updateCartBadge = updateCartBadge; window.openMobileMenu = openMobileMenu;).` +
+        `\n- Re-run browser_verify after editing script.js to verify console errors are eliminated.`;
+    }
+    if (/button.*not found|input.*not found/i.test(err.errorMessage ?? "")) {
+      repeatedHint += `\n- MISSING ELEMENT OR SELECTOR MISMATCH: A required interactive control was not found.` +
+        `\n- For Cart: Ensure an accessible button exists (<button class="cart-btn" id="cartBtn" aria-label="Shopping Cart">Cart <span class="cart-badge">0</span></button>).` +
+        `\n- For Search: Ensure an accessible search input exists (<input type="search" class="search-input" name="q" placeholder="Search products..." aria-label="Search products">).` +
+        `\n- Re-check index.html to ensure both elements exist and have accessible labels.`;
+    }
   }
   if (err.command === "edit_file") {
     repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- The "expected text was not found" error means your oldText is stale. Call 'read_file' on the target file and copy an exact, current excerpt for oldText. If the error lists "Possible matches in current file", use those line numbers to locate the real text.\n- Do NOT retry edit_file with the same oldText. If the edit is large or context is hard to match, use 'oldText: "*"' with the complete new content.\n- Prefer small, uniquely anchored edits over large multi-line blocks.\n- If the file does not exist on disk (ENOENT / "does not exist"), do NOT retry edit_file. Use create_file with the complete corrected content.`;
@@ -2200,13 +2250,15 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
       - Image Assets and Fallbacks: When displaying product or showcase images, always use valid inline SVG illustrations, data URIs, or reliable image URLs with explicit fallback (e.g. onerror="this.onerror=null;this.src='data:image/svg+xml,...'") so images NEVER appear broken or missing. Never use placeholder services (via.placeholder.com, placehold.co, dummyimage.com, lorempixel) or a large SVG that contains only a single letter as imagery.
       - Never output bare skeletons with 1 card and 1 sentence. Deliver substantive, realistic content matching the user request.
   4. Implement polished, production-grade styling in styles.css:
-     - Comprehensive box-sizing reset (*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }).
-     - Modern typography stack (system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif) with clear hierarchy and comfortable line-height.
-     - Design tokens at :root (--bg, --card-bg, --text-primary, --text-secondary, --accent, --accent-hover, --border, --shadow).
-     - Cohesive modern color palette: dark slate aesthetic (e.g. #0b0f19 background, #1e293b card, #38bdf8 / #3b82f6 accent) or crisp clean light theme.
-      - Responsive layouts: Flexbox for navigation and toolbars; CSS Grid (grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr))) for cards and features (never a fixed minmax(280px, 1fr) which overflows 320px screens).
+      - Comprehensive box-sizing reset (*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }).
+      - Global list reset (ul, ol { list-style: none; margin: 0; padding: 0; }) so navigation links never appear with unstyled vertical bullet points.
+      - Responsive media & SVGs: all img and svg elements must have max-width: 100%; height: auto; (never fixed width larger than 280px without max-width: 100%).
+      - Modern typography stack (system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif) with clear hierarchy and comfortable line-height.
+      - Design tokens at :root (--bg, --card-bg, --text-primary, --text-secondary, --accent, --accent-hover, --border, --shadow).
+      - Cohesive modern color palette: dark slate aesthetic (e.g. #0b0f19 background, #1e293b card, #38bdf8 / #3b82f6 accent) or crisp clean light theme.
+      - Responsive layouts: Flexbox for navigation and toolbars (.nav-menu, .nav-links ul { display: flex; align-items: center; gap: 1rem; list-style: none; }); CSS Grid (grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr))) for cards and features (never a fixed minmax(280px, 1fr) which overflows 320px screens).
       - Responsive containers: .container { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 1rem; } with mobile padding: @media (max-width: 480px) { .container { padding: 0 0.75rem; } }. Never use 2rem (32px) padding on small mobile screens.
-      - Fluid typography: h1 { font-size: clamp(2rem, 5vw, 3.5rem); word-break: break-word; overflow-wrap: break-word; } ensuring single long bold words do not force container expansion beyond 320px.
+      - Fluid typography: h1 { font-size: clamp(1.75rem, 5vw, 2.75rem); word-break: break-word; overflow-wrap: break-word; } ensuring single long bold words do not force container expansion beyond 320px.
       - Mobile navigation: On screens below 768px, nav links must wrap (flex-wrap: wrap; gap: 0.5rem;) or collapse behind a working mobile menu toggle button with .nav-links.open class. When using fixed/off-canvas mobile menus with transform: translateY(-100%), the closed menu MUST have 'pointer-events: none; visibility: hidden;' (and 'pointer-events: auto; visibility: visible;' on .nav-links.open) so it never intercepts pointer clicks on the hamburger button or header logo when closed.
       - CSS structure: Write clean vanilla CSS. NEVER nest @media blocks inside another @media block.
       - Card design: subtle borders, soft shadows, rounded corners (8-12px), and smooth hover lift transitions (transform: translateY(-4px)).
@@ -2215,6 +2267,11 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
       - Mobile responsiveness: media queries ensuring touch targets (min 44px) and stacked layouts for mobile screens (@media (max-width: 768px)).
       - Stylesheet must contain comprehensive rules covering all page elements (at least 25-50 CSS rules).
   5. Implement functional, clean client-side logic in script.js:
+     - Define all shared functions (e.g. updateCartBadge, saveCart, renderCart, openMobileMenu, closeMobileMenu) at top level before any event handlers or initialization calls them.
+     - Global binding: If HTML elements contain inline onclick="..." attributes, attach the functions to window (e.g. window.updateCartBadge = updateCartBadge; window.openMobileMenu = openMobileMenu; window.closeMobileMenu = closeMobileMenu;) so they never throw ReferenceError: <fn> is not defined.
+     - Prefer addEventListener over inline onclick attributes for clean, reliable event handling.
+     - Search input functionality: listen to 'input' event on .search-input to filter product cards in real time.
+     - Cart interactions: clicking "Add to Cart" increments the cart badge count, updates subtotal, and gives visual feedback (toast / drawer).
      - Form submit handlers preventing default reload (e.preventDefault()) and demonstrating interactive validation feedback.
      - Interactive toggles: theme toggle (dark/light mode), mobile menu toggle, or filter tabs.
      - Password visibility toggles where password inputs exist (toggling type="password" <-> "text" with eye icon update).

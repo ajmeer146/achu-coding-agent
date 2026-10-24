@@ -167,18 +167,28 @@ export function validateHtmlSyntax(html: string): FileSyntaxValidationResult {
     }
   }
 
+  // Mask <script>...</script> and <style>...</style> bodies and comments with spaces (preserving line breaks)
+  // so JS operators (<, >) and CSS selectors do not trigger false HTML tag mismatches.
+  let cleanHtml = html.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  cleanHtml = cleanHtml.replace(/(<script\b[^>]*>)([\s\S]*?)(<\/script>)/gi, (_match, open, body, close) => {
+    return open + body.replace(/[^\n]/g, " ") + close;
+  });
+  cleanHtml = cleanHtml.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (_match, open, body, close) => {
+    return open + body.replace(/[^\n]/g, " ") + close;
+  });
+
   const tagRegex = /<(\/)?([a-zA-Z0-9\-]+)([^>]*)>/g;
   const tagStack: { tag: string; line: number; col: number }[] = [];
   let match;
 
-  while ((match = tagRegex.exec(html)) !== null) {
+  while ((match = tagRegex.exec(cleanHtml)) !== null) {
     const isClosing = !!match[1];
     const tagName = match[2].toLowerCase();
     const attrs = match[3];
     const isSelfClosing = attrs.trim().endsWith("/") || VOID_HTML_TAGS.has(tagName);
 
     const pos = match.index;
-    const linesBefore = html.slice(0, pos).split("\n");
+    const linesBefore = cleanHtml.slice(0, pos).split("\n");
     const tagLine = linesBefore.length;
     const tagCol = linesBefore[linesBefore.length - 1].length + 1;
 

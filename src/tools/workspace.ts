@@ -11,13 +11,18 @@ export function isInsideRoot(root: string, child: string): boolean {
   const resolvedRoot = path.resolve(root);
   const resolvedChild = path.resolve(child);
   const normalize = (value: string) => {
-    const trimmed = value.replace(/[\\/]+$/, "");
-    return process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
+    let trimmed = value.replace(/[\\/]+$/, "");
+    if (process.platform === "win32") {
+      trimmed = trimmed.toLowerCase();
+      // Normalize Windows OneDrive folder redirection: Users\<user>\OneDrive\Desktop <-> Users\<user>\Desktop
+      trimmed = trimmed.replace(/([\\/])onedrive([\\/]desktop)/i, "$1desktop");
+    }
+    return trimmed;
   };
   const normalizedRoot = normalize(resolvedRoot);
   const normalizedChild = normalize(resolvedChild);
   if (normalizedChild === normalizedRoot) return true;
-  return normalizedChild.startsWith(normalizedRoot + path.sep);
+  return normalizedChild.startsWith(normalizedRoot + "\\") || normalizedChild.startsWith(normalizedRoot + "/");
 }
 
 /**
@@ -229,6 +234,28 @@ export class Workspace {
   }
 
   /**
+   * Maps an absolute path with potential Windows OneDrive Desktop alias discrepancies
+   * directly onto this.root's canonical directory structure.
+   */
+  mapToCanonicalRoot(resolvedPath: string): string {
+    if (process.platform !== "win32") return resolvedPath;
+    const normRoot = this.root.replace(/[\\/]+$/, "").toLowerCase();
+    const normResolved = resolvedPath.toLowerCase();
+    const onedriveRegex = /([\\/])onedrive([\\/]desktop)/i;
+    const strippedRoot = normRoot.replace(onedriveRegex, "$1desktop");
+    const strippedResolved = normResolved.replace(onedriveRegex, "$1desktop");
+
+    if (strippedResolved === strippedRoot) {
+      return this.root;
+    }
+    if (strippedResolved.startsWith(strippedRoot + "\\") || strippedResolved.startsWith(strippedRoot + "/")) {
+      const subPath = resolvedPath.slice(resolvedPath.length - (strippedResolved.length - strippedRoot.length - 1));
+      return path.join(this.root, subPath);
+    }
+    return resolvedPath;
+  }
+
+  /**
    * Resolve a workspace-relative path, rejecting both lexical traversal
    * (`..\\outside`) and symlink escapes (a link inside the workspace pointing
    * outside it). The final, existing ancestor is checked against the real
@@ -246,7 +273,7 @@ export class Workspace {
         throw new Error(`Path outside workspace is not allowed: ${relativePath}`);
       }
       this.assertNoSymlinkEscape(resolved, relativePath);
-      return resolved;
+      return this.mapToCanonicalRoot(resolved);
     }
 
     const norm = relativePath.replace(/\\/g, "/").replace(/^\.\/+/, "");

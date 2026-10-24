@@ -464,7 +464,7 @@ export class BrowserSession {
   /**
    * Sets the browser viewport dimensions across mobile, tablet, laptop, and desktop.
    */
-  async setViewport(viewport: "desktop" | "mobile" | "tablet" | "laptop" | "small_mobile" | "wide_desktop" | { width: number; height: number }): Promise<void> {
+  async setViewport(viewport: "desktop" | "mobile" | "tablet" | "tablet_landscape" | "laptop" | "desktop_standard" | "small_mobile" | "wide_desktop" | { width: number; height: number }): Promise<void> {
     if (!this.page) throw new Error("Browser page not initialized. Call init() first.");
     if (viewport === "small_mobile") {
       await this.page.setViewportSize({ width: 320, height: 568 });
@@ -472,8 +472,12 @@ export class BrowserSession {
       await this.page.setViewportSize({ width: 375, height: 667 });
     } else if (viewport === "tablet") {
       await this.page.setViewportSize({ width: 768, height: 1024 });
+    } else if (viewport === "tablet_landscape") {
+      await this.page.setViewportSize({ width: 1024, height: 768 });
     } else if (viewport === "laptop") {
       await this.page.setViewportSize({ width: 1280, height: 800 });
+    } else if (viewport === "desktop_standard") {
+      await this.page.setViewportSize({ width: 1366, height: 768 });
     } else if (viewport === "desktop") {
       await this.page.setViewportSize({ width: 1440, height: 900 });
     } else if (viewport === "wide_desktop") {
@@ -515,7 +519,7 @@ export class BrowserSession {
    * to interpret screenshot pixels.
    * @param viewport Preset or explicit {width, height}.
    */
-  async analyzeLayout(viewport: "desktop" | "mobile" | "tablet" | "laptop" | "small_mobile" | "wide_desktop" | { width: number; height: number } = "desktop"): Promise<
+  async analyzeLayout(viewport: "desktop" | "mobile" | "tablet" | "tablet_landscape" | "laptop" | "desktop_standard" | "small_mobile" | "wide_desktop" | { width: number; height: number } = "desktop"): Promise<
     | { success: true; analysis: LayoutAnalysis }
     | { success: false; error: string; recoverable: boolean }
   > {
@@ -546,7 +550,9 @@ export class BrowserSession {
         ? (viewport === "small_mobile" ? { width: 320, height: 568 }
           : viewport === "mobile" ? { width: 375, height: 667 }
           : viewport === "tablet" ? { width: 768, height: 1024 }
+          : viewport === "tablet_landscape" ? { width: 1024, height: 768 }
           : viewport === "laptop" ? { width: 1280, height: 800 }
+          : viewport === "desktop_standard" ? { width: 1366, height: 768 }
           : viewport === "wide_desktop" ? { width: 1920, height: 1080 }
           : { width: 1440, height: 900 })
         : viewport;

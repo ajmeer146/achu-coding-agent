@@ -2313,6 +2313,11 @@ ${reducedMotionBlock}
     const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
     if (cartCount) cartCount.textContent = String(totalItems);
     if (drawerCount) drawerCount.textContent = String(totalItems);
+    const badge = document.querySelector('.cart-badge');
+    if (badge) {
+      badge.textContent = String(totalItems);
+      badge.style.display = totalItems > 0 ? 'inline-block' : 'none';
+    }
 
     if (totalItems === 0) {
       if (emptyCartState) emptyCartState.style.display = 'block';
@@ -2463,6 +2468,13 @@ ${reducedMotionBlock}
 
   updateCartUI();
   filterAndSortProducts();
+
+  // Expose helpers globally for accessibility, tests, and inline event handlers
+  window.updateCartBadge = updateCartUI;
+  window.updateCartUI = updateCartUI;
+  window.addToCart = addToCart;
+  window.saveCart = saveCart;
+  window.PRODUCTS = PRODUCTS;
 });`
       : `document.addEventListener('DOMContentLoaded', () => {
   const form = document.getElementById('contact-form');
