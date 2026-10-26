@@ -50,8 +50,15 @@ export const AgentTaskPayloadSchema = z.object({
     path: z.string(),
     content: z.string(),
   })).optional(),
-}).refine((data) => data.workspaceId || data.workspaceRoot || data.gitUrl || (data.files && data.files.length > 0), {
-  message: "Either workspaceId, workspaceRoot, gitUrl, or files must be provided",
+  // Multimodal attachments (images, specs)
+  attachments: z.array(z.object({
+    name: z.string(),
+    type: z.string(),
+    content: z.string(),
+    size: z.number().optional(),
+  })).optional(),
+}).refine((data) => data.workspaceId || data.workspaceRoot || data.gitUrl || (data.files && data.files.length > 0) || (data.attachments && data.attachments.length > 0), {
+  message: "Either workspaceId, workspaceRoot, gitUrl, files, or attachments must be provided",
 });
 
 type AgentTaskPayload = z.infer<typeof AgentTaskPayloadSchema>;
@@ -231,6 +238,7 @@ export const codingAgentTask = schemaTask({
       const result = await runAgent(payload.task, {
         maxSteps: payload.maxSteps,
         maxRecoveryAttempts: payload.maxRecoveryAttempts,
+        attachments: payload.attachments,
         onProgress: (stepNum, stepName, log) => {
           metadata.set("step", stepNum);
           metadata.set("stepName", stepName);

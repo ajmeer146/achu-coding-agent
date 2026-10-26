@@ -42,9 +42,21 @@ export type ToolCall = {
   };
 };
 
+export type MessageContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } };
+
 export type ChatMessage =
   | {
-      role: "system" | "user" | "assistant";
+      role: "system";
+      content: string | null;
+    }
+  | {
+      role: "user";
+      content: string | MessageContentPart[] | null;
+    }
+  | {
+      role: "assistant";
       content: string | null;
       tool_calls?: ToolCall[];
     }
@@ -53,6 +65,13 @@ export type ChatMessage =
       content: string;
       tool_call_id: string;
     };
+
+export type AgentAttachment = {
+  name: string;
+  type: string;
+  content: string;
+  size?: number;
+};
 
 export type VerificationResult = {
   command: string;
@@ -3889,6 +3908,7 @@ export async function runAgent(
     maxSteps?: number;
     maxRecoveryAttempts?: number;
     onProgress?: (step: number, stepName: string, log?: string) => void;
+    attachments?: AgentAttachment[];
   }
 ): Promise<AgentResult> {
   const sessionState = await loadSessionStateIfAvailable();
@@ -4111,9 +4131,40 @@ export async function runAgent(
   console.log(chalk.cyan(`[50 Principles] ${principlesEval.summary}`));
 
   const MAX_MESSAGE_HISTORY = 60;
+
+  let initialUserContent: string | MessageContentPart[] = task + planContext;
+  let rawAttachments = options?.attachments;
+  if (!rawAttachments && process.env.ACHU_ATTACHMENTS) {
+    try {
+      rawAttachments = JSON.parse(process.env.ACHU_ATTACHMENTS);
+    } catch {}
+  }
+
+  if (rawAttachments && rawAttachments.length > 0) {
+    const parts: MessageContentPart[] = [];
+    for (const att of rawAttachments) {
+      if (att.type?.startsWith("image/") && (att.content.startsWith("data:") || att.content.startsWith("http"))) {
+        parts.push({
+          type: "image_url",
+          image_url: { url: att.content, detail: "auto" },
+        });
+      } else if (att.content) {
+        parts.push({
+          type: "text",
+          text: `[Attached Reference: ${att.name}]\n${att.content.slice(0, 10000)}`,
+        });
+      }
+    }
+    parts.push({
+      type: "text",
+      text: task + planContext,
+    });
+    initialUserContent = parts;
+  }
+
   let messages: ChatMessage[] = [
     { role: "system", content: buildInitialSystemPrompt(task, workspace.root, requestedVerification, architectureSummary, taskScope, p13DesignSpec) },
-    { role: "user", content: task + planContext },
+    { role: "user", content: initialUserContent },
   ];
 
   function summarizeToolOutput(content: string, toolName?: string): string {

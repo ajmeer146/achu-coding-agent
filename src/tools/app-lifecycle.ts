@@ -55,7 +55,8 @@ const server = http.createServer((req, res) => {
     send(res, 500, "Server error");
   }
 });
-server.listen(port, "0.0.0.0", () => console.log("Serving " + root + " at http://localhost:" + port));
+const bindHost = process.env.ACHU_BIND_ALL === "true" ? "0.0.0.0" : "127.0.0.1";
+server.listen(port, bindHost, () => console.log("Serving " + root + " at http://" + (bindHost === "0.0.0.0" ? "localhost" : bindHost) + ":" + port));
 `;
 
 function getStaticServerScriptPath(): string {
@@ -418,11 +419,57 @@ export async function detectPackageManager(workspace: Workspace): Promise<string
  * Either way the parent keeps NO pipe/stream handle, so it can exit promptly
  * while the server keeps running.
  */
+/**
+ * Explicit allowlist of environment variables passed to generated app processes.
+ * Platform secrets (NVIDIA_API_KEY, TRIGGER_SECRET_KEY, SESSION_SECRET, CSRF_SECRET,
+ * POSTGRES_PASSWORD, etc.) are strictly excluded.
+ */
+export const GENERATED_APP_ENV_ALLOWLIST = new Set([
+  'PATH', 'HOME', 'HOMEPATH', 'HOMEDRIVE', 'TMPDIR', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA',
+  'LOCALAPPDATA', 'SystemRoot', 'SystemDrive', 'COMSPEC', 'PATHEXT',
+  'NODE_ENV', 'PORT', 'HOST', 'LANG', 'LC_ALL', 'SHELL', 'TERM',
+  'CHOKIDAR_USEPOLLING', 'WATCHPACK_POLLING', 'FAST_REFRESH'
+]);
+
+export function filterToGeneratedAppEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const safeEnv: NodeJS.ProcessEnv = {};
+  for (const [key, val] of Object.entries(env)) {
+    if (GENERATED_APP_ENV_ALLOWLIST.has(key) && val !== undefined) {
+      safeEnv[key] = val;
+    }
+  }
+  if (!safeEnv.HOST) {
+    safeEnv.HOST = "127.0.0.1";
+  }
+  return safeEnv;
+}
+
+export function buildGeneratedAppEnv(port?: number): NodeJS.ProcessEnv {
+  const safe = filterToGeneratedAppEnv(process.env);
+  if (port !== undefined) {
+    safe.PORT = String(port);
+  }
+  return safe;
+}
+
+/**
+ * Spawn an app process in a cross-platform detached manner so the parent
+ * process can exit without killing the server.
+ *
+ *  - Windows: windowsHide=true prevents console windows; parent can discover
+ *    the URL by probing the candidate port parsed from package.json.
+ *  - POSIX: detachment is a new session; shell redirection still captures
+ *    output, so we redirect stdout+stderr to a temp file for URL extraction.
+ *
+ * Either way the parent keeps NO pipe/stream handle, so it can exit promptly
+ * while the server keeps running.
+ */
 export function spawnAppProcess(
   command: string,
   cwd: string,
-  env: NodeJS.ProcessEnv = process.env
+  env?: NodeJS.ProcessEnv
 ): AppProcessInfo {
+  const safeEnv = env ? filterToGeneratedAppEnv(env) : buildGeneratedAppEnv();
   let outputPath: string | undefined;
   try {
     outputPath = path.join(os.tmpdir(), `achu-app-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
@@ -444,7 +491,7 @@ export function spawnAppProcess(
     `.replace(/\n/g, ' ');
 
     const wrapper = spawn("node", ["-e", wrapperSrc, command, cwd, outputPath], {
-      env,
+      env: safeEnv,
       detached: true,
       windowsHide: true,
       stdio: ["ignore", "ignore", "ignore"],
@@ -1161,10 +1208,7 @@ export async function ensureAppServer(workspaceRoot: string): Promise<string | n
     syncPortToPackageJson(workingDir, port);
   }
 
-  const spawnEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    PORT: String(port),
-  };
+  const spawnEnv = buildGeneratedAppEnv(port);
 
   const preexistingPorts = await probePortRange(port, 20, 300);
   const appInfo = spawnAppProcess(command, workingDir, spawnEnv);

@@ -20,9 +20,8 @@ describe("Local Agent Security, Origin Validation & Update Architecture", () => 
     assert.equal(isAllowedOrigin("http://localhost:3000"), true);
     assert.equal(isAllowedOrigin("http://127.0.0.1:3000"), true);
     assert.equal(isAllowedOrigin("https://preview.workswithachu.me"), true);
-    assert.equal(isAllowedOrigin("https://my-preview.vercel.app"), true);
-
-    // Malicious or unauthorized origins
+    // Malicious or unauthorized origins (*.vercel.app wildcard explicitly blocked in P0 hardening)
+    assert.equal(isAllowedOrigin("https://my-preview.vercel.app"), false);
     assert.equal(isAllowedOrigin("https://malicious.org"), false);
     assert.equal(isAllowedOrigin("http://evil-hacker.com"), false);
     assert.equal(isAllowedOrigin("https://phishing-achu.io"), false);

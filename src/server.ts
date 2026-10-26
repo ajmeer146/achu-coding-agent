@@ -34,9 +34,8 @@ function loadLocalEnv(): void {
     path.join(__dirname, ".env"),
     path.join(__dirname, "..", ".env"),
     path.resolve(process.cwd(), ".env"),
-    path.resolve(process.cwd(), "..", ".env"),
-    "C:\\Users\\Achu146\\achu-coding-agent\\.env",
-    "C:\\Users\\Achu146\\OneDrive\\Desktop\\works-with-achu-v2\\.env",
+    // NOTE: Hardcoded developer-specific absolute paths removed.
+    // Only load env files within the agent installation or home dir.
   ];
   for (const envPath of candidateEnvPaths) {
     if (fs.existsSync(envPath)) {
@@ -116,22 +115,55 @@ function getOrCreatePairingToken(): string {
 
 export const COMPANION_TOKEN = process.env.ACHU_COMPANION_TOKEN || getOrCreatePairingToken();
 
+/**
+ * Mandatory token check for all protected companion endpoints.
+ * Returns true and sets a 401 response if the token is absent or wrong.
+ * The old pattern `if (TOKEN && header && header !== TOKEN)` passed when the header was OMITTED.
+ * This replacement always requires a valid token.
+ */
+function rejectIfTokenInvalid(req: express.Request, res: express.Response): boolean {
+  const tokenHeader = req.headers["x-achu-companion-token"];
+  if (!tokenHeader || tokenHeader !== COMPANION_TOKEN) {
+    res.status(401).json({ ok: false, error: "Unauthorized: Valid companion token required" });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Returns true only for origins that are explicitly trusted.
+ * Uses exact hostname matching and suffix checks — NO wildcard third-party subdomains,
+ * NO substring matching that can be spoofed by an attacker-controlled domain.
+ */
 export function isAllowedOrigin(origin?: string): boolean {
-  if (!origin) return true;
+  if (!origin) return false; // Missing origin is denied — callers that need to allow native clients handle the no-origin case explicitly.
   try {
     const u = new URL(origin);
     const host = u.hostname.toLowerCase();
-    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+    // Loopback always allowed
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]") return true;
+    // Explicit allowlist from env (exact origin/host matches only)
     const allowed = (process.env.ACHU_ALLOWED_ORIGINS || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
     if (allowed.includes(origin.toLowerCase()) || allowed.includes(u.origin.toLowerCase()) || allowed.includes(host)) return true;
+    // Official product domains — exact host or exact subdomain suffix only (no substring tricks)
     if (host === "workswithachu.me" || host.endsWith(".workswithachu.me")) return true;
     if (host === "works-with-achu.me" || host.endsWith(".works-with-achu.me")) return true;
-    if (host.includes("workswithachu") || host.includes("works-with-achu")) return true;
-    if (host.endsWith(".vercel.app")) return true;
+    // NOTE: *.vercel.app and substring matching have been intentionally removed.
+    // They allowed any attacker-controlled Vercel deployment to reach the companion.
   } catch {
     return false;
   }
   return false;
+}
+
+/**
+ * Returns true only for browser origins that are confirmed trusted AND present.
+ * Used for sensitive endpoints (token issuance, update) that must not be reachable
+ * from native/non-browser clients or any unknown origin.
+ */
+export function isKnownBrowserOrigin(origin?: string): boolean {
+  if (!origin) return false; // No-Origin requests (curl, native) are rejected
+  return isAllowedOrigin(origin);
 }
 
 /**
@@ -173,15 +205,17 @@ const wss = new WebSocketServer({ server });
 app.use(express.json());
 app.use((req, res, next) => {
   const origin = req.headers.origin;
+  // Block requests from unknown browser origins.
+  // No-Origin requests (native tools, curl) are allowed through the middleware
+  // but will be rejected by individual endpoint token checks.
   if (origin && !isAllowedOrigin(origin)) {
     res.status(403).json({ ok: false, error: "Forbidden: Origin not authorized to access local companion" });
     return;
   }
   if (origin) {
     res.header("Access-Control-Allow-Origin", origin);
-  } else {
-    res.header("Access-Control-Allow-Origin", "*");
   }
+  // When no Origin header: do NOT echo Access-Control-Allow-Origin: * — keeps credentials out of cross-site responses.
   res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-achu-companion-token");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Private-Network", "true");
@@ -262,19 +296,15 @@ app.get("/api/companion/token", (req, res) => {
     return;
   }
   const origin = req.headers.origin;
-  if (origin && !isAllowedOrigin(origin)) {
-    res.status(403).json({ ok: false, error: "Origin not allowed to retrieve companion token" });
+  if (!isKnownBrowserOrigin(origin)) {
+    res.status(403).json({ ok: false, error: "Companion token requires a trusted browser origin" });
     return;
   }
   res.json({ ok: true, token: COMPANION_TOKEN });
 });
 
 app.post("/api/companion/authorize-workspace", async (req, res) => {
-  const tokenHeader = req.headers["x-achu-companion-token"];
-  if (COMPANION_TOKEN && tokenHeader && tokenHeader !== COMPANION_TOKEN) {
-    res.status(401).json({ ok: false, error: "Unauthorized: Invalid companion token" });
-    return;
-  }
+  if (rejectIfTokenInvalid(req, res)) return;
   const { path: requestedPath } = req.body || {};
   if (!requestedPath || typeof requestedPath !== "string") {
     res.status(400).json({ ok: false, error: "Path is required" });
@@ -340,12 +370,7 @@ app.post("/api/companion/export-workspace", async (req, res) => {
 });
 
 app.post("/api/companion/sync-artifacts", async (req, res) => {
-  const tokenHeader = req.headers["x-achu-companion-token"];
-  if (COMPANION_TOKEN && tokenHeader && tokenHeader !== COMPANION_TOKEN) {
-    res.status(401).json({ ok: false, error: "Unauthorized: Invalid companion token" });
-    return;
-  }
-
+  if (rejectIfTokenInvalid(req, res)) return;
   const { workspaceRoot, artifacts } = req.body || {};
   if (!workspaceRoot || typeof workspaceRoot !== "string") {
     res.status(400).json({ ok: false, error: "Authorized workspaceRoot is required" });
@@ -390,6 +415,7 @@ app.post("/api/companion/sync-artifacts", async (req, res) => {
 });
 
 app.get("/api/companion/browse", async (req, res) => {
+  if (rejectIfTokenInvalid(req, res)) return;
   const targetPath = req.query.path ? String(req.query.path) : undefined;
   try {
     const result = await browseDirectory(targetPath);
@@ -400,6 +426,7 @@ app.get("/api/companion/browse", async (req, res) => {
 });
 
 app.get("/api/companion/file-tree", async (req, res) => {
+  if (rejectIfTokenInvalid(req, res)) return;
   const targetPath = req.query.path ? String(req.query.path) : undefined;
   if (!targetPath) {
     res.status(400).json({ ok: false, error: "Path query param is required" });
@@ -416,12 +443,8 @@ app.get("/api/companion/file-tree", async (req, res) => {
 });
 
 app.post("/api/companion/tasks", async (req, res) => {
-  const tokenHeader = req.headers["x-achu-companion-token"];
-  if (COMPANION_TOKEN && tokenHeader && tokenHeader !== COMPANION_TOKEN) {
-    res.status(401).json({ ok: false, error: "Unauthorized: Invalid companion token" });
-    return;
-  }
-  const { task, workspaceRoot, taskId: clientTaskId } = req.body || {};
+  if (rejectIfTokenInvalid(req, res)) return;
+  const { task, workspaceRoot, taskId: clientTaskId, attachments } = req.body || {};
   if (!task || typeof task !== "string" || !task.trim()) {
     res.status(400).json({ ok: false, error: "Task description is required" });
     return;
@@ -479,7 +502,7 @@ app.post("/api/companion/tasks", async (req, res) => {
       workspaceLockHeld: false,
     };
 
-    runAgentWithWorkspace(dummyClient, effectiveRoot, task, taskId, sessionId, baseline).catch((err) => {
+    runAgentWithWorkspace(dummyClient, effectiveRoot, task, taskId, sessionId, baseline, attachments).catch((err) => {
       console.error("[companion_task] Background task error:", err);
     });
 
@@ -612,11 +635,7 @@ async function terminateTaskProcess(task: LocalTaskRecord): Promise<void> {
 }
 
 app.post("/api/companion/tasks/:taskId/stop", async (req, res) => {
-  const tokenHeader = req.headers["x-achu-companion-token"];
-  if (COMPANION_TOKEN && tokenHeader && tokenHeader !== COMPANION_TOKEN) {
-    res.status(401).json({ ok: false, error: "Unauthorized: Invalid companion token" });
-    return;
-  }
+  if (rejectIfTokenInvalid(req, res)) return;
   let task = activeTasks.get(req.params.taskId);
   if (!task && (req.params.taskId === "active" || req.params.taskId === "current")) {
     task = Array.from(activeTasks.values()).find(t => t.status === "RUNNING");
@@ -649,7 +668,8 @@ export function compareSemver(v1: string, v2: string): number {
   return 0;
 }
 
-app.get("/api/companion/update/check", async (_req, res) => {
+app.get("/api/companion/update/check", async (req, res) => {
+  if (rejectIfTokenInvalid(req, res)) return;
   const currentVersion = AGENT_PACKAGE_VERSION;
   const updateUrl = process.env.ACHU_UPDATE_URL || "https://www.workswithachu.me/api/download/local-agent?info=true";
   try {
@@ -692,9 +712,11 @@ app.get("/api/companion/update/check", async (_req, res) => {
 });
 
 app.post("/api/companion/update/apply", async (req, res) => {
-  const tokenHeader = req.headers["x-achu-companion-token"];
-  if (COMPANION_TOKEN && tokenHeader && tokenHeader !== COMPANION_TOKEN) {
-    res.status(401).json({ ok: false, error: "Unauthorized: Invalid companion token" });
+  // Require valid token AND a known trusted browser origin (prevents CSRF drive-by)
+  if (rejectIfTokenInvalid(req, res)) return;
+  const origin = req.headers.origin;
+  if (!isKnownBrowserOrigin(origin)) {
+    res.status(403).json({ ok: false, error: "Update endpoint requires a trusted browser origin" });
     return;
   }
 
@@ -726,9 +748,21 @@ app.use(express.static(path.join(__dirname, "../public")));
 
 wss.on("connection", (ws, req) => {
   const origin = req?.headers?.origin;
+  const ip = req?.socket?.remoteAddress;
+  const isLoopback = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+  if (!isLoopback) {
+    ws.close(1008, "Non-loopback connection rejected");
+    return;
+  }
   if (origin && !isAllowedOrigin(origin)) {
     console.warn(`[companion_security] Rejected WebSocket connection from unauthorized origin: ${origin}`);
     ws.close(1008, "Origin not allowed");
+    return;
+  }
+  const reqUrl = new URL(req?.url || "/", "http://127.0.0.1");
+  const queryToken = reqUrl.searchParams.get("token");
+  if (queryToken && queryToken !== COMPANION_TOKEN) {
+    ws.close(1008, "Invalid companion token");
     return;
   }
   const client: ClientConnection = {
@@ -1375,7 +1409,7 @@ async function handleMessage(client: ClientConnection, message: any) {
       sendEvent(client.ws, "task_status", { taskId, status: "RUNNING", sessionId, workspaceRoot: client.workspaceRoot });
 
       try {
-        await runAgentWithWorkspace(client, client.workspaceRoot, task, taskId, sessionId, baseline);
+        await runAgentWithWorkspace(client, client.workspaceRoot, task, taskId, sessionId, baseline, payload.attachments);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         sendEvent(client.ws, "task_failed", { taskId, error: msg, sessionId });
@@ -1488,7 +1522,8 @@ async function runAgentWithWorkspace(
   task: string,
   taskId: string,
   sessionId: string,
-  baseline: any
+  baseline: any,
+  attachments?: any[]
 ): Promise<void> {
   console.log(`[run_task] Received run_task for sessionId=${sessionId} taskId=${taskId}`);
   console.log(`[run_task] workspaceRoot=${workspaceRoot}`);
@@ -1563,6 +1598,7 @@ async function runAgentWithWorkspace(
       WORKSPACE_ROOT: workspaceRoot,
       ACHU_SESSION_ID: sessionId,
       ACHU_TASK_ID: taskId,
+      ...(attachments && attachments.length > 0 ? { ACHU_ATTACHMENTS: JSON.stringify(attachments) } : {}),
     },
     windowsHide: true,
   });
@@ -1819,7 +1855,10 @@ async function cleanupAndEmitFailure(
 const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || "127.0.0.1";
 
-server.listen(Number(PORT), HOST, () => {
-  console.log(`Achu Workspace server running at http://${HOST}:${PORT}`);
-  console.log(`[Companion] Pairing Token: ${COMPANION_TOKEN}`);
-});
+// Only listen when executed directly (not when imported in tests)
+if (process.env.NODE_ENV !== "test" && !process.env.ACHU_DISABLE_AUTO_LISTEN) {
+  server.listen(Number(PORT), HOST, () => {
+    console.log(`Achu Workspace server running at http://${HOST}:${PORT}`);
+    console.log(`[Companion] Ready — pairing token loaded from secure storage`);
+  });
+}
