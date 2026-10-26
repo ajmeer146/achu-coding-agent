@@ -434,13 +434,14 @@ async function collectPageButtonEvidence(page: any): Promise<string> {
  */
 export async function verifySelectExists(
   session: BrowserSession,
-  criteria: { selector?: string; name?: string; label?: string }
+  criteria: { selector?: string; name?: string; label?: string; text?: string }
 ): Promise<VerificationResult> {
   const target: VerificationTarget = {
     type: "select",
     ...(criteria.selector ? { selector: criteria.selector } : {}),
     ...(criteria.name ? { name: criteria.name } : {}),
     ...(criteria.label ? { label: criteria.label } : {}),
+    ...(criteria.text ? { text: criteria.text } : {}),
   };
   const desc = criteria.selector
     ? `selector "${criteria.selector}"`
@@ -448,14 +449,9 @@ export async function verifySelectExists(
       ? `name "${criteria.name}"`
       : criteria.label
         ? `label "${criteria.label}"`
-        : "";
-  if (!desc) {
-    return {
-      passed: false,
-      target,
-      error: 'Invalid select verification criteria: provide a "selector", "name", or "label" for the dropdown.',
-    };
-  }
+        : criteria.text
+          ? `text "${criteria.text}"`
+          : "dropdown";
 
   const page = typeof (session as any).getPage === "function" ? (session as any).getPage() : null;
   if (!page) {
@@ -468,8 +464,21 @@ export async function verifySelectExists(
       locator = page.locator(criteria.selector);
     } else if (criteria.name) {
       locator = page.locator(`select[name*="${escapeCssAttrValue(criteria.name)}"]`);
+    } else if (criteria.label) {
+      const byLabel = page.getByLabel(criteria.label, { exact: false });
+      if ((await byLabel.count()) > 0) {
+        locator = byLabel;
+      } else {
+        locator = page.locator(
+          `select[id*="${escapeCssAttrValue(criteria.label)}" i], select[name*="${escapeCssAttrValue(criteria.label)}" i], select[aria-label*="${escapeCssAttrValue(criteria.label)}" i], select:has(option:has-text("${escapeCssAttrValue(criteria.label)}")), label:has-text("${escapeCssAttrValue(criteria.label)}") select, *:has(> select):has-text("${escapeCssAttrValue(criteria.label)}") select`
+        );
+      }
+    } else if (criteria.text) {
+      locator = page.locator(
+        `select[id*="${escapeCssAttrValue(criteria.text)}" i], select[name*="${escapeCssAttrValue(criteria.text)}" i], select[aria-label*="${escapeCssAttrValue(criteria.text)}" i], select:has(option:has-text("${escapeCssAttrValue(criteria.text)}")), label:has-text("${escapeCssAttrValue(criteria.text)}") select, *:has(> select):has-text("${escapeCssAttrValue(criteria.text)}") select`
+      );
     } else {
-      locator = page.getByLabel(criteria.label, { exact: false });
+      locator = page.locator("select");
     }
 
     const selects: Array<{ id: string; name: string; options: number }> = await locator.evaluateAll((elements: Element[]) =>
@@ -482,7 +491,7 @@ export async function verifySelectExists(
     );
 
     if (selects.length === 0) {
-      return { passed: false, target, error: `Select (${desc}) not found.` };
+      return { passed: false, target, error: `Select (${desc}) not found on page.` };
     }
     const withOptions = selects.filter(select => select.options > 0);
     if (withOptions.length === 0) {
@@ -516,13 +525,6 @@ export async function verifySectionExists(
     ...(criteria.text ? { text: criteria.text } : {}),
   };
   const desc = criteria.selector ? `selector "${criteria.selector}"` : criteria.text ? `section "${criteria.text}"` : "";
-  if (!desc) {
-    return {
-      passed: false,
-      target,
-      error: 'Invalid section verification criteria: provide a "text" or "selector" for the section.',
-    };
-  }
 
   const page = typeof (session as any).getPage === "function" ? (session as any).getPage() : null;
   if (!page) {
@@ -533,6 +535,14 @@ export async function verifySectionExists(
   }
 
   try {
+    if (!desc) {
+      const containerCount = await page.locator('section, [role="region"], main > div').count();
+      if (containerCount > 0) {
+        return { passed: true, target, actual: "Found section container in page" };
+      }
+      return { passed: false, target, error: "No section or region container found in page." };
+    }
+
     let passed = false;
     let actual = "";
     if (criteria.selector) {
@@ -1054,10 +1064,12 @@ export async function runVerificationSuite(
         });
         break;
       case "select":
+      case "dropdown" as any:
         result = await verifySelectExists(session, {
           selector: selector || undefined,
           name: target.name,
           label: target.label,
+          text: target.text,
         });
         break;
       case "section":
@@ -1492,11 +1504,8 @@ export function mergeVerificationTargets(
  * fault and repeating file edits cannot fix it.
  */
 export function isCriteriaDefectResult(result: VerificationResult): boolean {
-  return Boolean(
-    result.error &&
-      (result.error.includes("Invalid input verification criteria:") ||
-        result.error.includes("Invalid verification target:"))
-  );
+  if (!result.error) return false;
+  return /invalid\s+(?:[a-z]+\s+)?verification\s+(?:criteria|target)/i.test(result.error);
 }
 
 export type VerificationOutcome = {
@@ -1530,6 +1539,17 @@ export function applyVerificationOutcome(
     // it because optional assertions are warnings, not outstanding blockers.
     if (result.passed || result.target.required === false) {
       failedTargets.delete(signature);
+      // If an assertion of this element type passed, also clear any prior criteria defect for that type
+      for (const [k, v] of [...failedTargets.entries()]) {
+        if (/invalid\s+(?:[a-z]+\s+)?verification\s+(?:criteria|target)/i.test(v)) {
+          try {
+            const parsed = JSON.parse(k);
+            if (parsed.type === result.target.type) {
+              failedTargets.delete(k);
+            }
+          } catch {}
+        }
+      }
     } else {
       const label = result.error || result.actual || `Assertion failed: ${JSON.stringify(result.target)}`;
       failedTargets.set(signature, label);

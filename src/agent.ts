@@ -5,7 +5,7 @@ import chalk from "chalk";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
-import { getModelConfig, DEFAULT_MODEL } from "./router.js";
+import { getModelConfig, DEFAULT_MODEL, PRIMARY_MODEL, FALLBACK_MODEL } from "./router.js";
 import { sanitizeUserFacingError } from "./utils/error-sanitizer.js";
 import { Workspace, isNewWebsiteTask } from "./tools/workspace.js";
 import { readFile } from "./tools/read-file.js";
@@ -1947,9 +1947,10 @@ export function generateRecoveryHint(state: AgentState): string | null {
       ? `\n- Recorded failed assertion(s) that must be re-verified as passing:\n  - ${Array.from(state.browserVerificationFailedTargets.values()).slice(0, 5).join("\n  - ")}`
       : "";
     const isCriteriaDefect = (err.errorMessage ?? "").includes("Invalid input verification criteria")
-      || (err.errorMessage ?? "").includes("deterministic verification-criteria error");
+      || (err.errorMessage ?? "").includes("deterministic verification-criteria error")
+      || /invalid\s+(?:[a-z]+\s+)?verification\s+(?:criteria|target)/i.test(err.errorMessage ?? "");
     const fixGuidance = isCriteriaDefect
-      ? `\n- This failure is a deterministic verification-criteria construction error (e.g. a semantic input type in the "selector" field, or a malformed selector), NOT a page defect. Do NOT edit or rewrite source files in response. Fix the target fields: "selector" takes CSS (#email, input[type="email"]), "inputType" takes semantic types (email, password), and label/placeholder/name take their literal values.`
+      ? `\n- This failure is a deterministic verification-criteria construction error (e.g. a semantic input type in the "selector" field, or a malformed selector/dropdown target), NOT a page defect. Do NOT edit or rewrite source files in response. Fix the target fields: "selector" takes CSS (#email, input[type="email"]), "inputType" takes semantic types (email, password), and label/placeholder/name take their literal values.`
       : `\n- If elements are missing or styled incorrectly, edit the React/HTML files with 'edit_file'.`;
     repeatedHint += `\n\nBROWSER VERIFICATION GUIDANCE:${failedAssertions}\n- Ensure the application server is running and ready.\n- Re-run browser_verify with target criteria that match the page's actual DOM.${fixGuidance}`;
     if (/measurable visual defects/i.test(err.errorMessage ?? "")) {
@@ -1988,7 +1989,7 @@ export function generateRecoveryHint(state: AgentState): string | null {
     if (/\b(npx\s+(serve|http-server)|npm\s+run\s+(dev|start|serve|preview))\b/i.test(err.errorMessage ?? "")) {
       repeatedHint += `\n\nCRITICAL: run_command CANNOT be used to start development servers. You MUST use the 'start_app' tool. The 'start_app' tool detects the correct command from package.json, waits for readiness, and returns the actual URL.`;
     } else {
-      repeatedHint += `\n\nCOMMAND RECOVERY GUIDANCE:\n- Command failed with exit code ${err.exitCode}.\n- Error output: ${err.errorMessage}\n- Do NOT repeat the exact same command. If looking for files or inspecting text, prefer 'list_directory', 'read_file', or 'search_code'.\n- On Windows PowerShell, ensure command syntax is valid or use built-in tool actions directly.`;
+      repeatedHint += `\n\nCOMMAND RECOVERY GUIDANCE:\n- Command failed with exit code ${err.exitCode}.\n- Error output: ${err.errorMessage}\n- Do NOT run Unix-only commands like 'sed' or complex pipelines on Windows. For viewing lines or searching code, use 'read_file' or 'search_code'.\n- If looking for files or inspecting text, prefer 'list_directory', 'read_file', or 'search_code'.\n- On Windows PowerShell, ensure command syntax is valid or use built-in tool actions directly.`;
     }
   }
   if (state.executionLedger) {
@@ -2670,13 +2671,20 @@ async function callModelWithRetry(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      const requestPayload: any = {
+        model,
+        messages: messages as any,
+        temperature: 0,
+        tools: AGENT_TOOLS as any,
+      };
+
+      // Set reasoning_effort to "high" by default for supported reasoning models (MiniMax M3.1 Flash and Nemotron)
+      if (model.includes("minimax") || model.includes("nemotron")) {
+        requestPayload.reasoning_effort = "high";
+      }
+
       const response = await client.chat.completions.create(
-        {
-          model,
-          messages: messages as any,
-          temperature: 0,
-          tools: AGENT_TOOLS as any,
-        },
+        requestPayload,
         { timeout: requestTimeoutMs }
       );
 
@@ -2718,12 +2726,47 @@ async function callModelWithRetry(
 
 async function callModel(client: OpenAI, model: string, messages: ChatMessage[]): Promise<{ content: string; toolCalls: ToolCall[] }> {
   try {
+    console.log(chalk.gray(`[AI Service] Model request dispatched: ${model}`));
     return await callModelWithRetry(client, model, messages);
   } catch (err: any) {
-    const isTimeout = err?.message?.includes("timed out") || err?.message?.includes("timeout");
-    if (isTimeout && model !== DEFAULT_MODEL) {
-      console.log(chalk.yellow(`[AI Service] Primary request timed out. Retrying with fallback model...`));
-      return await callModelWithRetry(client, DEFAULT_MODEL, messages);
+    const errMsg = String(err?.message || "").toLowerCase();
+    const isTransientError =
+      err?.name === "AbortError" ||
+      errMsg.includes("timed out") ||
+      errMsg.includes("timeout") ||
+      errMsg.includes("429") ||
+      errMsg.includes("quota_exhausted") ||
+      errMsg.includes("rate limit") ||
+      errMsg.includes("server_error") ||
+      errMsg.includes("server error") ||
+      errMsg.includes("500") ||
+      errMsg.includes("502") ||
+      errMsg.includes("503") ||
+      errMsg.includes("504") ||
+      errMsg.includes("network_error") ||
+      errMsg.includes("network error") ||
+      errMsg.includes("econnreset") ||
+      errMsg.includes("econnrefused") ||
+      errMsg.includes("enotfound") ||
+      errMsg.includes("ehostunreach");
+
+    // Failover to verified fallback model if primary model experiences a transient failure
+    if (isTransientError && model !== FALLBACK_MODEL) {
+      let errorCategory = "transient error";
+      if (err?.name === "AbortError" || errMsg.includes("timeout") || errMsg.includes("timed out")) {
+        errorCategory = "timeout";
+      } else if (errMsg.includes("429") || errMsg.includes("quota") || errMsg.includes("rate limit")) {
+        errorCategory = "rate limit";
+      } else if (errMsg.includes("500") || errMsg.includes("502") || errMsg.includes("503") || errMsg.includes("504") || errMsg.includes("server_error") || errMsg.includes("server error")) {
+        errorCategory = "server error";
+      } else if (errMsg.includes("network_error") || errMsg.includes("econnreset") || errMsg.includes("econnrefused") || errMsg.includes("enotfound") || errMsg.includes("ehostunreach")) {
+        errorCategory = "network error";
+      }
+
+      console.log(chalk.yellow(`[AI Service] Primary model (${model}) encountered ${errorCategory}. Failing over to verified fallback model (${FALLBACK_MODEL})...`));
+      const fallbackRes = await callModelWithRetry(client, FALLBACK_MODEL, messages);
+      console.log(chalk.green(`[AI Service] Turn successfully completed by fallback model: ${FALLBACK_MODEL}`));
+      return fallbackRes;
     }
     throw new Error(sanitizeUserFacingError(err?.message));
   }
@@ -3500,6 +3543,10 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
           const signature = signatureForTarget(result.target);
           if (result.passed) {
             failedTargetObjects.delete(signature);
+          } else if (isCriteriaDefectResult(result)) {
+            // A criteria defect is a malformed tool call, NOT a real page assertion.
+            // Do NOT re-inject a malformed target object into future verification runs.
+            failedTargetObjects.delete(signature);
           } else {
             failedTargetObjects.set(signature, result.target);
           }
@@ -3791,6 +3838,7 @@ export async function runAgent(
   const sessionState = await loadSessionStateIfAvailable();
 
   const config = getModelConfig();
+  console.log(chalk.cyan(`[AI Service] Active primary model: ${config.name} (fallback: ${FALLBACK_MODEL})`));
   const client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 120000 });
   const workspaceRoot = process.env.WORKSPACE_ROOT || process.cwd();
   const workspace = new Workspace(workspaceRoot);

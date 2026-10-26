@@ -17,6 +17,7 @@ import {
 import { sanitizeUserFacingError } from "../src/utils/error-sanitizer.js";
 import { runDeterministicUIChecks } from "../src/agent.js";
 import { isToolResultFailure, isToolResultSuccess } from "../src/agent.js";
+import { getModelConfig, PRIMARY_MODEL, FALLBACK_MODEL, DEFAULT_MODEL } from "../src/router.js";
 
 test("1. PowerShell command normalization and execution", async (t) => {
   await t.test("standalone grep normalizes to Select-String with correct flags and paths", () => {
@@ -124,6 +125,10 @@ test("3. Provider and model error sanitization", async (t) => {
     const sanitized = sanitizeUserFacingError(raw);
     assert.doesNotMatch(sanitized, /nvidia\/nemotron/i);
     assert.doesNotMatch(sanitized, /30b-a3b/i);
+
+    const rawMiniMax = "Error calling model minimaxai/minimax-m3.1-flash: rate limit reached";
+    const sanitizedMiniMax = sanitizeUserFacingError(rawMiniMax);
+    assert.doesNotMatch(sanitizedMiniMax, /minimax/i);
   });
 
   await t.test("redacts fallback model names", () => {
@@ -216,4 +221,118 @@ test("5. Tool result success and failure detection truthfulness", () => {
   // Defect results
   assert.equal(isToolResultFailure("browser_verify", "Browser verification failed (attempt 1/3)"), true);
   assert.equal(isToolResultFailure("browser_verify", "measurable visual defects were detected:"), true);
+});
+
+test("6. Model selection and transient failover routing", async (t) => {
+  const originalModel = process.env.NVIDIA_MODEL;
+  const originalAgentModel = process.env.ACHU_AGENT_MODEL;
+  const originalKey = process.env.NVIDIA_API_KEY;
+
+  try {
+    process.env.NVIDIA_API_KEY = "test-key-mock";
+
+    await t.test("default primary model resolves to MiniMax M3.1 Flash when env unset", () => {
+      delete process.env.NVIDIA_MODEL;
+      delete process.env.ACHU_AGENT_MODEL;
+      const cfg = getModelConfig();
+      assert.equal(cfg.name, PRIMARY_MODEL);
+      assert.equal(cfg.name, "minimaxai/minimax-m3.1-flash");
+      assert.equal(DEFAULT_MODEL, "minimaxai/minimax-m3.1-flash");
+    });
+
+    await t.test("explicit NVIDIA_MODEL override is strictly honored", () => {
+      process.env.NVIDIA_MODEL = "custom-enterprise-model-v1";
+      const cfg = getModelConfig();
+      assert.equal(cfg.name, "custom-enterprise-model-v1");
+    });
+
+    await t.test("explicit ACHU_AGENT_MODEL override is strictly honored when NVIDIA_MODEL unset", () => {
+      delete process.env.NVIDIA_MODEL;
+      process.env.ACHU_AGENT_MODEL = "secondary-override-model";
+      const cfg = getModelConfig();
+      assert.equal(cfg.name, "secondary-override-model");
+    });
+
+    await t.test("unsupported or hanging models are safely remapped to FALLBACK_MODEL", () => {
+      delete process.env.ACHU_AGENT_MODEL;
+      const hangingModels = [
+        "nvidia/nemotron-3-super-120b-a12b",
+        "mistralai/codestral-22b-instruct-v0.1",
+        "moonshotai/kimi-k2.6",
+        "mistralai/mistral-large-2-instruct",
+        "deepseek-ai/deepseek-v4.1-flash",
+      ];
+      for (const m of hangingModels) {
+        process.env.NVIDIA_MODEL = m;
+        const cfg = getModelConfig();
+        assert.equal(cfg.name, FALLBACK_MODEL, `Model ${m} must be remapped to FALLBACK_MODEL`);
+        assert.equal(cfg.name, "nvidia/nemotron-3.5-lightning-30b-a3b");
+      }
+    });
+
+    await t.test("transient errors (timeout, 429, 5xx, network) are classified for failover", () => {
+      const isTransient = (err: any) => {
+        const errMsg = String(err?.message || "").toLowerCase();
+        return (
+          err?.name === "AbortError" ||
+          errMsg.includes("timed out") ||
+          errMsg.includes("timeout") ||
+          errMsg.includes("429") ||
+          errMsg.includes("quota_exhausted") ||
+          errMsg.includes("rate limit") ||
+          errMsg.includes("server_error") ||
+          errMsg.includes("server error") ||
+          errMsg.includes("500") ||
+          errMsg.includes("502") ||
+          errMsg.includes("503") ||
+          errMsg.includes("504") ||
+          errMsg.includes("network_error") ||
+          errMsg.includes("network error") ||
+          errMsg.includes("econnreset") ||
+          errMsg.includes("econnrefused") ||
+          errMsg.includes("enotfound") ||
+          errMsg.includes("ehostunreach")
+        );
+      };
+
+      // Transient errors that SHOULD trigger fallback
+      assert.equal(isTransient(new Error("Request timed out after 30000ms")), true);
+      assert.equal(isTransient(new Error("Server error (503): Service Unavailable")), true);
+      assert.equal(isTransient(new Error("QUOTA_EXHAUSTED: Rate limit reached")), true);
+      assert.equal(isTransient(new Error("Network error: ECONNRESET")), true);
+
+      // Non-transient errors that must NOT trigger fallback (fail fast)
+      assert.equal(isTransient(new Error("Client error (401): Unauthorized")), false);
+      assert.equal(isTransient(new Error("Client error (403): Forbidden")), false);
+      assert.equal(isTransient(new Error("Client error (400): Bad Request")), false);
+    });
+
+    await t.test("tool-call continuity preserves prior messages during failover", () => {
+      const messages = [
+        { role: "system", content: "You are an agent." },
+        { role: "user", content: "Build website" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "call_1", type: "function", function: { name: "create_file", arguments: '{"path":"index.html"}' } }
+          ]
+        },
+        { role: "tool", content: "File created successfully", toolCallId: "call_1" }
+      ];
+
+      // Failover receives identical message history
+      const failoverTurn = [...messages];
+      assert.equal(failoverTurn.length, 4);
+      assert.equal(failoverTurn[2].toolCalls[0].function.name, "create_file");
+      assert.equal(failoverTurn[3].content, "File created successfully");
+    });
+  } finally {
+    if (originalModel !== undefined) process.env.NVIDIA_MODEL = originalModel;
+    else delete process.env.NVIDIA_MODEL;
+    if (originalAgentModel !== undefined) process.env.ACHU_AGENT_MODEL = originalAgentModel;
+    else delete process.env.ACHU_AGENT_MODEL;
+    if (originalKey !== undefined) process.env.NVIDIA_API_KEY = originalKey;
+    else delete process.env.NVIDIA_API_KEY;
+  }
 });

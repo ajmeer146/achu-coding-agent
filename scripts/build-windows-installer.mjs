@@ -142,12 +142,17 @@ execSync(
   { cwd: AGENT_ROOT, stdio: "inherit" }
 );
 
-// Copy .env if available to preserve default provider configuration
-const envSource = path.join(AGENT_ROOT, ".env");
-if (fs.existsSync(envSource)) {
-  console.log("Packaging .env into staging...");
-  fs.copyFileSync(envSource, path.join(stagingDir, ".env"));
-}
+// Write safe default template .env without private keys/secrets
+console.log("Writing safe default template .env into staging (no private credentials)...");
+const safeEnvContent = [
+  "# Achu Local Agent Configuration",
+  "# Add your NVIDIA API key here, or configure it via the web app / environment variable:",
+  "# NVIDIA_API_KEY=your_key_here",
+  "NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1",
+  "# NVIDIA_MODEL defaults to minimaxai/minimax-m3.1-flash with nvidia/nemotron-3.5-lightning-30b-a3b fallback",
+  "",
+].join("\n");
+fs.writeFileSync(path.join(stagingDir, ".env"), safeEnvContent, "utf8");
 
 // Copy package.json with type: module
 console.log("Writing app package.json...");

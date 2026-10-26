@@ -6,6 +6,9 @@
 const KNOWN_MODEL_PATTERNS = [
   /nvidia\/[a-zA-Z0-9_\.\-]+/gi,
   /nemotron[a-zA-Z0-9_\.\-]*/gi,
+  /minimax[a-zA-Z0-9_\.\-]*/gi,
+  /deepseek[a-zA-Z0-9_\.\-]*/gi,
+  /glm-[a-zA-Z0-9_\.\-]+/gi,
   /gpt-[a-zA-Z0-9_\.\-]+/gi,
   /claude-[a-zA-Z0-9_\.\-]+/gi,
 ];

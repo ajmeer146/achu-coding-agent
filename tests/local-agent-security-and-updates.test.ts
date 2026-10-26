@@ -104,6 +104,15 @@ describe("Local Agent Security, Origin Validation & Update Architecture", () => 
     assert.ok(out.Status !== undefined, "Authenticode signature status must be inspectable");
     // Signature status is truthfully reported (0/Valid if signed with cert, 2/NotSigned if unsigned developer build)
     assert.ok(out.Status === 0 || out.Status === 2 || out.Status === "Valid" || out.Status === "NotSigned");
+  });
+
+  test("7. Staged installer files must never contain private API keys, secrets, or tokens", () => {
+    const stagingEnv = path.resolve(__dirname, "../dist-installer/staging/.env");
+    if (fs.existsSync(stagingEnv)) {
+      const content = fs.readFileSync(stagingEnv, "utf8");
+      assert.doesNotMatch(content, /nvapi-[a-zA-Z0-9_\-]{10,}/, "Staged .env must not contain private NVIDIA API key");
+      assert.doesNotMatch(content, /tr_(?:prod|dev)_[a-zA-Z0-9_\-]{10,}/, "Staged .env must not contain Trigger secret key");
+    }
     setTimeout(() => process.exit(0), 100);
   });
 });

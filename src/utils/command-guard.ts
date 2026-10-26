@@ -65,6 +65,7 @@ const UNIX_COMMAND_PATTERNS = [
   { pattern: /^ls\b/i, replacement: "Get-ChildItem" },
   { pattern: /^head\s+(?:-n\s+|-)?(\d+)\b/i, replacement: (_match: string, n: string) => `Select-Object -First ${n}` },
   { pattern: /^tail\s+(?:-n\s+|-)?(\d+)\b/i, replacement: (_match: string, n: string) => `Select-Object -Last ${n}` },
+  { pattern: /^sed\s+-n\s+['"]?(\d+),(\d+)p['"]?\s+(.*)$/i, replacement: (_match: string, start: string, end: string, file: string) => `(Get-Content -LiteralPath "${cleanPathArg(file)}") | Select-Object -Skip ${Math.max(0, parseInt(start, 10) - 1)} -First ${Math.max(1, parseInt(end, 10) - parseInt(start, 10) + 1)}` },
   { pattern: /^grep\s+/i, replacement: "Select-String " },
   { pattern: /^cat\s+/i, replacement: "Get-Content " },
   { pattern: /^rm\s+-rf\s+/i, replacement: "Remove-Item -Recurse -Force " },
@@ -319,9 +320,15 @@ export function normalizeFindCommand(cmd: string): { normalized: string; warning
 }
 
 function cleanPathArg(arg: string): string {
-  const trimmed = arg.trim();
+  let trimmed = arg.trim();
   if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-    return trimmed.slice(1, -1);
+    trimmed = trimmed.slice(1, -1).trim();
+  }
+  // Strip leading slash from Windows drive paths (e.g. /C:\... -> C:\... or /c/... -> C:/...)
+  if (/^\/[a-zA-Z]:/i.test(trimmed)) {
+    trimmed = trimmed.slice(1);
+  } else if (/^\/([a-zA-Z])\/(.*)$/i.test(trimmed)) {
+    trimmed = `${trimmed[1].toUpperCase()}:/${trimmed.slice(3)}`;
   }
   return trimmed;
 }

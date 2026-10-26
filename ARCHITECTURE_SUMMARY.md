@@ -9,7 +9,7 @@ The Achu Coding Agent has been successfully transformed to use NVIDIA's API as t
 - Modified `getModelConfig()` to prioritize NVIDIA-specific environment variables:
   - `NVIDIA_API_KEY` (falls back to `ACHU_AGENT_API_KEY`)
   - `NVIDIA_BASE_URL` (defaults to `https://integrate.api.nvidia.com/v1`, falls back to `ACHU_AGENT_BASE_URL`)
-  - `NVIDIA_MODEL` (defaults to `nvidia/nemotron-3.5-lightning-30b-a3b`, falls back to `ACHU_AGENT_MODEL`)
+  - `NVIDIA_MODEL` (defaults to `minimaxai/minimax-m3.1-flash`, with `nvidia/nemotron-3.5-lightning-30b-a3b` fallback, falls back to `ACHU_AGENT_MODEL`)
 - Maintained full backward compatibility with existing `ACHU_AGENT_*` environment variables
 - Preserved all existing error handling and validation logic
 
@@ -26,7 +26,8 @@ The Achu Coding Agent has been successfully transformed to use NVIDIA's API as t
 
 ### AI Provider
 - Uses NVIDIA API through OpenAI-compatible interface
-- Default model: `nvidia/nemotron-3.5-lightning-30b-a3b`
+- Default primary model: `minimaxai/minimax-m3.1-flash`
+- Fallback model: `nvidia/nemotron-3.5-lightning-30b-a3b`
 - Configurable via environment variables
 - Supports streaming and tool calls through OpenAI SDK
 
@@ -59,14 +60,15 @@ The Achu Coding Agent has been successfully transformed to use NVIDIA's API as t
 ```
 NVIDIA_API_KEY=your_nvidia_api_key_here
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-NVIDIA_MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
+# NVIDIA_MODEL defaults to minimaxai/minimax-m3.1-flash with nvidia/nemotron-3.5-lightning-30b-a3b fallback
+# NVIDIA_MODEL=minimaxai/minimax-m3.1-flash
 ```
 
 **Backward Compatible:**
 ```
 ACHU_AGENT_API_KEY=your_api_key_here
 ACHU_AGENT_BASE_URL=https://integrate.api.nvidia.com/v1
-ACHU_AGENT_MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
+# ACHU_AGENT_MODEL=minimaxai/minimax-m3.1-flash
 ```
 
 ## Verification of Changes

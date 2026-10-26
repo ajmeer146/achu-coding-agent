@@ -15,6 +15,8 @@ import {
   mergeVerificationTargets,
   normalizeProvidedVerificationTargets,
   isCriteriaDefectResult,
+  verifySelectExists,
+  verifySectionExists,
   VerificationTarget,
   BrowserVerificationSummary,
 } from "../src/browser/browser-verification.js";
@@ -646,6 +648,106 @@ describe("Browser verification selector normalization & truthful outcome regress
     } finally {
       await session.close();
       await closeServer(server);
+    }
+  });
+
+  test("21. Select and Section verification accept generic targets and find existing page elements", async () => {
+    const pageWithControls = `<!DOCTYPE html>
+<html>
+<head><title>Controls Page</title></head>
+<body>
+  <header><h1>Dashboard</h1></header>
+  <main>
+    <section id="metrics">
+      <h2>Metrics</h2>
+      <select id="timeRangeSelect" name="timeRange">
+        <option value="24h">Last 24 Hours</option>
+        <option value="7d">Last 7 Days</option>
+      </select>
+    </section>
+  </main>
+</body>
+</html>`;
+    const { port, server } = await startPage(pageWithControls);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      // Generic select target
+      const selectRes = await verifySelectExists(session, {});
+      assert.equal(selectRes.passed, true, `Generic select target must pass when select exists: ${selectRes.error}`);
+
+      // Text-guided select target
+      const selectTextRes = await verifySelectExists(session, { text: "Last 24 Hours" });
+      assert.equal(selectTextRes.passed, true, `Select target matching option text must pass: ${selectTextRes.error}`);
+
+      // Generic section target
+      const sectionRes = await verifySectionExists(session, {});
+      assert.equal(sectionRes.passed, true, `Generic section target must pass when section exists: ${sectionRes.error}`);
+    } finally {
+      await session.close();
+      await closeServer(server);
+    }
+  });
+
+  test("22. Corrected target clears prior criteria defect and prevents recovery loop", () => {
+    const failedTargets = new Map<string, string>();
+    const malformedSelectTarget: VerificationTarget = { type: "select" };
+    const malformedSig = signatureForTarget(malformedSelectTarget);
+
+    // Initial attempt has criteria defect
+    failedTargets.set(malformedSig, 'Invalid select verification criteria: "invalid[selector" is not a valid CSS selector.');
+
+    // Next attempt provides corrected, passing target of the same type
+    const correctedSelectTarget: VerificationTarget = { type: "select", selector: "select#timeRangeSelect" };
+    const passingSummary: BrowserVerificationSummary = {
+      overallPassed: true,
+      results: [
+        {
+          passed: true,
+          target: correctedSelectTarget,
+          actual: 'Found select (selector "select#timeRangeSelect")',
+        },
+      ],
+    };
+
+    const outcome = applyVerificationOutcome(failedTargets, passingSummary);
+    assert.equal(outcome.overallPassed, true, "Passing corrected target must clear prior criteria defect and yield overallPassed: true");
+    assert.equal(failedTargets.has(malformedSig), false, "Prior criteria defect must be removed from failedTargets map");
+  });
+
+  test("23. Dropdown labeled by option or id matches select assertion without label element and avoids recovery loop", async () => {
+    const pageWithSort = `<!DOCTYPE html>
+<html>
+<head><title>NovaMart</title></head>
+<body>
+  <header><h1>NovaMart</h1></header>
+  <main>
+    <select id="sortSelect" class="sort-select">
+      <option value="default">Sort: Default</option>
+      <option value="price-low">Price: Low to High</option>
+      <option value="price-high">Price: High to Low</option>
+    </select>
+  </main>
+</body>
+</html>`;
+    const { port, server } = await startPage(pageWithSort);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      await session.navigate(`http://localhost:${port}`);
+
+      // Target with label: "Sort" (matches option text or id="sortSelect")
+      const selectRes = await verifySelectExists(session, { label: "Sort" });
+      assert.equal(selectRes.passed, true, `Select target with label="Sort" must find dropdown via option text or id: ${selectRes.error}`);
+
+      // Target with text: "Sort"
+      const selectTextRes = await verifySelectExists(session, { text: "Sort" });
+      assert.equal(selectTextRes.passed, true, `Select target with text="Sort" must find dropdown: ${selectTextRes.error}`);
+    } finally {
+      await session.close();
+      await server.close();
     }
   });
 });

@@ -28,7 +28,7 @@ import {
   validateProjectStructure,
 } from "../src/tools/scaffold.js";
 import { validateCommand } from "../src/utils/command-guard.js";
-import { getModelConfig, DEFAULT_MODEL } from "../src/router.js";
+import { getModelConfig, DEFAULT_MODEL, PRIMARY_MODEL, FALLBACK_MODEL } from "../src/router.js";
 
 describe("Achu Test Lab Defect Regression Tests", () => {
   const achuTestLabPrompt = `Build a complete, working React + Vite website named **Achu Test Lab** inside a new, isolated workspace project.
@@ -630,9 +630,15 @@ Do not modify package.json.`;
     const originalKey = process.env.NVIDIA_API_KEY;
     try {
       process.env.NVIDIA_API_KEY = "test-key-mock";
+      // Test default resolution to PRIMARY_MODEL
+      delete process.env.NVIDIA_MODEL;
+      const defaultConfig = getModelConfig();
+      assert.equal(defaultConfig.name, PRIMARY_MODEL, "Default primary model must be minimax-m3.1-flash");
+
+      // Test remapping of obsolete model to FALLBACK_MODEL
       process.env.NVIDIA_MODEL = "nvidia/nemotron-3-super-120b-a12b";
       const config = getModelConfig();
-      assert.equal(config.name, DEFAULT_MODEL, "Obsolete nemotron-3-super must be remapped to DEFAULT_MODEL");
+      assert.equal(config.name, FALLBACK_MODEL, "Obsolete nemotron-3-super must be remapped to FALLBACK_MODEL");
     } finally {
       if (originalEnv !== undefined) process.env.NVIDIA_MODEL = originalEnv;
       else delete process.env.NVIDIA_MODEL;
