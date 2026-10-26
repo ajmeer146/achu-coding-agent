@@ -1756,7 +1756,7 @@ async function runAgentWithWorkspace(
     }
 
     if (taskRecord.status !== "CANCELLED") {
-      taskRecord.status = effectiveSuccess ? "COMPLETED" : "FAILED";
+      taskRecord.status = effectiveSuccess ? "COMPLETED" : (hasChanges ? "PARTIAL" : "FAILED");
     }
     
     if (client.workspaceRoot) {
@@ -1807,8 +1807,23 @@ async function runAgentWithWorkspace(
     } else {
       const errorMsg = signal ? `Process terminated by signal ${signal}` : `Process exited with code ${code}`;
       const sanitizedError = sanitizeUserFacingError(taskRecord.error || errorMsg);
-      console.log(`[run_task] Task failed: ${sanitizedError}`);
+      console.log(`[run_task] Task completed with status ${hasChanges ? "PARTIAL" : "FAILED"}: ${sanitizedError}`);
       taskRecord.error = sanitizedError;
+      
+      // Ensure app server is active for live preview on partial completion if project is runnable
+      if (!taskRecord.appUrl && hasChanges) {
+        try {
+          const liveUrl = await ensureAppServer(effectiveRoot);
+          if (liveUrl) {
+            taskRecord.appUrl = liveUrl;
+            broadcastToAll({ type: "app_url", url: liveUrl, taskId, sessionId, workspaceRoot: effectiveRoot });
+          }
+        } catch {}
+      }
+
+      const finalStatus = hasChanges ? "PARTIAL" : "FAILED";
+      taskRecord.status = finalStatus;
+
       broadcastToAll({
         type: "task_failed",
         taskId,
@@ -1817,8 +1832,9 @@ async function runAgentWithWorkspace(
         output: finalOutput,
         changedFiles: detectedChanges.map(f => ({ path: f.path, changeType: f.changeType, additions: f.additions, deletions: f.deletions, isBinary: f.isBinary })),
         workspaceRoot: effectiveRoot,
+        appUrl: taskRecord.appUrl,
       });
-      broadcastToAll({ type: "task_status", taskId, status: "FAILED", sessionId, workspaceRoot: effectiveRoot });
+      broadcastToAll({ type: "task_status", taskId, status: finalStatus, sessionId, workspaceRoot: effectiveRoot });
     }
     client.currentTaskId = null;
   });

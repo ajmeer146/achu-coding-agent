@@ -10,7 +10,7 @@ import { sanitizeUserFacingError } from "./utils/error-sanitizer.js";
 import { Workspace, isNewWebsiteTask } from "./tools/workspace.js";
 import { readFile } from "./tools/read-file.js";
 import { searchCode } from "./tools/search-code.js";
-import { editFile } from "./tools/edit-file.js";
+import { editFile, isEditContextMismatchError } from "./tools/edit-file.js";
 import { listDirectory } from "./tools/list-directory.js";
 import { createFile } from "./tools/create-file.js";
 import { runCommand } from "./tools/terminal.js";
@@ -1998,7 +1998,7 @@ export function generateRecoveryHint(state: AgentState): string | null {
     }
   }
   if (err.command === "edit_file") {
-    repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- The "expected text was not found" error means your oldText is stale. Call 'read_file' on the target file and copy an exact, current excerpt for oldText. If the error lists "Possible matches in current file", use those line numbers to locate the real text.\n- Do NOT retry edit_file with the same oldText. If the edit is large or context is hard to match, use 'oldText: "*"' with the complete new content.\n- Prefer small, uniquely anchored edits over large multi-line blocks.\n- If the file does not exist on disk (ENOENT / "does not exist"), do NOT retry edit_file. Use create_file with the complete corrected content.`;
+    repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- The "expected text was not found" error means your oldText is stale. The latest content has been provided in the [CONTEXT AUTO-RECOVERY] block of the tool result. Copy the EXACT lines from that block for oldText.\n- If the target block has multiple differences or is hard to match, use 'oldText: "*"' with the complete new content.\n- Prefer small, uniquely anchored edits over large multi-line blocks.\n- If the file does not exist on disk (ENOENT / "does not exist"), do NOT retry edit_file. Use create_file with the complete corrected content.`;
   }
   if (err.errorMessage?.includes("TRUNCATED_OR_INCOMPLETE_OUTPUT") || err.errorMessage?.includes("SYNTAX_VALIDATION_ERROR")) {
     repeatedHint += `\n\nTRUNCATION & SYNTAX ERROR RECOVERY GUIDANCE:\n- The file was truncated or contains unclosed/incomplete syntax blocks.\n- Error details: ${err.errorMessage}\n- Do NOT write empty or partial files.\n- A rejected create_file writes nothing to disk. If the file does not exist, call create_file again with the complete corrected content. Never use edit_file on a file that does not exist.\n- If the file already exists, use 'edit_file' with sufficient surrounding context or append the missing closing braces/rules to complete the file.\n- Ensure all blocks (CSS rules, HTML tags, JS functions) are properly terminated before proceeding.`;
@@ -3024,6 +3024,25 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           console.error(chalk.red(`Edit failed on ${filePath}: ${message}`));
+
+          // Context mismatch auto-recovery: read the current file and provide fresh exact lines
+          if (isEditContextMismatchError(message)) {
+            try {
+              const freshContent = await readFile(workspace, filePath);
+              const lines = freshContent.split("\n");
+              let numberedContent = "";
+              if (lines.length <= 600) {
+                numberedContent = lines.map((l, i) => `${i + 1}: ${l}`).join("\n");
+              } else {
+                numberedContent = lines.slice(0, 300).map((l, i) => `${i + 1}: ${l}`).join("\n") + "\n... [truncated, use read_file for later lines] ...";
+              }
+
+              return `Tool error: ${message}\n\n[CONTEXT AUTO-RECOVERY: Fresh read of ${filePath}]\nThe file '${filePath}' was automatically re-read from disk to provide the latest exact indentation and context for your next edit. Line numbers below are for reference only (do NOT include line numbers in oldText):\n\`\`\`\n${numberedContent}\n\`\`\`\nPlease inspect the exact lines above and formulate a new edit_file call copying the exact text for oldText, or use oldText: "*" with the complete updated content.`;
+            } catch (readErr) {
+              console.warn(`[edit_file] Could not perform fresh read of ${filePath}:`, readErr);
+            }
+          }
+
           return `Tool error: ${message}`;
         }
       }
@@ -4497,14 +4516,19 @@ export async function runAgent(
         }
         const currentCompletedCount = state.currentPlan.filter(s => s.status === "completed").length;
         const madeProgress = currentCompletedCount > lastCompletedStepCount;
-        // Invalid tool arguments are a formatting mistake the model can correct
-        // immediately; they must not consume the recovery budget or the model
-        // never gets a chance to run a valid verification.
+        // Invalid tool arguments or first-time context mismatches are formatting/alignment
+        // mistakes where fresh content was just injected for immediate self-correction;
+        // they must not prematurely exhaust the recovery budget before the model gets a turn to apply the fresh lines.
         const isInvalidToolArguments = result.startsWith("Tool error: Invalid arguments for");
+        const isContextMismatch = isEditContextMismatchError(result);
+        const editMismatchKey = `context_mismatch:${toolCall.function.name}:${toolCall.function.arguments?.slice(0, 80)}`;
+        const mismatchCount = state.repeatedFailures.get(editMismatchKey) || 0;
+        state.repeatedFailures.set(editMismatchKey, mismatchCount + 1);
+
         if (madeProgress) {
           state.recoveryAttempts = 0;
           lastCompletedStepCount = currentCompletedCount;
-        } else if (!isInvalidToolArguments) {
+        } else if (!isInvalidToolArguments && !(isContextMismatch && mismatchCount === 0)) {
           state.recoveryAttempts += 1;
         }
 
@@ -4653,11 +4677,11 @@ export async function runAgent(
           state.currentPlan.some(s => (s.toolType === "edit_file" || s.toolType === "create_file") && s.status === "completed");
 
         if (terminalFailure) {
-          if (isBrowserOrInfraFailure || (hasCompletedEdits && state.lastError?.command === "run_verification")) {
-            // Verification or browser infrastructure failed, but code edits were performed
+          if (isBrowserOrInfraFailure || hasCompletedEdits) {
+            // Verification, repair edit, or browser infrastructure failed, but code edits were performed
             state.stopReason = repeatedSameFailure
-              ? `Verification failed: same verification failure occurred 3+ times despite recovery attempts. Last error: ${state.lastError?.errorMessage}`
-              : `Verification failed: recovery exhausted (${maxRecoveryAttempts} attempts), verification could not pass.`;
+              ? `Verification/repair failed: same failure occurred 3+ times despite recovery attempts. Last error: ${state.lastError?.errorMessage}`
+              : `Verification/repair failed: recovery exhausted (${maxRecoveryAttempts} attempts), verification could not pass.`;
             console.log(chalk.yellow(`\nVerification failure recovery limit reached. Stopping.`));
           } else {
             // Truly impossible task: no progress made during code editing/planning

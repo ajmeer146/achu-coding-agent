@@ -292,3 +292,29 @@ export async function editFile(
   }
   return `Successfully applied ${successes.length} edits to ${filePath}.`;
 }
+
+/**
+ * Classifies whether an edit failure is specifically caused by context mismatch
+ * (stale oldText not found, or ambiguous multi-match), as opposed to permission,
+ * missing file, or syntax validation errors.
+ */
+export function isEditContextMismatchError(errorMsg: string): boolean {
+  if (!errorMsg || typeof errorMsg !== "string") return false;
+  // Non-context mismatch errors:
+  if (errorMsg.includes("Forbidden: .env") || errorMsg.includes("is an environment configuration file")) return false;
+  if (errorMsg.includes("Protected file cannot be modified") || errorMsg.includes("is a protected configuration file")) return false;
+  if (errorMsg.includes("File does not exist") || errorMsg.includes("ENOENT")) return false;
+  if (errorMsg.includes("TRUNCATED_OR_INCOMPLETE_OUTPUT") || errorMsg.includes("SYNTAX_VALIDATION_ERROR")) return false;
+  if (errorMsg.includes("Invalid JSON") || errorMsg.includes("package.json must be a valid JSON")) return false;
+  if (errorMsg.includes("Write verification failed")) return false;
+  if (errorMsg.includes("newText is required")) return false;
+  if (errorMsg.includes("Invalid edits argument")) return false;
+
+  // Context mismatch indicators:
+  return (
+    errorMsg.includes("The expected text was not found in") ||
+    errorMsg.includes("Expected exactly one match in") ||
+    /expected text was not found/i.test(errorMsg)
+  );
+}
+
