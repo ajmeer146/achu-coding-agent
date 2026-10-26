@@ -2678,18 +2678,74 @@ async function callModelWithRetry(
         tools: AGENT_TOOLS as any,
       };
 
-      // Set reasoning_effort to "high" by default for supported reasoning models (MiniMax M3.1 Flash and Nemotron)
+      // Set reasoning_effort to "high" for supported reasoning models (MiniMax M3.1 Flash and Nemotron)
       if (model.includes("minimax") || model.includes("nemotron")) {
         requestPayload.reasoning_effort = "high";
       }
 
-      const response = await client.chat.completions.create(
-        requestPayload,
+      // Timing: record when the model request starts
+      const requestStart = Date.now();
+      console.log(chalk.gray('[TIMING] Model request started at ' + Date.now()));
+
+      // Streaming model response: accumulate content and tool calls incrementally
+      const stream = await client.chat.completions.create(
+        { ...requestPayload, stream: true } as any,
         { timeout: requestTimeoutMs }
       );
 
-      const message = response.choices[0]?.message;
-      return { content: message?.content ?? "", toolCalls: (message?.tool_calls ?? []) as unknown as ToolCall[] };
+      let accumulatedContent = "";
+      let firstTokenLogged = false;
+      const toolCallAccumulator: Record<number, ToolCall> = {};
+
+      const isAsyncIterable = (value: any): boolean =>
+        !!value && typeof value[Symbol.asyncIterator] === "function";
+
+      if (!isAsyncIterable(stream)) {
+        // Graceful fallback: the provider ignored `stream: true` and returned a
+        // regular (non-streaming) completion object.
+        const message = (stream as any)?.choices?.[0]?.message;
+        const content: string = message?.content ?? "";
+        if (content) {
+          accumulatedContent = content;
+          process.stdout.write(content);
+          process.stdout.write("\n");
+        }
+        const toolCalls = (message?.tool_calls ?? []) as unknown as ToolCall[];
+        console.log(chalk.gray('[TIMING] Full response received after ' + (Date.now() - requestStart) + 'ms, content=' + accumulatedContent.length + ' chars, tools=' + toolCalls.length));
+        return { content: accumulatedContent, toolCalls };
+      }
+
+      for await (const chunk of stream as any) {
+        const contentDelta: string = chunk?.choices?.[0]?.delta?.content ?? "";
+        if (contentDelta) {
+          if (!firstTokenLogged) {
+            firstTokenLogged = true;
+            console.log(chalk.gray('[TIMING] First token received after ' + (Date.now() - requestStart) + 'ms'));
+          }
+          // Stream content tokens to stdout so server.ts can broadcast them
+          process.stdout.write(contentDelta);
+          accumulatedContent += contentDelta;
+        }
+
+        // Accumulate tool call deltas (OpenAI streaming format)
+        chunk?.choices?.[0]?.delta?.tool_calls?.forEach((tc: any) => {
+          if (tc.index !== undefined) {
+            if (!toolCallAccumulator[tc.index]) {
+              toolCallAccumulator[tc.index] = { id: "", type: "function", function: { name: "", arguments: "" } };
+            }
+            if (tc.id) toolCallAccumulator[tc.index].id += tc.id;
+            if (tc.function?.name) toolCallAccumulator[tc.index].function.name += tc.function.name;
+            if (tc.function?.arguments) toolCallAccumulator[tc.index].function.arguments += tc.function.arguments;
+          }
+        });
+      }
+
+      // Emit a newline if content was streamed inline (to avoid crowding next log line)
+      if (accumulatedContent) process.stdout.write("\n");
+
+      console.log(chalk.gray('[TIMING] Full response received after ' + (Date.now() - requestStart) + 'ms, content=' + accumulatedContent.length + ' chars, tools=' + Object.keys(toolCallAccumulator).length));
+
+      return { content: accumulatedContent, toolCalls: Object.values(toolCallAccumulator) };
 
     } catch (error: any) {
       const classified = classifyError(error);

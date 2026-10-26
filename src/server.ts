@@ -650,7 +650,7 @@ export function compareSemver(v1: string, v2: string): number {
 }
 
 app.get("/api/companion/update/check", async (_req, res) => {
-  const currentVersion = "1.0.0";
+  const currentVersion = AGENT_PACKAGE_VERSION;
   const updateUrl = process.env.ACHU_UPDATE_URL || "https://www.workswithachu.me/api/download/local-agent?info=true";
   try {
     const fetchRes = await fetch(updateUrl, {
