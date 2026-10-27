@@ -27,9 +27,10 @@ Following the successful publication and remote digest verification of `ajmeer14
 3. **Railway Infrastructure (`BLOCKER — NOT CONFIGURED`):**
    - Neither `RAILWAY_API_KEY` nor `RAILWAY_PROJECT_ID` is configured in local or Vercel production environments.
    - No Railway resources, projects, services, or volumes have been provisioned.
-4. **Architectural Gap Uncovered:**
-   - `RailwayAdapter` currently creates services via `serviceCreate`, mounts volumes via `volumeCreate`, sets variables via `variableCollectionUpsert`, and triggers deployment via `serviceInstanceRedeploy`.
-   - However, **Railway GraphQL API requires an explicit `serviceDomainCreate` mutation to generate a public `*.up.railway.app` hostname**. Without `serviceDomainCreate`, Railway services remain private internal services without a public HTTP URL, which would cause readiness polling to time out. A 10-line GraphQL helper in `RailwayAdapter` resolves this.
+4. **Architectural Gap Resolved (`VERIFIED IMPLEMENTED`):**
+   - The previously identified domain provisioning gap has been **resolved in local commit `a5687f8`**.
+   - `RailwayAdapter` now implements `ensureServiceDomain` and `findExistingDomain` using Railway's GraphQL `serviceDomainCreate` mutation and `serviceDomains` query with idempotency checks and fallback.
+   - Verified via 3 automated regression tests in `tests/cloud-runtime-integration.test.ts`.
 
 ---
 
@@ -150,8 +151,8 @@ Vercel Hobby enforces a limit of **once per day** on native crons (`0 0 * * *`).
 3. Copy the Project ID from Project Settings (`RAILWAY_PROJECT_ID`).
 4. Generate a Railway Personal or Workspace API Token with read/write project scope (`RAILWAY_API_KEY`).
 
-### Stage 2: Public Domain Creation Patch in RailwayAdapter
-Add `serviceDomainCreate` mutation in `app/lib/adapters/railway-adapter.ts` so Railway automatically assigns a public `*.up.railway.app` URL to each newly created service.
+### Stage 2: Public Domain Creation in RailwayAdapter (COMPLETED)
+`serviceDomainCreate`, `findExistingDomain`, and `getEnvironmentId` implemented in `app/lib/adapters/railway-adapter.ts` (Commit `a5687f8`). Idempotent domain resolution and fallback verified via automated tests.
 
 ### Stage 3: Configure Production Environment Variables in Vercel
 In the Vercel dashboard for `works-with-achu-v2`, add:
@@ -174,5 +175,6 @@ In the Vercel dashboard for `works-with-achu-v2`, add:
 **Wait for explicit user authorization before creating the Railway project or adding environment variables to Vercel.**
 
 When authorized:
-1. Provide or configure `RAILWAY_PROJECT_ID` and `RAILWAY_API_KEY`.
-2. Apply the `serviceDomainCreate` GraphQL helper to `railway-adapter.ts` to ensure Railway assigns public URLs to created services.
+1. Provide or configure `RAILWAY_PROJECT_ID` and `RAILWAY_API_KEY` from the Railway dashboard.
+2. Push commit `a5687f8` to remote `main` so Vercel deploys the domain creation fix.
+3. Configure `RAILWAY_API_KEY`, `RAILWAY_PROJECT_ID`, `WORKSPACE_SECRET`, and `CRON_SECRET` in Vercel settings.
