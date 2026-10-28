@@ -2700,20 +2700,31 @@ async function callModelWithRetry(
         tools: AGENT_TOOLS as any,
       };
 
-      // Set reasoning_effort to "high" for supported reasoning models (MiniMax M3.1 Flash and Nemotron)
+      // Set reasoning_effort to "low" for supported reasoning models to avoid multi-minute stalls
       if (model.includes("minimax") || model.includes("nemotron")) {
-        requestPayload.reasoning_effort = "high";
+        requestPayload.reasoning_effort = "low";
       }
 
       // Timing: record when the model request starts
       const requestStart = Date.now();
       console.log(chalk.gray('[TIMING] Model request started at ' + Date.now()));
 
-      // Streaming model response: accumulate content and tool calls incrementally
-      const stream = await client.chat.completions.create(
-        { ...requestPayload, stream: true } as any,
-        { timeout: requestTimeoutMs }
-      );
+      // Bounded turn stream timeout: prevent stream loop from hanging indefinitely
+      const turnAbortController = new AbortController();
+      const turnTimer = setTimeout(() => {
+        turnAbortController.abort(new Error(`Model stream turn timed out after ${requestTimeoutMs}ms`));
+      }, requestTimeoutMs);
+
+      let stream: any;
+      try {
+        stream = await client.chat.completions.create(
+          { ...requestPayload, stream: true } as any,
+          { timeout: requestTimeoutMs, signal: turnAbortController.signal }
+        );
+      } catch (createErr: any) {
+        clearTimeout(turnTimer);
+        throw createErr;
+      }
 
       let accumulatedContent = "";
       let firstTokenLogged = false;
@@ -2723,6 +2734,7 @@ async function callModelWithRetry(
         !!value && typeof value[Symbol.asyncIterator] === "function";
 
       if (!isAsyncIterable(stream)) {
+        clearTimeout(turnTimer);
         // Graceful fallback: the provider ignored `stream: true` and returned a
         // regular (non-streaming) completion object.
         const message = (stream as any)?.choices?.[0]?.message;
@@ -2737,29 +2749,33 @@ async function callModelWithRetry(
         return { content: accumulatedContent, toolCalls };
       }
 
-      for await (const chunk of stream as any) {
-        const contentDelta: string = chunk?.choices?.[0]?.delta?.content ?? "";
-        if (contentDelta) {
-          if (!firstTokenLogged) {
-            firstTokenLogged = true;
-            console.log(chalk.gray('[TIMING] First token received after ' + (Date.now() - requestStart) + 'ms'));
-          }
-          // Stream content tokens to stdout so server.ts can broadcast them
-          process.stdout.write(contentDelta);
-          accumulatedContent += contentDelta;
-        }
-
-        // Accumulate tool call deltas (OpenAI streaming format)
-        chunk?.choices?.[0]?.delta?.tool_calls?.forEach((tc: any) => {
-          if (tc.index !== undefined) {
-            if (!toolCallAccumulator[tc.index]) {
-              toolCallAccumulator[tc.index] = { id: "", type: "function", function: { name: "", arguments: "" } };
+      try {
+        for await (const chunk of stream as any) {
+          const contentDelta: string = chunk?.choices?.[0]?.delta?.content ?? "";
+          if (contentDelta) {
+            if (!firstTokenLogged) {
+              firstTokenLogged = true;
+              console.log(chalk.gray('[TIMING] First token received after ' + (Date.now() - requestStart) + 'ms'));
             }
-            if (tc.id) toolCallAccumulator[tc.index].id += tc.id;
-            if (tc.function?.name) toolCallAccumulator[tc.index].function.name += tc.function.name;
-            if (tc.function?.arguments) toolCallAccumulator[tc.index].function.arguments += tc.function.arguments;
+            // Stream content tokens to stdout so server.ts can broadcast them
+            process.stdout.write(contentDelta);
+            accumulatedContent += contentDelta;
           }
-        });
+
+          // Accumulate tool call deltas (OpenAI streaming format)
+          chunk?.choices?.[0]?.delta?.tool_calls?.forEach((tc: any) => {
+            if (tc.index !== undefined) {
+              if (!toolCallAccumulator[tc.index]) {
+                toolCallAccumulator[tc.index] = { id: "", type: "function", function: { name: "", arguments: "" } };
+              }
+              if (tc.id) toolCallAccumulator[tc.index].id += tc.id;
+              if (tc.function?.name) toolCallAccumulator[tc.index].function.name += tc.function.name;
+              if (tc.function?.arguments) toolCallAccumulator[tc.index].function.arguments += tc.function.arguments;
+            }
+          });
+        }
+      } finally {
+        clearTimeout(turnTimer);
       }
 
       // Emit a newline if content was streamed inline (to avoid crowding next log line)
@@ -4333,6 +4349,16 @@ export async function runAgent(
             function: { name: "open_browser", arguments: "{}" },
           };
           const openRes = await executeTool(workspace, openCall, state);
+          const lastMsg = messages[messages.length - 1];
+          if (lastMsg && lastMsg.role === "assistant") {
+            lastMsg.tool_calls = [...(lastMsg.tool_calls || []), openCall];
+          } else {
+            messages.push({
+              role: "assistant",
+              content: null,
+              tool_calls: [openCall],
+            });
+          }
           messages.push({ role: "tool", content: openRes, tool_call_id: openCall.id });
           state.currentPlan = updatePlanProgress(state.currentPlan, state.completedTasks, openCall, openRes);
           continue;
