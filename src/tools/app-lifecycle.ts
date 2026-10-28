@@ -612,7 +612,9 @@ export function extractUrlFromOutput(output: string): string | null {
   for (const pattern of patterns) {
     const match = output.match(pattern);
     if (match && match[1]) {
-      return match[1].trim();
+      // Normalize loopback hosts so the whole pipeline uses the canonical
+      // http://localhost:<port> form (matches getAppUrl/discoverNewServerUrl).
+      return match[1].trim().replace(/\/\/(?:127\.0\.0\.1|0\.0\.0\.0)(?=[:/])/i, "//localhost");
     }
   }
   return null;

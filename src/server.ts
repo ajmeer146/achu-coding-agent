@@ -148,8 +148,8 @@ export function isAllowedOrigin(origin?: string): boolean {
     // Official product domains — exact host or exact subdomain suffix only (no substring tricks)
     if (host === "workswithachu.me" || host.endsWith(".workswithachu.me")) return true;
     if (host === "works-with-achu.me" || host.endsWith(".works-with-achu.me")) return true;
-    // NOTE: *.vercel.app and substring matching have been intentionally removed.
-    // They allowed any attacker-controlled Vercel deployment to reach the companion.
+    if (host === "work-with-achu-v2.vercel.app" || host.endsWith(".work-with-achu-v2.vercel.app")) return true;
+    // NOTE: generic *.vercel.app wildcard has been intentionally omitted to prevent attacker deployments from reaching companion.
   } catch {
     return false;
   }

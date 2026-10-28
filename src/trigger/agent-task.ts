@@ -58,7 +58,7 @@ export const AgentTaskPayloadSchema = z.object({
     size: z.number().optional(),
   })).optional(),
 }).refine((data) => data.workspaceId || data.workspaceRoot || data.gitUrl || (data.files && data.files.length > 0) || (data.attachments && data.attachments.length > 0), {
-  message: "Either workspaceId, workspaceRoot, gitUrl, files, or attachments must be provided",
+  message: "Either workspaceId, workspaceRoot, gitUrl, or files must be provided",
 });
 
 type AgentTaskPayload = z.infer<typeof AgentTaskPayloadSchema>;
