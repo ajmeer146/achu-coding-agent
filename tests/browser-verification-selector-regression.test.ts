@@ -152,6 +152,10 @@ describe("Browser verification selector normalization & truthful outcome regress
     assert.equal(looksLikeCssSelector("#email"), true);
     assert.equal(looksLikeCssSelector(`input[type="email"]`), true);
     assert.equal(looksLikeCssSelector("email"), false, "a bare semantic type is not a CSS selector");
+    assert.equal(looksLikeCssSelector("Confirm"), false, "a bare button label is not a CSS selector");
+    assert.equal(looksLikeCssSelector("Sign in"), false, "a multi-word button label is not a CSS selector");
+    assert.equal(looksLikeCssSelector("button"), true, "a bare HTML tag remains a CSS selector");
+    assert.equal(looksLikeCssSelector("button.primary"), true, "tag plus class remains a CSS selector");
   });
 
   test("6. Real login page verifies: heading, email input (by selector), password input (by inputType), enabled Login button", async () => {
@@ -748,6 +752,45 @@ describe("Browser verification selector normalization & truthful outcome regress
     } finally {
       await session.close();
       await server.close();
+    }
+  });
+
+  test("24. Bare button labels in the selector field resolve as accessible text, not CSS", async () => {
+    const page = `<!DOCTYPE html>
+<html>
+<head><title>Achu Cloud Check</title></head>
+<body>
+  <h1>Achu Cloud Check</h1>
+  <p>Fresh production acceptance passed</p>
+  <button id="confirm">Confirm</button>
+  <button id="signin">Sign in</button>
+</body>
+</html>`;
+    const { port, server } = await startPage(page);
+    const session = new BrowserSession({ headless: true });
+    try {
+      await session.init();
+      const url = `http://localhost:${port}`;
+      await session.navigate(url);
+
+      const summary = await runVerificationSuite(session, url, [
+        { type: "button", selector: "Confirm" },
+        { type: "button", text: "Confirm", selector: "Confirm" },
+        { type: "button", selector: "Sign in" },
+      ]);
+      assert.equal(summary.overallPassed, true, "Bare button labels must verify by accessible text");
+      assert.equal(summary.results[0].passed, true, `Selector-only label must pass: ${summary.results[0].error ?? ""}`);
+      assert.equal(summary.results[0].target.text, "Confirm");
+      assert.equal(summary.results[0].target.selector, undefined, "A bare label must not be retained as a selector");
+      assert.equal(summary.results[2].passed, true, `Multi-word label must pass: ${summary.results[2].error ?? ""}`);
+      assert.equal(summary.results[2].target.text, "Sign in");
+
+      const missing = await runVerificationSuite(session, url, [{ type: "button", selector: "#does-not-exist" }]);
+      assert.equal(missing.results[0].passed, false, "A genuine missing CSS selector must still fail");
+      assert.match(missing.results[0].error ?? "", /did not match any element/);
+    } finally {
+      await session.close();
+      await closeServer(server);
     }
   });
 });

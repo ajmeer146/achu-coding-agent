@@ -66,19 +66,43 @@ export function isSemanticInputType(value?: string | null): boolean {
   return SEMANTIC_INPUT_TYPES.has(value.trim().toLowerCase());
 }
 
+const HTML_TAG_NAMES = new Set([
+  "a", "abbr", "address", "area", "article", "aside", "audio", "b", "base",
+  "bdi", "bdo", "blockquote", "body", "br", "button", "canvas", "caption",
+  "cite", "code", "col", "colgroup", "data", "datalist", "dd", "del",
+  "details", "dfn", "dialog", "div", "dl", "dt", "em", "embed", "fieldset",
+  "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5",
+  "h6", "head", "header", "hgroup", "hr", "html", "i", "iframe", "img",
+  "input", "ins", "kbd", "label", "legend", "li", "link", "main", "map",
+  "mark", "menu", "meta", "meter", "nav", "noscript", "object", "ol",
+  "optgroup", "option", "output", "p", "param", "picture", "pre", "progress",
+  "q", "rp", "rt", "ruby", "s", "samp", "script", "section", "select", "slot",
+  "small", "source", "span", "strong", "style", "sub", "summary", "sup",
+  "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead",
+  "time", "title", "tr", "track", "u", "ul", "var", "video", "wbr",
+  "svg", "circle", "ellipse", "g", "line", "path", "polygon", "polyline",
+  "rect", "use",
+]);
+
 /**
  * Heuristic: does this string look like a CSS selector (as opposed to a bare
- * semantic input-type word or a human label)? Bare semantic type words are
- * deliberately NOT selectors.
+ * semantic input-type word or a human label)? Bare semantic type words and
+ * human labels such as "Confirm" or "Sign in" are deliberately NOT selectors.
+ * A bare word is only a selector when it is a known HTML tag (e.g. "button").
  */
 export function looksLikeCssSelector(value?: string | null): boolean {
   if (typeof value !== "string") return false;
   const s = value.trim();
   if (!s) return false;
-  if (/^[#.\[]/.test(s)) return true;
-  if (/^[a-zA-Z][a-zA-Z0-9-]*\s*[\[#.:>+~*\s]/.test(s)) return true;
-  if (/^[a-zA-Z][a-zA-Z0-9-]*$/.test(s)) return !isSemanticInputType(s);
-  return false;
+  if (/^[#.*:>+~,\[]/.test(s)) return true;
+
+  const tagMatch = s.match(/^[a-zA-Z][a-zA-Z0-9-]*/);
+  if (!tagMatch) return false;
+  const tag = tagMatch[0].toLowerCase();
+  if (!HTML_TAG_NAMES.has(tag) || isSemanticInputType(tag)) return false;
+  if (s.length === tagMatch[0].length) return true;
+
+  return /^[\s\[#.:>+~,]/.test(s.slice(tagMatch[0].length));
 }
 
 export type InputCriteria = {
@@ -308,7 +332,17 @@ export async function verifyButtonExists(
   text: string,
   selector?: string
 ): Promise<VerificationResult> {
-  const target: VerificationTarget = { type: "button" as const, text, ...(selector ? { selector } : {}) };
+  const normalizedSelector = typeof selector === "string" ? selector.trim() : "";
+  const selectorIsCss = normalizedSelector ? looksLikeCssSelector(normalizedSelector) : false;
+  const effectiveText =
+    (typeof text === "string" ? text.trim() : "") ||
+    (normalizedSelector && !selectorIsCss ? normalizedSelector : "");
+  const effectiveSelector = selectorIsCss ? normalizedSelector : undefined;
+  const target: VerificationTarget = {
+    type: "button" as const,
+    text: effectiveText,
+    ...(effectiveSelector ? { selector: effectiveSelector } : {}),
+  };
 
   const matchesText = (candidate: DomElementInfo | string, expected: string): boolean => {
     const exp = expected.toLowerCase().trim();
@@ -335,13 +369,13 @@ export async function verifyButtonExists(
   if (page) {
     try {
       let candidates: DomElementInfo[] = [];
-      if (selector) {
-        const tied: DomElementInfo[] = await page.$$eval(selector, COLLECT_DOM_ELEMENTS);
+      if (effectiveSelector) {
+        const tied: DomElementInfo[] = await page.$$eval(effectiveSelector, COLLECT_DOM_ELEMENTS);
         if (tied.length === 0) {
           return {
             passed: false,
             target,
-            error: `Button selector "${selector}" did not match any element. ${await collectPageButtonEvidence(page)}`,
+            error: `Button selector "${effectiveSelector}" did not match any element. ${await collectPageButtonEvidence(page)}`,
           };
         }
         candidates = tied;
@@ -353,27 +387,27 @@ export async function verifyButtonExists(
       }
 
       // Buttons matched by plain DOM selector must be actual buttons; text-matched candidates may be any element with button role.
-      const match = candidates.find((c) => (text ? matchesText(c, text) : true));
+      const match = candidates.find((c) => (effectiveText ? matchesText(c, effectiveText) : true));
 
       if (!match) {
         return {
           passed: false,
           target,
-          error: `Button "${text}" not found. ${await collectPageButtonEvidence(page)}`,
+          error: `Button "${effectiveText}" not found. ${await collectPageButtonEvidence(page)}`,
         };
       }
       if (match.disabled) {
         return {
           passed: false,
           target,
-          error: `Button "${text}" exists but is disabled; verification requires an enabled button.`,
+          error: `Button "${effectiveText}" exists but is disabled; verification requires an enabled button.`,
         };
       }
 
       return {
         passed: true,
         target,
-        actual: `Found button "${text}" (enabled)`,
+        actual: `Found button "${effectiveText}" (enabled)`,
       };
     } catch (err: any) {
       return {
@@ -395,20 +429,20 @@ export async function verifyButtonExists(
     };
   }
 
-  const passed = result.info.buttons.some(btn => matchesText(btn, text));
-  if (selector && passed) {
+  const passed = result.info.buttons.some(btn => matchesText(btn, effectiveText));
+  if (effectiveSelector && passed) {
     // Aggregate view cannot confirm selector binding; record it but keep the text evidence.
     return {
       passed: true,
       target,
-      actual: `Found button "${text}" (text match; selector "${selector}" not DOM-verified)`,
+      actual: `Found button "${effectiveText}" (text match; selector "${effectiveSelector}" not DOM-verified)`,
     };
   }
 
   return {
     passed,
     target,
-    actual: passed ? `Found button "${text}"` : `Button "${text}" not found`,
+    actual: passed ? `Found button "${effectiveText}"` : `Button "${effectiveText}" not found`,
   };
 }
 
