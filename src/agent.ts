@@ -2642,7 +2642,7 @@ async function callModelWithRetry(
   const isRetriableError = (error: any): boolean => {
     if (!error) return false;
     // Timeout/abort errors
-    if (error.name === "AbortError" || error.code === "ETIMEDOUT" || error.code === "TIMEOUT" || error.message?.includes("timeout")) return true;
+    if (error.name === "AbortError" || error.name === "EmptyResponseError" || error.code === "ETIMEDOUT" || error.code === "TIMEOUT" || error.message?.includes("timeout") || error.message?.includes("empty response")) return true;
     // Network errors
     if (error.code === "ECONNRESET" || error.code === "ENOTFOUND" || error.code === "ECONNREFUSED" || error.code === "EHOSTUNREACH") return true;
     // 5xx server errors
@@ -2669,6 +2669,11 @@ async function callModelWithRetry(
     // Timeout/abort
     if (error.name === "AbortError" || code === "ETIMEDOUT" || code === "TIMEOUT" || message.includes("timeout") || code === "ERR_REQUEST_TIMEOUT") {
       return { type: "TIMEOUT", message: `Request timeout after ${message}`, retriable: true };
+    }
+
+    // Empty response from truncated or failed stream
+    if (error.name === "EmptyResponseError" || message.includes("empty response") || message.includes("0 content tokens")) {
+      return { type: "SERVER_ERROR", message: `Empty model response: ${message}`, retriable: true };
     }
 
     // Network errors
@@ -2784,6 +2789,25 @@ async function callModelWithRetry(
         clearTimeout(turnTimer);
       }
 
+      // If turn stream timeout fired, throw AbortError with configured timeout identification
+      if (turnAbortController.signal.aborted) {
+        const timeoutErr: any = new Error(
+          `Request timeout after ${requestTimeoutMs}ms: ${model} stream exceeded turn deadline`
+        );
+        timeoutErr.name = "AbortError";
+        timeoutErr.code = "TIMEOUT";
+        throw timeoutErr;
+      }
+
+      // Prevent empty response caused by timeout or stream failure from being treated as successful output
+      if (!accumulatedContent && Object.keys(toolCallAccumulator).length === 0) {
+        const emptyErr: any = new Error(
+          `Empty response received from ${model}: 0 content tokens and 0 tool calls`
+        );
+        emptyErr.name = "EmptyResponseError";
+        throw emptyErr;
+      }
+
       // Emit a newline if content was streamed inline (to avoid crowding next log line)
       if (accumulatedContent) process.stdout.write("\n");
 
@@ -2830,10 +2854,25 @@ async function callModel(client: OpenAI, model: string, messages: ChatMessage[])
     return await callModelWithRetry(client, model, messages);
   } catch (err: any) {
     const errMsg = String(err?.message || "").toLowerCase();
+
+    // Preserve intentional user cancellation: do not convert into a fallback or retry loop
+    const isUserCancellation =
+      err?.name === "CancelledError" ||
+      errMsg.includes("operation cancelled") ||
+      errMsg.includes("canceled by user") ||
+      errMsg.includes("cancelled by user") ||
+      errMsg.includes("user requested interrupt");
+
+    if (isUserCancellation) {
+      throw err;
+    }
+
     const isTransientError =
       err?.name === "AbortError" ||
+      err?.name === "EmptyResponseError" ||
       errMsg.includes("timed out") ||
       errMsg.includes("timeout") ||
+      errMsg.includes("empty response") ||
       errMsg.includes("429") ||
       errMsg.includes("quota_exhausted") ||
       errMsg.includes("rate limit") ||
@@ -2855,6 +2894,8 @@ async function callModel(client: OpenAI, model: string, messages: ChatMessage[])
       let errorCategory = "transient error";
       if (err?.name === "AbortError" || errMsg.includes("timeout") || errMsg.includes("timed out")) {
         errorCategory = "timeout";
+      } else if (err?.name === "EmptyResponseError" || errMsg.includes("empty response")) {
+        errorCategory = "empty response";
       } else if (errMsg.includes("429") || errMsg.includes("quota") || errMsg.includes("rate limit")) {
         errorCategory = "rate limit";
       } else if (errMsg.includes("500") || errMsg.includes("502") || errMsg.includes("503") || errMsg.includes("504") || errMsg.includes("server_error") || errMsg.includes("server error")) {
