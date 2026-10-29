@@ -1353,8 +1353,10 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
 
   // 1. Special handling for scaffold_project: completes all scaffolded file creation steps in one shot
   if (toolName === "scaffold_project" && !isToolFailure) {
-    for (const step of updatedPlan) {
-      if (step.status === "completed" || step.status === "failed") continue;
+  for (const step of updatedPlan) {
+    if (step.status === "completed") continue;
+    // Allow a previously failed step to be recovered if the current matching tool execution succeeds
+    if (step.status === "failed" && isToolFailure) continue;
       const sDesc = step.description.toLowerCase();
       const sTool = step.toolType?.toLowerCase();
       if (
@@ -1404,7 +1406,9 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
   }
 
   for (const step of updatedPlan) {
-    if (step.status === "completed" || step.status === "failed") continue;
+    if (step.status === "completed") continue;
+    // Allow a previously failed step to be recovered if the current matching tool execution succeeds
+    if (step.status === "failed" && isToolFailure) continue;
     if (step.dependsOn && step.dependsOn.length > 0) {
       // Dependencies are ordering hints, not hard gates: only a FAILED dependency
       // blocks this step. Otherwise the plan deadlocks when the model executes
@@ -1540,7 +1544,9 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
         step.dependsOn.every(depId => { const dep = updatedPlan.find(s => s.id === depId); return dep && dep.status === "completed"; });
       const resultIsFailure = isToolResultFailure(toolName, toolResult);
       const resultIsSuccess = isToolResultSuccess(toolName, toolResult);
-      if (!depsCompleted) {
+      if (stepToolType === "open_browser" && resultIsSuccess) {
+        // Successful open_browser execution always completes the step regardless of prior ordering
+      } else if (!depsCompleted) {
         matches = false; // out-of-order lifecycle call: no status change
       } else if (!resultIsFailure && !resultIsSuccess) {
         matches = false; // ambiguous result: keep the step running for a bounded retry
@@ -4342,6 +4348,13 @@ export async function runAgent(
       }
       if (pendingLifecycle.length > 0 && hasToolWorkNow && !state.stopReason) {
         if (pendingLifecycle[0].toolType === "open_browser") {
+          // Guard: if browser is already initialized or open_browser already completed, do NOT re-run
+          if (state.browserSession || state.completedTasks.has("open_browser")) {
+            const obStep = state.currentPlan.find(s => s.toolType === "open_browser" && s.status !== "completed");
+            if (obStep) obStep.status = "completed";
+            state.completedTasks.add("open_browser");
+            continue;
+          }
           console.log(chalk.gray(`Auto-executing lifecycle step: open_browser`));
           const openCall: ToolCall = {
             id: `call_${Date.now()}_open_browser`,
@@ -4360,6 +4373,9 @@ export async function runAgent(
             });
           }
           messages.push({ role: "tool", content: openRes, tool_call_id: openCall.id });
+          state.completedTasks.add("open_browser");
+          const obStep = state.currentPlan.find(s => s.toolType === "open_browser" && s.status !== "completed");
+          if (obStep) obStep.status = "completed";
           state.currentPlan = updatePlanProgress(state.currentPlan, state.completedTasks, openCall, openRes);
           continue;
         }

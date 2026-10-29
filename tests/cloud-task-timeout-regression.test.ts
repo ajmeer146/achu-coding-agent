@@ -10,7 +10,7 @@ describe("Cloud Task Timeout, Message Protocol & Reasoning Effort Regression Sui
     const autoExecIdx = agentSrc.indexOf('pendingLifecycle[0].toolType === "open_browser"');
     assert.ok(autoExecIdx > 0, "Must contain open_browser auto-execution block");
 
-    const block = agentSrc.slice(autoExecIdx, autoExecIdx + 800);
+    const block = agentSrc.slice(autoExecIdx, autoExecIdx + 1500);
     assert.match(
       block,
       /lastMsg\.tool_calls\s*=\s*\[\.\.\.\(lastMsg\.tool_calls \|\| \[\]\),\s*openCall\]/,
