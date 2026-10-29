@@ -3020,7 +3020,7 @@ export async function runDeterministicUIChecks(workspace: Workspace, appUrl?: st
   };
 }
 
-async function executeTool(workspace: Workspace, toolCall: ToolCall, state: AgentState): Promise<string> {
+async function executeToolCore(workspace: Workspace, toolCall: ToolCall, state: AgentState): Promise<string> {
   let args: any;
   try { args = JSON.parse(toolCall.function.arguments); } catch { return "Tool error: Invalid JSON arguments."; }
 
@@ -3924,6 +3924,40 @@ async function executeTool(workspace: Workspace, toolCall: ToolCall, state: Agen
   } catch (error) { const message = error instanceof Error ? error.message : String(error); return `Tool error: ${message}`; }
 }
 
+async function executeTool(workspace: Workspace, toolCall: ToolCall, state: AgentState): Promise<string> {
+  const toolName = toolCall.function.name;
+  const startedAt = Date.now();
+  const diagnostic = (event: string, details: Record<string, unknown> = {}) => {
+    console.log(`[Tool Diagnostic] ${JSON.stringify({ event, tool: toolName, durationMs: Date.now() - startedAt, ...details })}`);
+  };
+
+  let args: unknown;
+  try {
+    args = JSON.parse(toolCall.function.arguments);
+  } catch {
+    diagnostic("argument_validation_failed", { reason: "invalid_json" });
+    return "Tool error: Invalid JSON arguments.";
+  }
+  const schema = schemas[toolName as keyof typeof schemas];
+  if (schema) {
+    const parsed = schema.safeParse(args);
+    if (!parsed.success) {
+      diagnostic("argument_validation_failed", { reason: "schema", issueCount: parsed.error.issues.length });
+      return `Tool error: Invalid arguments for ${toolName}: ${parsed.error.issues.map((e: any) => `${e.path.join('.')}: ${e.message}`).join(', ')}`;
+    }
+    args = parsed.data;
+  }
+  diagnostic("argument_validation_passed", { argumentKeys: Object.keys((args as Record<string, unknown>) || {}).sort() });
+  diagnostic("execution_started");
+  const result = await executeToolCore(workspace, toolCall, state);
+  diagnostic(isToolResultFailure(toolName, result) ? "execution_failed" : "execution_succeeded", {
+    resultLength: result.length,
+    confirmedWrite: /Successfully (created|updated)|already created with identical content/i.test(result),
+    terminalEvidence: /Browser verification passed|App started and ready/i.test(result),
+  });
+  return result;
+}
+
 /**
  * True when a web-app lifecycle task must NOT be reported as complete:
  * browser verification was required (or failed assertions are still recorded)
@@ -4448,6 +4482,7 @@ export async function runAgent(
       if (!isToolResultFailure(toolCall.function.name, result)) {
         state.completedTasks.add(taskIdentity);
       }
+      console.log(`[Tool Diagnostic] ${JSON.stringify({ event: isToolResultFailure(toolCall.function.name, result) ? "plan_step_not_completed" : "plan_step_execution_confirmed", tool: toolCall.function.name, target: toolTarget || undefined, resultLength: result.length })}`);
       const completedIdsBefore = new Set(state.currentPlan.filter(s => s.status === "completed").map(s => s.id));
       const failedIdsBefore = new Set(state.currentPlan.filter(s => s.status === "failed").map(s => s.id));
       const completedBefore = completedIdsBefore.size;
@@ -4587,6 +4622,13 @@ export async function runAgent(
             stopStep.status = "completed";
             state.completedTasks.add("stop_app");
           }
+        }
+        // Browser verification is the final required proof for web-app tasks.
+        // Cleanup above may complete the remaining lifecycle steps in this same
+        // turn, so do not wait for an unnecessary follow-up model response.
+        if (isWebAppLifecycle && isPlanComplete(state.currentPlan)) {
+          console.log(chalk.green(`[Tool Diagnostic] ${JSON.stringify({ event: "terminal_completion_proven", tool: "browser_verify", artifactsReady: true })}`));
+          break;
         }
       }
 

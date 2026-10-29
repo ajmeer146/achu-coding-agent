@@ -332,6 +332,8 @@ export const codingAgentTask = schemaTask({
         content: c,
       }));
 
+      console.log(`[Trigger.dev] Artifact persistence confirmed: ${artifacts.length} artifact(s), files=${artifacts.slice(0, 20).map((a) => a.path).join(", ") || "<none>"}`);
+
       metadata.set("step", 6);
       metadata.set("stepName", "Completed");
       metadata.set("progress", 100);
@@ -378,7 +380,7 @@ export const codingAgentTask = schemaTask({
         } catch {}
       }
 
-      return {
+      const terminalResult = {
         success: finalResult.success,
         stopReason: finalResult.stopReason ? sanitizeUserFacingError(finalResult.stopReason) : null,
         verificationPassed: finalResult.verificationPassed,
@@ -392,12 +394,14 @@ export const codingAgentTask = schemaTask({
         qualityScore: finalResult.qualityAudit?.overallScore,
         principlesSummary: finalResult.principlesSummary,
       };
+      console.log(`[Trigger.dev] Terminal result persisted: ${JSON.stringify({ success: terminalResult.success, verificationPassed: terminalResult.verificationPassed, completedSteps: terminalResult.completedSteps, totalSteps: terminalResult.totalSteps, artifactCount: terminalResult.artifacts?.length ?? 0, error: terminalResult.error || null })}`);
+      return terminalResult;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const sanitized = sanitizeUserFacingError(message);
       console.error(`[Trigger.dev] Agent execution failed:`, error);
 
-      return {
+      const failedResult = {
         success: false,
         stopReason: sanitized,
         verificationPassed: false,
@@ -406,6 +410,8 @@ export const codingAgentTask = schemaTask({
         filesModified: [],
         error: sanitized,
       };
+      console.log(`[Trigger.dev] Terminal failure result persisted: ${JSON.stringify({ success: failedResult.success, error: failedResult.error })}`);
+      return failedResult;
     } finally {
       // Restore environment
       if (originalWorkspaceRoot !== undefined) {
