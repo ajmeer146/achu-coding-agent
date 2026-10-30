@@ -2280,10 +2280,17 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
   1. For plain HTML/CSS/JS sites, create ONLY index.html, styles.css, and script.js. Do NOT create package.json, vite.config.js, src/main.jsx, or React/Vite scaffolding unless the user explicitly requests React, Vite, or Next.js. The start_app tool serves static sites automatically.
   2. For full-stack applications requiring backend APIs, authentication, or database persistence (Node.js, Express, SQLite, REST):
      - Create package.json with "type": "module" and start script ("start": "node server.js").
-     - Create server.js listening on process.env.PORT || 3000 that serves both /api/... endpoints and frontend HTML views.
-     - For database persistence, use persistent file-backed SQLite (e.g. node:sqlite DatabaseSync with path.join(process.cwd(), 'data.db') or better-sqlite3); NEVER use in-memory Maps or in-memory ':memory:' databases when persistence across restarts is expected.
-     - For authentication, hash passwords using crypto.scryptSync with a per-user salt, verify passwords with crypto.timingSafeEqual, issue secure random session tokens stored in HttpOnly cookies, and enforce multi-tenant authorization (WHERE user_id = ?).
-     - Provide frontend views (index.html, dashboard.html, etc.), styles.css, and client logic (app.js or script.js) with responsive navigation and proper error handling.
+     - Create server.js as a complete executable Node.js HTTP server:
+       * For SQLite: import DatabaseSync from 'node:sqlite': "import { DatabaseSync } from 'node:sqlite';" (NEVER import { Database } as that export does not exist in node:sqlite). Or import Database from 'better-sqlite3'.
+       * Initialize persistent SQLite database: const db = new DatabaseSync(path.join(process.cwd(), 'data.db'));
+       * Instantiate and listen on process.env.PORT || 3000:
+         const server = http.createServer(async (req, res) => { ... });
+         server.listen(process.env.PORT || 3000, () => { console.log('Server running'); });
+       * In the server request handler, serve frontend static files: if req.url is '/' or ends with .html, .css, .js, read and return the file with correct Content-Type (text/html, text/css, application/javascript).
+       * Implement REST API endpoints: handle req.url.startsWith('/api/...') for GET, POST, PUT, DELETE with JSON responses.
+     - For authentication: hash passwords using crypto.scryptSync with salt, verify passwords with crypto.timingSafeEqual, issue secure random session tokens stored in HttpOnly cookies, and enforce multi-tenant authorization (WHERE user_id = ?).
+     - Provide frontend views (index.html, dashboard.html, etc.), styles.css, and client logic (app.js) with responsive navigation and error handling.
+     - In frontend app.js: ALWAYS use relative API endpoints (e.g. fetch('/api/tasks')), NEVER hardcode localhost URLs.
   3. ALWAYS link styles.css in index.html (<link rel="stylesheet" href="styles.css">) and script.js (<script src="script.js" defer></script>).
   4. Implement rich, complete semantic HTML in index.html:
      - Navigation header (<header><nav>): Brand/logo, navigation links, and call-to-action button.
