@@ -2283,10 +2283,11 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
      - Create server.js as a complete executable Node.js HTTP server:
        * For SQLite: import DatabaseSync from 'node:sqlite': "import { DatabaseSync } from 'node:sqlite';" (NEVER import { Database } as that export does not exist in node:sqlite). Or import Database from 'better-sqlite3'.
        * Initialize persistent SQLite database: const db = new DatabaseSync(path.join(process.cwd(), 'data.db'));
+       * If PostgreSQL is requested, check if process.env.DATABASE_URL is set. If unset or connection fails, seamlessly fall back to SQLite (data.db) so the server never crashes or calls process.exit(1).
        * Instantiate and listen on process.env.PORT || 3000:
          const server = http.createServer(async (req, res) => { ... });
          server.listen(process.env.PORT || 3000, () => { console.log('Server running'); });
-       * In the server request handler, serve frontend static files: if req.url is '/' or ends with .html, .css, .js, read and return the file with correct Content-Type (text/html, text/css, application/javascript).
+       * In the server request handler, serve frontend static files: if req.url is '/' or ends with .html, .css, .js, read and return the file with correct Content-Type (text/html, text/css, application/javascript). Always serve index.html on GET /.
        * Implement REST API endpoints: handle req.url.startsWith('/api/...') for GET, POST, PUT, DELETE with JSON responses.
      - For authentication: hash passwords using crypto.scryptSync with salt, verify passwords with crypto.timingSafeEqual, issue secure random session tokens stored in HttpOnly cookies, and enforce multi-tenant authorization (WHERE user_id = ?).
      - Provide frontend views (index.html, dashboard.html, etc.), styles.css, and client logic (app.js) with responsive navigation and error handling.
@@ -2305,6 +2306,11 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
           - Slide-out cart drawer or modal dialog displaying cart items, thumbnails, unit price, quantity increment/decrement controls, remove button, subtotal, tax/shipping, total amount, and "Checkout" button.
           - Working client-side cart logic: adding products increments badge count and cart line items; adjusting quantities updates subtotal and total; empty cart displays a helpful empty state message.
           - Never duplicate sections or show empty product cards.
+        * For task managers / productivity apps:
+          - Modern header with brand/logo and prominent "+ New Task" action button.
+          - Filter tabs (All, Active/Pending, Completed) and search input.
+          - Interactive new task form modal or expander (with title, description, priority inputs, submit, and cancel buttons) that opens reliably when clicking "New Task".
+          - Task list displaying tasks with titles, status badges, complete/undo toggle buttons, edit buttons, and delete buttons.
         * For login / authentication pages:
           - Centered modern authentication card layout with subtle elevation or glassmorphism.
           - Email input (<input type="email">) with label, placeholder, and client-side format validation.
@@ -2323,6 +2329,7 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
       - Modern typography stack (system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif) with clear hierarchy and comfortable line-height.
       - Design tokens at :root (--bg, --card-bg, --text-primary, --text-secondary, --accent, --accent-hover, --border, --shadow).
       - Cohesive modern color palette: dark slate aesthetic (e.g. #0b0f19 background, #1e293b card, #38bdf8 / #3b82f6 accent) or crisp clean light theme.
+      - Header styling: use 'header { position: sticky; top: 0; z-index: 100; }' rather than 'position: fixed;' so the header stays in document flow and never overlaps interactive buttons, forms, or task cards.
       - Responsive layouts: Flexbox for navigation and toolbars (.nav-menu, .nav-links ul { display: flex; align-items: center; gap: 1rem; list-style: none; }); CSS Grid (grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr))) for cards and features (never a fixed minmax(280px, 1fr) which overflows 320px screens).
       - Responsive containers: .container { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 1rem; } with mobile padding: @media (max-width: 480px) { .container { padding: 0 0.75rem; } }. Never use 2rem (32px) padding on small mobile screens.
       - Fluid typography: h1 { font-size: clamp(1.75rem, 5vw, 2.75rem); word-break: break-word; overflow-wrap: break-word; } ensuring single long bold words do not force container expansion beyond 320px.
@@ -2333,15 +2340,13 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
       - Action buttons: prominent primary buttons with hover/active transitions, cursor: pointer, and accessible contrast.
       - Mobile responsiveness: media queries ensuring touch targets (min 44px) and stacked layouts for mobile screens (@media (max-width: 768px)).
       - Stylesheet must contain comprehensive rules covering all page elements (at least 25-50 CSS rules).
-  5. Implement functional, clean client-side logic in script.js:
-     - Define all shared functions (e.g. updateCartBadge, saveCart, renderCart, openMobileMenu, closeMobileMenu) at top level before any event handlers or initialization calls them.
-     - Global binding: If HTML elements contain inline onclick="..." attributes, attach the functions to window (e.g. window.updateCartBadge = updateCartBadge; window.openMobileMenu = openMobileMenu; window.closeMobileMenu = closeMobileMenu;) so they never throw ReferenceError: <fn> is not defined.
+  5. Implement functional, clean client-side logic in script.js (or app.js):
+     - Self-contained vanilla JS: NEVER write import statements (e.g. import ... from "./utils.js") in browser scripts unless index.html uses <script type="module"> and the file exists on disk.
+     - Define all functions at top level. If HTML elements contain inline onclick="..." attributes, attach the functions to window (e.g. window.openNewTaskForm = openNewTaskForm; window.closeNewTaskForm = closeNewTaskForm;).
+     - Attach click listeners to "New Task" buttons and action controls during DOMContentLoaded so forms open reliably (using element.style.display = 'block' or class toggles).
      - Prefer addEventListener over inline onclick attributes for clean, reliable event handling.
-     - Search input functionality: listen to 'input' event on .search-input to filter product cards in real time.
-     - Cart interactions: clicking "Add to Cart" increments the cart badge count, updates subtotal, and gives visual feedback (toast / drawer).
      - Form submit handlers preventing default reload (e.preventDefault()) and demonstrating interactive validation feedback.
      - Interactive toggles: theme toggle (dark/light mode), mobile menu toggle, or filter tabs.
-     - Password visibility toggles where password inputs exist (toggling type="password" <-> "text" with eye icon update).
      - Clear visual feedback for errors or successful actions.
   6. Browser verification inspects CSS rules, typography, computed styles, semantic elements, and content richness. An unstyled page or bare skeleton will FAIL verification.
   7. Ensure all files are correctly interconnected before concluding execution.
