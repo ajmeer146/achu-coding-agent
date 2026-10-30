@@ -31,6 +31,15 @@ export function getWorkspaceRoot(workspace: Workspace | GitWorkspace): string {
  * - Cloud production: gitUrl (git checkout per task, no shared volume needed)
  * - Registered workspace: workspaceId (requires prior registration)
  */
+export const PlanStepSchema = z.object({
+  id: z.string(),
+  description: z.string(),
+  status: z.enum(["pending", "running", "completed", "failed"]),
+  dependsOn: z.array(z.string()).optional(),
+  toolType: z.string().optional(),
+  target: z.string().optional(),
+});
+
 export const AgentTaskPayloadSchema = z.object({
   task: z.string().min(1, "Task description is required"),
   workspaceId: z.string().min(1).optional(),
@@ -41,6 +50,8 @@ export const AgentTaskPayloadSchema = z.object({
   requestedVerification: z.string().optional(),
   maxSteps: z.number().int().positive().max(50).optional().default(30),
   maxRecoveryAttempts: z.number().int().nonnegative().max(5).optional().default(5),
+  planOnly: z.boolean().optional(),
+  approvedPlan: z.array(PlanStepSchema).optional(),
   // Model configuration (optional - can be set via env vars or passed directly)
   nvidiaApiKey: z.string().optional(),
   nvidiaBaseUrl: z.string().optional(),
@@ -79,6 +90,7 @@ export const AgentTaskResultSchema = z.object({
   error: z.string().optional(),
   qualityScore: z.number().optional(),
   principlesSummary: z.string().optional(),
+  plan: z.array(PlanStepSchema).optional(),
 });
 
 type AgentTaskResult = z.infer<typeof AgentTaskResultSchema>;
@@ -234,11 +246,13 @@ export const codingAgentTask = schemaTask({
       metadata.set("stepName", "Planning and executing coding task");
       metadata.set("progress", 30);
 
-      // Run the agent - this will execute the full agent loop
+      // Run the agent - this will execute the full agent loop (or generate plan in Plan Mode)
       const result = await runAgent(payload.task, {
         maxSteps: payload.maxSteps,
         maxRecoveryAttempts: payload.maxRecoveryAttempts,
         attachments: payload.attachments,
+        planOnly: payload.planOnly,
+        approvedPlan: payload.approvedPlan,
         onProgress: (stepNum, stepName, log) => {
           metadata.set("step", stepNum);
           metadata.set("stepName", stepName);
@@ -397,6 +411,7 @@ export const codingAgentTask = schemaTask({
         error: finalResult.error ? sanitizeUserFacingError(finalResult.error) : undefined,
         qualityScore: finalResult.qualityAudit?.overallScore,
         principlesSummary: finalResult.principlesSummary,
+        plan: finalResult.plan,
       };
       console.log(`[Trigger.dev] Terminal result persisted: ${JSON.stringify({ success: terminalResult.success, verificationPassed: terminalResult.verificationPassed, completedSteps: terminalResult.completedSteps, totalSteps: terminalResult.totalSteps, artifactCount: terminalResult.artifacts?.length ?? 0, error: terminalResult.error || null })}`);
       return terminalResult;

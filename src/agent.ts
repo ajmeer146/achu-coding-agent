@@ -114,6 +114,8 @@ export type AgentResult = {
   qualityAudit?: WebsiteQualityAuditReport;
   /** Summary of 50-principles evaluation */
   principlesSummary?: string;
+  /** Structured plan steps with execution status */
+  plan?: PlanStep[];
 };
 
 export type AgentState = {
@@ -1182,6 +1184,19 @@ if (isAppOrGenericTask) {
       const isReactIntent = hasExplicitReact;
       const hasBackendIntent = /\b(backend|api|server|endpoint|full[\s-]?stack|express|node[\s-]?server|rest\s+api|sqlite|database|db|postgres|pg)\b/i.test(lowerTask);
 
+const hasDatabase = /\b(database|db|postgres|postgresql|mysql|sqlite|mongodb|neon|prisma|drizzle|orm|schema|migration|table|crud|persist|storage)\b/i.test(lowerTask);
+const hasPostgres = /\b(postgres|postgresql|neon|pg\b|psql)\b/i.test(lowerTask);
+const hasSQLite = /\b(sqlite|sqlite3|better-sqlite)\b/i.test(lowerTask);
+const hasAuthentication = hasAuth; // already exists
+const hasJWT = /\b(jwt|jsonwebtoken|token|bearer)\b/i.test(lowerTask);
+const hasUserAccounts = /\b(user\s+account|register|signup|sign\s+up|user\s+auth|user\s+login|password\s+hash|bcrypt)\b/i.test(lowerTask);
+const hasAPI = /\b(rest\s+api|api\s+route|api\s+endpoint|express|fastify|hono|koa|flask|django|fastapi|backend\s+api|server\s+api)\b/i.test(lowerTask);
+const hasFullStack = /\b(full[-]?stack|fullstack|frontend\s+and\s+backend|react.*express|next.*api|backend.*frontend|client.*server)\b/i.test(lowerTask) || (hasBackendIntent && (hasReact || hasNextJs));
+const hasMigrations = /\b(migration|migrate|schema\s+change|alter\s+table|knex|flyway|liquibase)\b/i.test(lowerTask);
+const hasEnvConfig = /\b(environment\s+variable|\.env|config\.js|dotenv|process\.env|secret|api\s+key)\b/i.test(lowerTask) || hasDatabase || hasJWT;
+const hasHealthCheck = /\b(health\s+check|healthcheck|ping\s+endpoint|\/health|liveness)\b/i.test(lowerTask);
+const hasCRUD = /\b(create.*read.*update.*delete|crud|list.*create|add.*edit.*delete|task\s+management|todo\s+app|blog\s+with|notes\s+app)\b/i.test(lowerTask);
+
       if (hasAppBuild || hasAppCreate || isGenericAppTask) {
         if (!isExistingProject) {
           // Only create files for brand new projects
@@ -1197,6 +1212,21 @@ if (isAppOrGenericTask) {
             if (!hasTestCreation) {
               if (!hasSimilarStep("create_file", "package.json")) addStep("Create package.json with server configuration", "create_file", "package.json");
               if (!hasSimilarStep("create_file", "server.js")) addStep("Create server.js with backend APIs and persistence", "create_file", "server.js");
+              if (hasDatabase && !hasSimilarStep("create_file", "db.js")) {
+                if (hasPostgres) {
+                  addStep("Create database schema and PostgreSQL connection module", "create_file", "db.js");
+                } else if (hasSQLite) {
+                  addStep("Create SQLite database schema and connection module", "create_file", "db.js");
+                } else {
+                  addStep("Create database connection and schema module", "create_file", "db.js");
+                }
+              }
+              if ((hasAuthentication || hasUserAccounts || hasJWT) && !hasSimilarStep("create_file", "auth.js")) {
+                addStep("Create authentication middleware and user auth routes", "create_file", "auth.js");
+              }
+              if (hasEnvConfig && !hasSimilarStep("create_file", ".env.example")) {
+                addStep("Create .env.example with required environment variables", "create_file", ".env.example");
+              }
               if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
               if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
               if (!hasSimilarStep("create_file", "app.js") && !hasSimilarStep("create_file", "script.js")) addStep("Create app.js for frontend logic", "create_file", "app.js");
@@ -1234,6 +1264,21 @@ if (isAppOrGenericTask) {
             if (!hasTestCreation) {
               if (!hasSimilarStep("create_file", "package.json")) addStep("Create package.json with server configuration", "create_file", "package.json");
               if (!hasSimilarStep("create_file", "server.js")) addStep("Create server.js with backend APIs and persistence", "create_file", "server.js");
+              if (hasDatabase && !hasSimilarStep("create_file", "db.js")) {
+                if (hasPostgres) {
+                  addStep("Create database schema and PostgreSQL connection module", "create_file", "db.js");
+                } else if (hasSQLite) {
+                  addStep("Create SQLite database schema and connection module", "create_file", "db.js");
+                } else {
+                  addStep("Create database connection and schema module", "create_file", "db.js");
+                }
+              }
+              if ((hasAuthentication || hasUserAccounts || hasJWT) && !hasSimilarStep("create_file", "auth.js")) {
+                addStep("Create authentication middleware and user auth routes", "create_file", "auth.js");
+              }
+              if (hasEnvConfig && !hasSimilarStep("create_file", ".env.example")) {
+                addStep("Create .env.example with required environment variables", "create_file", ".env.example");
+              }
               if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
               if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
               if (!hasSimilarStep("create_file", "app.js") && !hasSimilarStep("create_file", "script.js")) addStep("Create app.js for frontend logic", "create_file", "app.js");
@@ -2280,6 +2325,16 @@ CREATIVE AND DISTINCTIVE UI GENERATION:
   1. For plain HTML/CSS/JS sites, create ONLY index.html, styles.css, and script.js. Do NOT create package.json, vite.config.js, src/main.jsx, or React/Vite scaffolding unless the user explicitly requests React, Vite, or Next.js. The start_app tool serves static sites automatically.
   2. For full-stack applications requiring backend APIs, authentication, or database persistence (Node.js, Express, SQLite, REST):
      - Create package.json with "type": "module" and start script ("start": "node server.js").
+     - ENVIRONMENT VARIABLES: All configuration MUST come from process.env. NEVER hardcode secrets, database URLs, or port numbers.
+       * Port: process.env.PORT || 3000 (Railway/cloud assigns PORT automatically)
+       * Database: process.env.DATABASE_URL (PostgreSQL connection string, injected by cloud platform)
+       * Secrets: process.env.JWT_SECRET, process.env.SESSION_SECRET (use crypto.randomBytes(32).toString('hex') as fallback ONLY in dev)
+       * For local dev, generate a .env.example file listing all required env vars with placeholder values so the user knows what to set.
+     - DETECTING AVAILABLE DATABASE: At server startup, check if process.env.DATABASE_URL is set and not empty:
+       * If DATABASE_URL is set: use PostgreSQL via the 'pg' package (npm install pg). Create a Pool: import pg from 'pg'; const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false });
+       * If DATABASE_URL is NOT set: fall back to SQLite so the server NEVER crashes or calls process.exit(1).
+       * Log clearly which database is in use: console.log('Database: PostgreSQL') or console.log('Database: SQLite (fallback)').
+     - DATABASE SCHEMA AND MIGRATIONS: Always create schema on startup using CREATE TABLE IF NOT EXISTS. For PostgreSQL use pool.query(); for SQLite use db.exec(). Never run DROP TABLE in production without explicit user instruction.
      - Create server.js as a complete executable Node.js HTTP server:
        * For SQLite: import DatabaseSync from 'node:sqlite': "import { DatabaseSync } from 'node:sqlite';" (NEVER import { Database } as that export does not exist in node:sqlite). Or import Database from 'better-sqlite3'.
        * Initialize persistent SQLite database: const db = new DatabaseSync(path.join(process.cwd(), 'data.db'));
@@ -4113,6 +4168,8 @@ export async function runAgent(
     maxRecoveryAttempts?: number;
     onProgress?: (step: number, stepName: string, log?: string) => void;
     attachments?: AgentAttachment[];
+    planOnly?: boolean;
+    approvedPlan?: PlanStep[];
   }
 ): Promise<AgentResult> {
   const sessionState = await loadSessionStateIfAvailable();
@@ -4176,6 +4233,29 @@ export async function runAgent(
     console.log(chalk.gray(`Target files in scope: ${taskScope.targetFiles.join(", ")}`));
   }
 
+  // Interactive Plan Mode: if requested, generate and return the task breakdown immediately without code mutation
+  if (options?.planOnly) {
+    const plannedSteps = (options?.approvedPlan && options.approvedPlan.length > 0)
+      ? options.approvedPlan.map((s) => ({ ...s, status: s.status || ("pending" as const) }))
+      : initializePlan(task, existingProjectInfo);
+
+    console.log(chalk.cyan(`[Plan Mode] Generated plan with ${plannedSteps.length} step(s) for task: ${task}`));
+    if (options?.onProgress) {
+      options.onProgress(1, "Plan generated", `Generated ${plannedSteps.length} plan step(s)`);
+    }
+
+    return {
+      success: true,
+      status: "COMPLETED",
+      stopReason: "PLAN_READY",
+      verificationPassed: false,
+      completedSteps: 0,
+      totalSteps: plannedSteps.length,
+      filesModified: [],
+      plan: plannedSteps,
+    };
+  }
+
   let initialPlan: PlanStep[];
   let state: AgentState;
 
@@ -4236,7 +4316,9 @@ export async function runAgent(
       },
     };
   } else {
-    initialPlan = initializePlan(task, existingProjectInfo);
+    initialPlan = (options?.approvedPlan && options.approvedPlan.length > 0)
+      ? options.approvedPlan.map((s) => ({ ...s, status: s.status || ("pending" as const) }))
+      : initializePlan(task, existingProjectInfo);
     const hasBrowserVerifyStep = initialPlan.some(step => step.toolType === "browser_verify");
     // Determine if the verification command is "strong" (test) vs "weak" (build/compile)
     const isStrongVerification = requestedVerification
@@ -5023,5 +5105,6 @@ export async function runAgent(
     error,
     qualityAudit: state.qualityAudit ?? undefined,
     principlesSummary: state.principlesSummary ?? undefined,
+    plan: state.currentPlan,
   };
 }
