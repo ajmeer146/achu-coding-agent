@@ -286,6 +286,7 @@ export const codingAgentTask = schemaTask({
       }
 
       const IGNORE_SCAN = new Set(["node_modules", ".git", ".achu-sessions", ".turbo", ".cache", ".registry"]);
+      const BINARY_SCAN_EXTS = new Set(["db", "sqlite", "sqlite3", "db-journal", "bin", "exe", "iso", "tar", "zip", "wasm"]);
       const artifactsMap = new Map<string, string>();
 
       async function scanDirectory(dir: string, relPrefix = "") {
@@ -295,6 +296,9 @@ export const codingAgentTask = schemaTask({
             if (IGNORE_SCAN.has(entry.name)) continue;
             const full = path.join(dir, entry.name);
             const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+            const ext = entry.name.split(".").pop()?.toLowerCase() || "";
+            if (BINARY_SCAN_EXTS.has(ext)) continue;
+
             if (entry.isDirectory()) {
               if (artifactsMap.size < 250) {
                 await scanDirectory(full, rel);
@@ -304,8 +308,8 @@ export const codingAgentTask = schemaTask({
                 try {
                   const stat = await fs.promises.stat(full);
                   if (stat.size < 2 * 1024 * 1024) {
-                    const content = await fs.promises.readFile(full, "utf8");
-                    artifactsMap.set(rel.replace(/\\/g, "/"), content);
+                    const raw = await fs.promises.readFile(full, "utf8");
+                    artifactsMap.set(rel.replace(/\\/g, "/"), raw.replace(/\0/g, ""));
                   }
                 } catch {}
               }
