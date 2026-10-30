@@ -69,9 +69,42 @@ function getStaticServerScriptPath(): string {
   return scriptPath;
 }
 
+function isNodeServerFile(filePath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    const content = fs.readFileSync(filePath, "utf8");
+    return /\b(http\.createServer|express\(|fastify\(|new\s+Koa\(|\.listen\s*\()\b/.test(content);
+  } catch {
+    return false;
+  }
+}
+
 export function isStaticSiteWorkspace(workingDir: string): boolean {
   const htmlPath = path.join(workingDir, "index.html");
   if (!fs.existsSync(htmlPath)) return false;
+
+  // If a dedicated backend server script exists, this is a full-stack/backend app, not a static site
+  const hasServerScript =
+    fs.existsSync(path.join(workingDir, "server.js")) ||
+    fs.existsSync(path.join(workingDir, "server.mjs")) ||
+    fs.existsSync(path.join(workingDir, "server.cjs")) ||
+    isNodeServerFile(path.join(workingDir, "app.js")) ||
+    isNodeServerFile(path.join(workingDir, "app.mjs"));
+
+  if (hasServerScript) return false;
+
+  try {
+    const pkgPath = path.join(workingDir, "package.json");
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+      const scripts = pkg.scripts || {};
+      const hasNodeServer = Object.values(scripts).some((s: any) =>
+        typeof s === "string" && /\bnode\s+[\w\.\/-]*(server|app|api|index)/i.test(s)
+      );
+      if (hasNodeServer) return false;
+    }
+  } catch {}
+
   let html = "";
   try {
     html = fs.readFileSync(htmlPath, "utf8");
@@ -176,6 +209,20 @@ export async function detectStartCommand(workspace: Workspace): Promise<StartCom
       }
     }
   } catch {}
+
+  // 3. Check for standalone server script in workspace root
+  const serverCandidates = ["server.js", "server.mjs", "server.cjs"];
+  for (const candidate of serverCandidates) {
+    if (fs.existsSync(path.join(workspace.root, candidate))) {
+      return { command: `node ${candidate}`, port: null, url: null, cwd: workspace.root };
+    }
+  }
+  if (isNodeServerFile(path.join(workspace.root, "app.js"))) {
+    return { command: "node app.js", port: null, url: null, cwd: workspace.root };
+  }
+  if (isNodeServerFile(path.join(workspace.root, "app.mjs"))) {
+    return { command: "node app.mjs", port: null, url: null, cwd: workspace.root };
+  }
 
   return { command: "", port: null, url: null, cwd: workspace.root };
 }

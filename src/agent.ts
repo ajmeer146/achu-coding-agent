@@ -220,7 +220,7 @@ const MAX_OUTPUT = 12000;
 const MAX_TOOL_RESULT_SIZE = 1024 * 1024;
 
 // NVIDIA API timeout and retry configuration
-const DEFAULT_NVIDIA_REQUEST_TIMEOUT_MS = 120000; // 2 minutes per request
+const DEFAULT_NVIDIA_REQUEST_TIMEOUT_MS = Number(process.env.NVIDIA_REQUEST_TIMEOUT_MS || process.env.ACHU_AGENT_REQUEST_TIMEOUT_MS) || 50000;
 const DEFAULT_NVIDIA_MAX_RETRIES = 3;
 const DEFAULT_NVIDIA_RETRY_BASE_DELAY_MS = 1000; // 1 second base delay
 const DEFAULT_NVIDIA_RETRY_MAX_DELAY_MS = 30000; // 30 seconds max delay
@@ -1180,6 +1180,7 @@ if (isAppOrGenericTask) {
 
       const hasExplicitReact = /\b(react|vite|next|spa)\b/i.test(lowerTask);
       const isReactIntent = hasExplicitReact;
+      const hasBackendIntent = /\b(backend|api|server|endpoint|full[\s-]?stack|express|node[\s-]?server|rest\s+api|sqlite|database|db|postgres|pg)\b/i.test(lowerTask);
 
       if (hasAppBuild || hasAppCreate || isGenericAppTask) {
         if (!isExistingProject) {
@@ -1191,6 +1192,14 @@ if (isAppOrGenericTask) {
             }
             if (!hasSimilarStep("edit_file", "app")) {
               addStep("Implement application components in src/App.jsx", "edit_file", "src/App.jsx");
+            }
+          } else if (hasBackendIntent) {
+            if (!hasTestCreation) {
+              if (!hasSimilarStep("create_file", "package.json")) addStep("Create package.json with server configuration", "create_file", "package.json");
+              if (!hasSimilarStep("create_file", "server.js")) addStep("Create server.js with backend APIs and persistence", "create_file", "server.js");
+              if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
+              if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
+              if (!hasSimilarStep("create_file", "app.js") && !hasSimilarStep("create_file", "script.js")) addStep("Create app.js for frontend logic", "create_file", "app.js");
             }
           } else {
             if (!hasTestCreation) {
@@ -1209,6 +1218,7 @@ if (isAppOrGenericTask) {
             else if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
 
             if (existingFiles.includes("script.js")) addStep("Modify script.js for requested changes", "edit_file", "script.js");
+            else if (existingFiles.includes("app.js")) addStep("Modify app.js for requested changes", "edit_file", "app.js");
             else if (!hasSimilarStep("create_file", "script.js")) addStep("Create script.js", "create_file", "script.js");
           }
         } else {
@@ -1219,6 +1229,14 @@ if (isAppOrGenericTask) {
             }
             if (!hasSimilarStep("edit_file", "app")) {
               addStep("Implement application components in src/App.jsx", "edit_file", "src/App.jsx");
+            }
+          } else if (hasBackendIntent) {
+            if (!hasTestCreation) {
+              if (!hasSimilarStep("create_file", "package.json")) addStep("Create package.json with server configuration", "create_file", "package.json");
+              if (!hasSimilarStep("create_file", "server.js")) addStep("Create server.js with backend APIs and persistence", "create_file", "server.js");
+              if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
+              if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
+              if (!hasSimilarStep("create_file", "app.js") && !hasSimilarStep("create_file", "script.js")) addStep("Create app.js for frontend logic", "create_file", "app.js");
             }
           } else {
             if (!hasTestCreation) {
@@ -1431,6 +1449,13 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
             let toolTarget = "";
             try { toolTarget = String(JSON.parse(toolCall.function.arguments).path ?? "").replace(/^.*?[\\/]/, "").replace(/\\/g, "/").toLowerCase(); } catch { /* keep empty */ }
             targetMatches = toolTarget === targetNormalized || toolTarget.endsWith(targetNormalized);
+            if (!targetMatches) {
+              const isClientScriptStep = targetNormalized === "script.js" || targetNormalized === "app.js";
+              const isClientScriptCall = toolTarget === "script.js" || toolTarget === "app.js";
+              if (isClientScriptStep && isClientScriptCall) {
+                targetMatches = true;
+              }
+            }
           }
           if (targetMatches) {
             matches = true;
@@ -2253,8 +2278,14 @@ Your job:
 CREATIVE AND DISTINCTIVE UI GENERATION:
 - When asked to build a website, landing page, login page, dashboard, portfolio, or web application:
   1. For plain HTML/CSS/JS sites, create ONLY index.html, styles.css, and script.js. Do NOT create package.json, vite.config.js, src/main.jsx, or React/Vite scaffolding unless the user explicitly requests React, Vite, or Next.js. The start_app tool serves static sites automatically.
-  2. ALWAYS link styles.css in index.html (<link rel="stylesheet" href="styles.css">) and script.js (<script src="script.js" defer></script>).
-  3. Implement rich, complete semantic HTML in index.html:
+  2. For full-stack applications requiring backend APIs, authentication, or database persistence (Node.js, Express, SQLite, REST):
+     - Create package.json with "type": "module" and start script ("start": "node server.js").
+     - Create server.js listening on process.env.PORT || 3000 that serves both /api/... endpoints and frontend HTML views.
+     - For database persistence, use persistent file-backed SQLite (e.g. node:sqlite DatabaseSync with path.join(process.cwd(), 'data.db') or better-sqlite3); NEVER use in-memory Maps or in-memory ':memory:' databases when persistence across restarts is expected.
+     - For authentication, hash passwords using crypto.scryptSync with a per-user salt, verify passwords with crypto.timingSafeEqual, issue secure random session tokens stored in HttpOnly cookies, and enforce multi-tenant authorization (WHERE user_id = ?).
+     - Provide frontend views (index.html, dashboard.html, etc.), styles.css, and client logic (app.js or script.js) with responsive navigation and proper error handling.
+  3. ALWAYS link styles.css in index.html (<link rel="stylesheet" href="styles.css">) and script.js (<script src="script.js" defer></script>).
+  4. Implement rich, complete semantic HTML in index.html:
      - Navigation header (<header><nav>): Brand/logo, navigation links, and call-to-action button.
      - Hero section: Bold headline, clear subtitle/tagline, primary and secondary action buttons, and visual highlights.
       - Substantive content sections:
@@ -2633,31 +2664,45 @@ async function callModelWithRetry(
     backoffFactor?: number;
   }
 ): Promise<{ content: string; toolCalls: ToolCall[] }> {
+  const isPrimary = model !== FALLBACK_MODEL;
   const requestTimeoutMs = options?.requestTimeoutMs ?? DEFAULT_NVIDIA_REQUEST_TIMEOUT_MS;
-  const maxRetries = options?.maxRetries ?? DEFAULT_NVIDIA_MAX_RETRIES;
+  // Primary model fails fast on timeout/transient errors (maxRetries: 0) to allow immediate failover to FALLBACK_MODEL
+  const maxRetries = options?.maxRetries ?? (isPrimary ? 0 : DEFAULT_NVIDIA_MAX_RETRIES);
   const baseDelayMs = options?.baseDelayMs ?? DEFAULT_NVIDIA_RETRY_BASE_DELAY_MS;
   const maxDelayMs = options?.maxDelayMs ?? DEFAULT_NVIDIA_RETRY_MAX_DELAY_MS;
   const backoffFactor = options?.backoffFactor ?? DEFAULT_NVIDIA_RETRY_BACKOFF_FACTOR;
 
   const isRetriableError = (error: any): boolean => {
     if (!error) return false;
+    const msg = String(error.message || "").toLowerCase();
     // Timeout/abort errors
-    if (error.name === "AbortError" || error.name === "EmptyResponseError" || error.code === "ETIMEDOUT" || error.code === "TIMEOUT" || error.message?.includes("timeout") || error.message?.includes("empty response")) return true;
+    if (
+      error.name === "AbortError" ||
+      error.name === "APIUserAbortError" ||
+      error.constructor?.name === "APIUserAbortError" ||
+      error.name === "EmptyResponseError" ||
+      error.code === "ETIMEDOUT" ||
+      error.code === "TIMEOUT" ||
+      error.code === "ERR_REQUEST_TIMEOUT" ||
+      msg.includes("timeout") ||
+      msg.includes("timed out") ||
+      msg.includes("request was aborted") ||
+      msg.includes("empty response")
+    ) return true;
     // Network errors
     if (error.code === "ECONNRESET" || error.code === "ENOTFOUND" || error.code === "ECONNREFUSED" || error.code === "EHOSTUNREACH") return true;
     // 5xx server errors
     if (error.status >= 500 && error.status < 600) return true;
     // 429 rate limit (but we handle 429 separately for quota exhaustion)
-    if (error.status === 429 && !error.message?.includes("quota")) return true;
-    // OpenAI SDK timeout errors
-    if (error.code === "ERR_REQUEST_TIMEOUT" || error.message?.includes("timeout")) return true;
+    if (error.status === 429 && !msg.includes("quota")) return true;
     return false;
   };
 
-  const classifyError = (error: any): { type: string; message: string; retriable: boolean } => {
+  const classifyError = (error: any, signalAborted = false): { type: string; message: string; retriable: boolean } => {
     if (!error) return { type: "UNKNOWN", message: "Unknown error", retriable: false };
 
     const message = error.message || String(error);
+    const lowerMessage = message.toLowerCase();
     const status = error.status;
     const code = error.code;
 
@@ -2666,13 +2711,25 @@ async function callModelWithRetry(
       return { type: "QUOTA_EXHAUSTED", message: `QUOTA_EXHAUSTED: ${error.message || 'API quota or rate limit exceeded'}`, retriable: false };
     }
 
-    // Timeout/abort
-    if (error.name === "AbortError" || code === "ETIMEDOUT" || code === "TIMEOUT" || message.includes("timeout") || code === "ERR_REQUEST_TIMEOUT") {
+    // Timeout/abort (including OpenAI SDK APIUserAbortError and signal abortion)
+    if (
+      signalAborted ||
+      error.name === "AbortError" ||
+      error.name === "APIUserAbortError" ||
+      error.constructor?.name === "APIUserAbortError" ||
+      code === "ETIMEDOUT" ||
+      code === "TIMEOUT" ||
+      code === "ERR_REQUEST_TIMEOUT" ||
+      lowerMessage.includes("timeout") ||
+      lowerMessage.includes("timed out") ||
+      lowerMessage.includes("request was aborted") ||
+      lowerMessage.includes("aborterror")
+    ) {
       return { type: "TIMEOUT", message: `Request timeout after ${message}`, retriable: true };
     }
 
     // Empty response from truncated or failed stream
-    if (error.name === "EmptyResponseError" || message.includes("empty response") || message.includes("0 content tokens")) {
+    if (error.name === "EmptyResponseError" || lowerMessage.includes("empty response") || lowerMessage.includes("0 content tokens")) {
       return { type: "SERVER_ERROR", message: `Empty model response: ${message}`, retriable: true };
     }
 
@@ -2703,6 +2760,7 @@ async function callModelWithRetry(
   let lastError: any;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const turnAbortController = new AbortController();
     try {
       const requestPayload: any = {
         model,
@@ -2721,7 +2779,6 @@ async function callModelWithRetry(
       console.log(chalk.gray('[TIMING] Model request started at ' + Date.now()));
 
       // Bounded turn stream timeout: prevent stream loop from hanging indefinitely
-      const turnAbortController = new AbortController();
       const turnTimer = setTimeout(() => {
         turnAbortController.abort(new Error(`Model stream turn timed out after ${requestTimeoutMs}ms`));
       }, requestTimeoutMs);
@@ -2816,7 +2873,8 @@ async function callModelWithRetry(
       return { content: accumulatedContent, toolCalls: Object.values(toolCallAccumulator) };
 
     } catch (error: any) {
-      const classified = classifyError(error);
+      const turnTimedOut = turnAbortController?.signal?.aborted ?? false;
+      const classified = classifyError(error, turnTimedOut);
 
       // Safe user-facing retry log (diagnostics preserved without leaking model names)
       console.log(chalk.yellow(`[AI Service] Request attempt ${attempt + 1}/${maxRetries + 1} failed (${classified.type}).`));
@@ -2828,9 +2886,19 @@ async function callModelWithRetry(
         throw new Error(sanitizeUserFacingError(classified.message));
       }
 
-      // If this was the last attempt, throw sanitized error
+      // If this was the last attempt, throw sanitized error preserving error type metadata for failover
       if (attempt === maxRetries) {
-        throw new Error(sanitizeUserFacingError(`${classified.type} after ${maxRetries + 1} attempts: ${classified.message}`));
+        const sanitizedMsg = sanitizeUserFacingError(`${classified.type} after ${maxRetries + 1} attempts: ${classified.message}`);
+        const finalErr: any = new Error(sanitizedMsg);
+        if (classified.type === "TIMEOUT" || error.name === "AbortError" || error.name === "APIUserAbortError" || error.code === "TIMEOUT" || turnTimedOut) {
+          finalErr.name = "AbortError";
+          finalErr.code = "TIMEOUT";
+        } else if (classified.type === "QUOTA_EXHAUSTED" || error.status === 429) {
+          finalErr.status = 429;
+        } else if (classified.type === "SERVER_ERROR") {
+          finalErr.status = error.status || 500;
+        }
+        throw finalErr;
       }
 
       // Calculate delay with exponential backoff and jitter
@@ -2848,10 +2916,11 @@ async function callModelWithRetry(
   throw new Error(sanitizeUserFacingError(lastError?.message || "AI service request failed"));
 }
 
-async function callModel(client: OpenAI, model: string, messages: ChatMessage[]): Promise<{ content: string; toolCalls: ToolCall[] }> {
+async function callModel(client: OpenAI, model: string, messages: ChatMessage[]): Promise<{ content: string; toolCalls: ToolCall[]; modelUsed?: string }> {
   try {
     console.log(chalk.gray(`[AI Service] Model request dispatched: ${model}`));
-    return await callModelWithRetry(client, model, messages);
+    const res = await callModelWithRetry(client, model, messages);
+    return { ...res, modelUsed: model };
   } catch (err: any) {
     const errMsg = String(err?.message || "").toLowerCase();
 
@@ -2869,9 +2938,13 @@ async function callModel(client: OpenAI, model: string, messages: ChatMessage[])
 
     const isTransientError =
       err?.name === "AbortError" ||
+      err?.name === "APIUserAbortError" ||
       err?.name === "EmptyResponseError" ||
+      err?.code === "TIMEOUT" ||
       errMsg.includes("timed out") ||
       errMsg.includes("timeout") ||
+      errMsg.includes("request was aborted") ||
+      errMsg.includes("aborted") ||
       errMsg.includes("empty response") ||
       errMsg.includes("429") ||
       errMsg.includes("quota_exhausted") ||
@@ -2907,7 +2980,7 @@ async function callModel(client: OpenAI, model: string, messages: ChatMessage[])
       console.log(chalk.yellow(`[AI Service] Primary model (${model}) encountered ${errorCategory}. Failing over to verified fallback model (${FALLBACK_MODEL})...`));
       const fallbackRes = await callModelWithRetry(client, FALLBACK_MODEL, messages);
       console.log(chalk.green(`[AI Service] Turn successfully completed by fallback model: ${FALLBACK_MODEL}`));
-      return fallbackRes;
+      return { ...fallbackRes, modelUsed: FALLBACK_MODEL };
     }
     throw new Error(sanitizeUserFacingError(err?.message));
   }
@@ -4033,8 +4106,9 @@ export async function runAgent(
   const sessionState = await loadSessionStateIfAvailable();
 
   const config = getModelConfig();
+  let activeModel = config.name;
   console.log(chalk.cyan(`[AI Service] Active primary model: ${config.name} (fallback: ${FALLBACK_MODEL})`));
-  const client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 120000 });
+  const client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: DEFAULT_NVIDIA_REQUEST_TIMEOUT_MS });
   const workspaceRoot = process.env.WORKSPACE_ROOT || process.cwd();
   const workspace = new Workspace(workspaceRoot);
   const sessionId = process.env.SESSION_ID || `local-${Date.now()}`;
@@ -4367,9 +4441,12 @@ export async function runAgent(
 
     messages = trimMessageHistory(messages);
 
-    let response;
+    let response: { content: string; toolCalls: ToolCall[]; modelUsed?: string };
     try {
-      response = await callModel(client, config.name, messages);
+      response = await callModel(client, activeModel, messages);
+      if (response.modelUsed && response.modelUsed !== activeModel) {
+        activeModel = response.modelUsed;
+      }
     } catch (error: any) {
       const sanitized = sanitizeUserFacingError(error?.message);
       console.log(chalk.red(`\n${sanitized}`));

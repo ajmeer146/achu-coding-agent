@@ -1289,11 +1289,23 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
   const targets: VerificationTarget[] = [];
   const lowerTask = task.toLowerCase();
 
-  // Extract quoted strings as expected text
+  // Extract quoted strings as expected text (filtering out code identifiers, filenames, selectors, and HTML attributes)
   const quotedMatches = task.match(/["'`]([^"'`]+)["'`]/g);
   if (quotedMatches) {
     for (const match of quotedMatches) {
-      const text = match.slice(1, -1);
+      const text = match.slice(1, -1).trim();
+      // Skip filenames
+      if (/\.(html?|css|js|jsx|tsx?|json|cjs|mjs|md|png|jpg|svg)$/i.test(text)) continue;
+      // Skip selectors
+      if (/^[#.\[]/.test(text)) continue;
+      // Skip attribute/id/class/key mentions (e.g. id 'beta-btn', class 'filter-btn', key 'taskflow_tasks')
+      const matchIndex = task.indexOf(match);
+      if (matchIndex > 0) {
+        const preceding = task.slice(Math.max(0, matchIndex - 25), matchIndex).toLowerCase();
+        if (/(?:id|class|key|attribute|selector|attr|data-[a-z0-9_-]+)\s*[:=]?\s*$/i.test(preceding.trim())) {
+          continue;
+        }
+      }
       targets.push({ type: "text", text, required: true });
     }
   }
@@ -1328,9 +1340,11 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
   }
 
   if (lowerTask.includes("button")) {
-    const buttonMatch = task.match(/button\s+["'`]([^"'`]+)["'`]/i);
+    const buttonMatch = task.match(/button\s+(?:with\s+id\s+["'`]([^"'`]+)["'`]\s+)?(?:labeled\s+)?["'`]([^"'`]+)["'`]/i) || task.match(/button\s+["'`]([^"'`]+)["'`]/i);
     if (buttonMatch) {
-      addTarget({ type: "button", text: buttonMatch[1], required: true });
+      const buttonText = buttonMatch[2] || buttonMatch[1];
+      const buttonId = buttonMatch[2] ? buttonMatch[1] : undefined;
+      addTarget({ type: "button", text: buttonText, selector: buttonId ? `#${buttonId.replace(/^#/, "")}` : undefined, required: true });
     }
   }
 

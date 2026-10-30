@@ -17,6 +17,7 @@ import {
   isCriteriaDefectResult,
   verifySelectExists,
   verifySectionExists,
+  generateVerificationTargetsFromTask,
   VerificationTarget,
   BrowserVerificationSummary,
 } from "../src/browser/browser-verification.js";
@@ -792,5 +793,21 @@ describe("Browser verification selector normalization & truthful outcome regress
       await session.close();
       await closeServer(server);
     }
+  });
+
+  test("25. Quoted attributes, IDs, filenames, and storage keys in prompts are not extracted as visible text targets", () => {
+    const prompt = "In this workspace, build a simple single-page website for 'AppBeta'. It must show the heading 'AppBeta', an interactive button with id 'beta-btn' labeled 'Click Beta', and a status output with id 'beta-output' showing 'Ready Beta'. Save index.html and styles.css.";
+    const targets = generateVerificationTargetsFromTask(prompt);
+
+    // Identifiers and filenames must NOT be text targets
+    assert.equal(targets.some(t => t.type === "text" && t.text === "beta-btn"), false, "'beta-btn' is an HTML ID and must not be a text target");
+    assert.equal(targets.some(t => t.type === "text" && t.text === "beta-output"), false, "'beta-output' is an HTML ID and must not be a text target");
+    assert.equal(targets.some(t => t.type === "text" && t.text === "index.html"), false, "Filenames must not be text targets");
+    assert.equal(targets.some(t => t.type === "text" && t.text === "styles.css"), false, "Filenames must not be text targets");
+
+    // Real visible text and button targets must be present
+    assert.ok(targets.some(t => t.type === "heading" && t.text === "AppBeta"), "Must extract heading 'AppBeta'");
+    assert.ok(targets.some(t => t.type === "button" && t.text === "Click Beta"), "Must extract button 'Click Beta'");
+    assert.ok(targets.some(t => t.type === "text" && t.text === "Ready Beta"), "Must extract visible text 'Ready Beta'");
   });
 });
