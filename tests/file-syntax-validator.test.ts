@@ -81,6 +81,21 @@ describe("Phase 13.2 — File syntax & truncation detection", () => {
   test("4. Valid JS passes; truncated/unclosed JS is detected", () => {
     assert.equal(validateJsSyntax("const a = 1;\nfunction f() { return a; }\nf();").valid, true);
 
+    // Multiline imports and import.meta in ESM server scripts must pass validation
+    const esmServer = `import http from 'node:http';
+import {
+  DatabaseSync,
+  StatementSync
+} from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+export const server = http.createServer();
+export default server;
+`;
+    assert.equal(validateJsSyntax(esmServer).valid, true, "ESM server script with import.meta and multiline imports must pass validation");
+
     const truncated = validateJsSyntax("function f() {\n  const a = 1;\n");
     assert.equal(truncated.valid, false);
     assert.equal(truncated.isTruncated, true);

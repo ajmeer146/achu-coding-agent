@@ -8,6 +8,7 @@ import {
   detectStartCommand,
 } from "../src/tools/app-lifecycle.js";
 import { Workspace } from "../src/tools/workspace.js";
+import { createFile } from "../src/tools/create-file.js";
 import { initializePlan, updatePlanProgress } from "../src/agent.js";
 
 test("Full-Stack Server Lifecycle & Planning Regression Suite", async (t) => {
@@ -96,5 +97,37 @@ test("Full-Stack Server Lifecycle & Planning Regression Suite", async (t) => {
     const updated = updatePlanProgress(initialPlan, completedTasks, toolCall, "File created: app.js");
     const scriptStep = updated.find((s) => s.id === "2");
     assert.equal(scriptStep?.status, "completed", "Creating app.js should satisfy script.js plan step");
+  });
+
+  await t.test("5. createFile successfully writes ESM server.js with import.meta and multiline imports without syntax error", async () => {
+    const wsDir = path.join(tmpDir, "esm-server-workspace");
+    fs.mkdirSync(wsDir, { recursive: true });
+    const ws = new Workspace(wsDir);
+
+    const esmServerCode = `import http from 'node:http';
+import {
+  DatabaseSync,
+  StatementSync
+} from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+export const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ status: 'ok' }));
+});
+
+export default server;
+`;
+
+    // Must NOT throw SYNTAX_VALIDATION_ERROR on import.meta or multiline imports
+    const res = await createFile(ws, "server.js", esmServerCode);
+    assert.match(res, /Successfully created server.js/);
+    assert.ok(fs.existsSync(path.join(wsDir, "server.js")), "server.js must be confirmed on disk");
+    const onDisk = fs.readFileSync(path.join(wsDir, "server.js"), "utf8");
+    assert.equal(onDisk, esmServerCode);
   });
 });

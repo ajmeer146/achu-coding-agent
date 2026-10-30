@@ -4572,7 +4572,7 @@ export async function runAgent(
       } else {
         const tName = toolCall.function.name;
         const isInspection = (tName === "read_file" || tName === "list_directory" || tName === "search_code") && !isToolResultFailure(tName, result);
-        const isInvalidToolArguments = result.startsWith("Tool error: Invalid arguments for");
+        const isInvalidToolArguments = result.startsWith("Tool error: Invalid arguments for") || result.startsWith("Tool error: Invalid JSON arguments");
         if (!isInspection && !isInvalidToolArguments) {
           stepsWithoutPlanProgress++;
           if (stepsWithoutPlanProgress === 3 || stepsWithoutPlanProgress === 5) {
@@ -4724,7 +4724,7 @@ export async function runAgent(
         // Invalid tool arguments or first-time context mismatches are formatting/alignment
         // mistakes where fresh content was just injected for immediate self-correction;
         // they must not prematurely exhaust the recovery budget before the model gets a turn to apply the fresh lines.
-        const isInvalidToolArguments = result.startsWith("Tool error: Invalid arguments for");
+        const isInvalidToolArguments = result.startsWith("Tool error: Invalid arguments for") || result.startsWith("Tool error: Invalid JSON arguments");
         const isContextMismatch = isEditContextMismatchError(result);
         const editMismatchKey = `context_mismatch:${toolCall.function.name}:${toolCall.function.arguments?.slice(0, 80)}`;
         const mismatchCount = state.repeatedFailures.get(editMismatchKey) || 0;

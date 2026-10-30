@@ -241,14 +241,15 @@ export function validateHtmlSyntax(html: string): FileSyntaxValidationResult {
  * after normalizing ES module imports/exports.
  */
 export function validateJsSyntax(code: string): FileSyntaxValidationResult {
-  // Replace import/export statements with comments/placeholders so vm.Script can compile without module errors
+  // Replace import/export statements and import.meta so vm.Script can compile ESM syntax without module errors
   const sanitized = code
-    .replace(/^(\s*)import\s+.*?;?$/gm, "$1// import")
-    .replace(/^(\s*)import\s+[\s\S]*?from\s+['"][^'"]+['"];?/gm, "$1// import")
+    .replace(/\bimport\.meta\b/g, "({ url: 'file:///', dirname: '/', filename: '/' })")
+    .replace(/^(\s*)import\s+(?:[\s\S]*?from\s+)?['"][^'"]+['"]\s*;?/gm, (m) => m.replace(/[^\n]/g, " "))
     .replace(/^(\s*)export\s+default\s+/gm, "$1const __default_export__ = ")
-    .replace(/^(\s*)export\s+(async\s+)?function/gm, "$1$2function")
-    .replace(/^(\s*)export\s+(const|let|var|class)/gm, "$1$2")
-    .replace(/^(\s*)export\s*\{[\s\S]*?\};?/gm, "$1// export");
+    .replace(/^(\s*)export\s+(async\s+)?function\b/gm, "$1$2function ")
+    .replace(/^(\s*)export\s+(const|let|var|class)\b/gm, "$1$2 ")
+    .replace(/^(\s*)export\s*\{[\s\S]*?\}\s*(?:from\s+['"][^'"]+['"])?\s*;?/gm, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/^(\s*)export\s*\*\s*from\s+['"][^'"]+['"]\s*;?/gm, (m) => m.replace(/[^\n]/g, " "));
 
   try {
     new vm.Script(sanitized);
