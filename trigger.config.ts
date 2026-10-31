@@ -4,7 +4,7 @@ import { syncEnvVars } from "@trigger.dev/build/extensions/core";
 import fs from "node:fs";
 import path from "node:path";
 
-const SYNCED_KEYS = ["NVIDIA_API_KEY", "NVIDIA_BASE_URL", "NVIDIA_MODEL", "DATABASE_URL"] as const;
+const SYNCED_KEYS = ["NVIDIA_API_KEY", "NVIDIA_BASE_URL", "NVIDIA_MODEL", "DATABASE_URL", "DEPLOYMENT_SECRET"] as const;
 
 function readSyncedEnv(): Record<string, string> {
   const values: Record<string, string> = {};
