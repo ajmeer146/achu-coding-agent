@@ -512,7 +512,7 @@ export async function scaffoldStaticProject(
       private: true,
       scripts: {
         dev: "npx --yes serve -l 3000 .",
-        build: "echo 'Static site - no build needed'",
+        build: "node -e \"const fs=require('fs'); fs.mkdirSync('public', {recursive:true}); for(const f of fs.readdirSync('.')){ if(!['public','node_modules','.git','package.json','package-lock.json','.env'].includes(f)){ fs.cpSync(f, 'public/'+f, {recursive:true}); } } console.log('Static site staged to public/');\"",
         start: "npx --yes serve -l 3000 .",
       },
     };

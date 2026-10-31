@@ -2632,7 +2632,7 @@ APPLICATION SCAFFOLDING & PROJECT TYPES:
   - Valid JSX: Ensure JSX comments are properly closed with braces ({/* comment */}), CSS styles use valid values and closed quotes/parentheses.
 - FOR STATIC HTML SITES:
   - Create index.html at the workspace root! A root index.html is MANDATORY so the server renders the page rather than a directory listing.
-  - Scripts: "dev": "npx --yes serve -l 3000 .", "build": "echo 'Static site - no build needed'", "start": "npx --yes serve -l 3000 .".
+  - Scripts: "dev": "npx --yes serve -l 3000 .", "build": "node -e \"const fs=require('fs'); fs.mkdirSync('public', {recursive:true}); for(const f of fs.readdirSync('.')){ if(!['public','node_modules','.git','package.json','package-lock.json','.env'].includes(f)){ fs.cpSync(f, 'public/'+f, {recursive:true}); } } console.log('Static site staged to public/');\"", "start": "npx --yes serve -l 3000 .".
   - NEVER run 'npm install serve' or attempt to install static server packages.
 - ENVIRONMENT SECRETS SAFETY:
   - NEVER create, modify, read, or overwrite .env files. Existing environment configuration and secrets must always be preserved.
