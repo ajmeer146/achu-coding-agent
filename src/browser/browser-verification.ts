@@ -1295,14 +1295,27 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
     for (const match of quotedMatches) {
       const text = match.slice(1, -1).trim();
       // Skip filenames
-      if (/\.(html?|css|js|jsx|tsx?|json|cjs|mjs|md|png|jpg|svg)$/i.test(text)) continue;
+      if (/\.(html?|css|js|jsx|tsx?|json|cjs|mjs|md|png|jpg|svg|sql|db)$/i.test(text)) continue;
       // Skip selectors
       if (/^[#.\[]/.test(text)) continue;
+      // Skip code syntax, expressions, and HTTP/cookie headers
+      if (/[{}();<>=]/.test(text)) continue;
+      if (/^(Set-Cookie|Cookie|Authorization|Content-Type|HttpOnly|SameSite|Path=|Bearer)/i.test(text) || text.includes("HttpOnly") || text.includes("SameSite") || text.includes("Path=/")) continue;
+      // Skip technical code tokens / algorithms / formats
+      if (/^(hex|base64|utf-8|utf8|sha256|md5|scrypt|bcrypt|json|jwt|sql|sqlite|postgres|postgresql|database|db|table|column|row)$/i.test(text)) continue;
+      // Skip SQL queries / statements
+      if (/^(SELECT|INSERT|UPDATE|DELETE|CREATE TABLE|ALTER TABLE|DROP TABLE)/i.test(text)) continue;
+      // Skip common technical schema keywords
+      if (/^(users|sessions|accounts|migrations|credentials|tokens|tasks_table)$/i.test(text)) continue;
+      // Skip environment variable names
+      if (/^[A-Z0-9_]{3,}$/.test(text) && (text.includes("KEY") || text.includes("URL") || text.includes("SECRET") || text.includes("PORT") || text.includes("ENV") || text.includes("DATABASE") || text.includes("TOKEN"))) continue;
+      // Skip shell commands
+      if (/^(npm|npx|node|git|yarn|pnpm|tsc|python|pip|cargo)\b/i.test(text)) continue;
       // Skip attribute/id/class/key mentions (e.g. id 'beta-btn', class 'filter-btn', key 'taskflow_tasks')
       const matchIndex = task.indexOf(match);
       if (matchIndex > 0) {
-        const preceding = task.slice(Math.max(0, matchIndex - 25), matchIndex).toLowerCase();
-        if (/(?:id|class|key|attribute|selector|attr|data-[a-z0-9_-]+)\s*[:=]?\s*$/i.test(preceding.trim())) {
+        const preceding = task.slice(Math.max(0, matchIndex - 35), matchIndex).toLowerCase();
+        if (/(?:id|class|key|attribute|selector|attr|data-[a-z0-9_-]+|table|column|schema|database|db|cookie|header|hash|algorithm|secret|variable|env|command|script|field|type)\s*[:=]?\s*$/i.test(preceding.trim())) {
           continue;
         }
       }

@@ -93,6 +93,13 @@ describe("Development Server Startup, Recovery Loop, and Protected Files Regress
         /Forbidden: .env files cannot be modified/
       );
 
+      // .env.example template creation and editing are PERMITTED (does not leak secrets, documents required config)
+      const resEnvExample = await createFile(ws, ".env.example", "DATABASE_URL=postgresql://user:pass@localhost:5432/mydb\nPORT=3000\n");
+      assert.ok(resEnvExample.includes("Successfully created .env.example"));
+      const resEditEnvExample = await editFile(ws, ".env.example", [{ oldText: "3000", newText: "8080" }]);
+      assert.ok(resEditEnvExample.includes("Successfully edited .env.example"));
+      assert.ok((await ws.read(".env.example")).includes("PORT=8080"));
+
       // isProtectedFile reflects rules
       assert.equal(isProtectedFile(".env"), true);
       assert.equal(isProtectedFile(".env.local"), true);

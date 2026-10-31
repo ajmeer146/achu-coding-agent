@@ -11,8 +11,9 @@ export async function createFile(
   const normalized = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
   const fileName = normalized.split("/").pop() || normalized;
 
-  // Never create or modify .env files automatically
-  if (fileName.startsWith(".env")) {
+  // Never create or modify active .env files automatically (allow template files like .env.example)
+  const isEnvTemplate = fileName.endsWith(".example") || fileName.endsWith(".sample") || fileName.endsWith(".template");
+  if (fileName.startsWith(".env") && !isEnvTemplate) {
     throw new Error(
       `Forbidden: .env files cannot be created or modified automatically. ` +
       `Preserve existing environment configuration.`,

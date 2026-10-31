@@ -810,4 +810,18 @@ describe("Browser verification selector normalization & truthful outcome regress
     assert.ok(targets.some(t => t.type === "button" && t.text === "Click Beta"), "Must extract button 'Click Beta'");
     assert.ok(targets.some(t => t.type === "text" && t.text === "Ready Beta"), "Must extract visible text 'Ready Beta'");
   });
+
+  test("26. Quoted technical tokens, database tables, and cookie headers are not extracted as visible text targets", () => {
+    const prompt = "Build a secure web app for 'SecureBoard'. Store data in table 'users' and 'sessions', hash passwords with 'hex', and set cookie 'session=<token>; HttpOnly; Path=/; SameSite=Lax'. Include heading 'SecureBoard'.";
+    const targets = generateVerificationTargetsFromTask(prompt);
+
+    // Backend/technical tokens must NOT be visible text targets
+    assert.equal(targets.some(t => t.type === "text" && t.text === "users"), false, "Table 'users' must not be a visible text target");
+    assert.equal(targets.some(t => t.type === "text" && t.text === "sessions"), false, "Table 'sessions' must not be a visible text target");
+    assert.equal(targets.some(t => t.type === "text" && t.text === "hex"), false, "Token 'hex' must not be a visible text target");
+    assert.equal(targets.some(t => t.type === "text" && t.text.includes("HttpOnly")), false, "Cookie header must not be a visible text target");
+
+    // Real visible heading target must be present
+    assert.ok(targets.some(t => t.type === "heading" && t.text === "SecureBoard"), "Must extract visible heading 'SecureBoard'");
+  });
 });

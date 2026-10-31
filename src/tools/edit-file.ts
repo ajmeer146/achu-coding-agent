@@ -156,7 +156,8 @@ export async function editFile(
   const normalized = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
   const fileName = normalized.split("/").pop() || normalized;
 
-  if (fileName.startsWith(".env")) {
+  const isEnvTemplate = fileName.endsWith(".example") || fileName.endsWith(".sample") || fileName.endsWith(".template");
+  if (fileName.startsWith(".env") && !isEnvTemplate) {
     throw new Error(
       `Forbidden: .env files cannot be modified automatically. ` +
       `Preserve existing environment configuration and secrets.`,

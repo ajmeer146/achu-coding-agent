@@ -812,7 +812,11 @@ export async function waitForReadiness(
     }
 
     if (attempt < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      // Fast adaptive interval: check every 250ms for first 8 attempts (2s), then 500ms, then intervalMs
+      const pollDelay = options.intervalMs !== undefined
+        ? intervalMs
+        : (attempt <= 8 ? 250 : (attempt <= 14 ? 500 : 1000));
+      await new Promise((resolve) => setTimeout(resolve, pollDelay));
     }
   }
 

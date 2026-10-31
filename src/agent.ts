@@ -1472,10 +1472,8 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
     if (step.status === "completed") continue;
     // Allow a previously failed step to be recovered if the current matching tool execution succeeds
     if (step.status === "failed" && isToolFailure) continue;
-    if (step.dependsOn && step.dependsOn.length > 0) {
-      // Dependencies are ordering hints, not hard gates: only a FAILED dependency
-      // blocks this step. Otherwise the plan deadlocks when the model executes
-      // steps out of order (e.g. create_file before the inspection step ran).
+    if (step.dependsOn && step.dependsOn.length > 0 && isToolFailure) {
+      // If the tool failed, don't cascade the failure to subsequent dependent steps
       const depBlocked = step.dependsOn.some(depId => {
         const depStep = updatedPlan.find(s => s.id === depId);
         return depStep && depStep.status === "failed";
@@ -3396,13 +3394,14 @@ async function executeToolCore(workspace: Workspace, toolCall: ToolCall, state: 
         };
         const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "").toLowerCase();
         const fileName = normalizedPath.split("/").pop() || normalizedPath;
-        if (fileName.startsWith(".env")) {
+        const isEnvTemplate = fileName.endsWith(".example") || fileName.endsWith(".sample") || fileName.endsWith(".template");
+        if (fileName.startsWith(".env") && !isEnvTemplate) {
           const blockMsg = `BLOCKED: ${filePath} is an environment configuration file and cannot be created automatically.`;
           console.error(chalk.red(blockMsg));
           return blockMsg;
         }
         const protectedFiles = ["tsconfig.json", "package-lock.json", ".npmrc", ".env", ".env.local", ".env.production"];
-        if (protectedFiles.includes(normalizedPath)) {
+        if (protectedFiles.includes(normalizedPath) && !isEnvTemplate) {
           const blockMsg = `BLOCKED: ${filePath} is a protected configuration file and cannot be created automatically.`;
           console.error(chalk.red(blockMsg));
           return blockMsg;
@@ -4462,11 +4461,27 @@ export async function runAgent(
     return `${prefix}\n... [${toolName || 'tool'} output truncated: ${omitted} characters omitted] ...\n${suffix}`;
   }
 
+  function compactToolHistory(msgs: ChatMessage[]): ChatMessage[] {
+    // Keep full tool output for the most recent 6 messages.
+    // For earlier tool outputs exceeding 1200 chars, compact them to save context tokens.
+    const cutoff = Math.max(2, msgs.length - 6);
+    return msgs.map((msg, idx) => {
+      if (idx < cutoff && msg.role === "tool" && typeof msg.content === "string" && msg.content.length > 1200) {
+        return {
+          ...msg,
+          content: summarizeToolOutput(msg.content, (msg as any).name),
+        };
+      }
+      return msg;
+    });
+  }
+
   function trimMessageHistory(messages: ChatMessage[]): ChatMessage[] {
-    if (messages.length <= MAX_MESSAGE_HISTORY) return messages;
-    const systemMsg = messages[0];
-    const firstUserMsg = messages[1];
-    const recentMessages = messages.slice(-(MAX_MESSAGE_HISTORY - 2));
+    const compacted = compactToolHistory(messages);
+    if (compacted.length <= MAX_MESSAGE_HISTORY) return compacted;
+    const systemMsg = compacted[0];
+    const firstUserMsg = compacted[1];
+    const recentMessages = compacted.slice(-(MAX_MESSAGE_HISTORY - 2));
 
     // Summarize older tool outputs among preserved messages to conserve context window
     const sanitizedRecent = recentMessages.map((msg, idx) => {
@@ -4489,7 +4504,13 @@ export async function runAgent(
     console.log(chalk.magenta(`\nAgent step ${step}...`));
     const activeStep = state.currentPlan.find(s => s.status === "running") || state.currentPlan.find(s => s.status === "pending");
     const activeDesc = activeStep?.description || `Step ${step}`;
-    options?.onProgress?.(Math.min(Math.max(step, 2), 5), activeDesc, `Agent step ${step}: ${activeDesc}`);
+    const activeTool = activeStep?.toolType;
+    const currentStepNum = activeTool === "browser_verify" || activeTool === "open_browser"
+      ? 5
+      : (activeTool === "run_verification" || (activeTool === "run_command" && activeDesc.toLowerCase().includes("build"))
+        ? 4
+        : (state.phase === "plan" ? 2 : 3));
+    options?.onProgress?.(currentStepNum, activeDesc, `Agent step ${step}: ${activeDesc}`);
 
     if (state.appProcess) {
       const output = readAppOutput(state.appProcess);
@@ -4647,7 +4668,13 @@ export async function runAgent(
       messages.push({ role: "tool", content: result, tool_call_id: toolCall.id });
       const toolTarget = getToolTarget(toolCall);
       const toolDesc = `${toolCall.function.name}${toolTarget ? `: ${toolTarget}` : ""}`;
-      options?.onProgress?.(Math.min(Math.max(step, 2), 5), toolDesc, toolDesc);
+      const toolName = toolCall.function.name;
+      const progressStepNum = (toolName === "browser_verify" || toolName === "open_browser")
+        ? 5
+        : (toolName === "run_verification" || toolName === "run_command"
+          ? 4
+          : 3);
+      options?.onProgress?.(progressStepNum, toolDesc, toolDesc);
       const taskIdentity = getTaskIdentity(toolCall);
       state.stepsTaken.set(taskIdentity, (state.stepsTaken.get(taskIdentity) || 0) + 1);
       if (!isToolResultFailure(toolCall.function.name, result)) {

@@ -792,7 +792,8 @@ export function isProtectedFile(
     .replace(/^\.\/+/, "");
 
   const fileName = normalized.split("/").pop() || normalized;
-  if (fileName.startsWith(".env") || fileName === ".npmrc" || fileName === "tsconfig.json") {
+  const isEnvTemplate = fileName.endsWith(".example") || fileName.endsWith(".sample") || fileName.endsWith(".template");
+  if ((fileName.startsWith(".env") && !isEnvTemplate) || fileName === ".npmrc" || fileName === "tsconfig.json") {
     return true;
   }
 
