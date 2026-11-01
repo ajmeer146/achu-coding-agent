@@ -102,6 +102,13 @@ export function isStaticSiteWorkspace(workingDir: string): boolean {
         typeof s === "string" && /\bnode\s+[\w\.\/-]*(server|app|api|index)/i.test(s)
       );
       if (hasNodeServer) return false;
+
+      const isNext = Boolean(
+        pkg.dependencies?.next ||
+        pkg.devDependencies?.next ||
+        (typeof scripts.dev === "string" && scripts.dev.includes("next"))
+      );
+      if (isNext) return false;
     }
   } catch {}
 
@@ -134,7 +141,7 @@ export function createStaticSiteCommand(workingDir: string): StartCommandResult 
  */
 export function isServerStartupCommand(command: string): boolean {
   const normalized = command.trim().toLowerCase();
-  return /^(npx\s+(serve|http-server)|npm\s+run\s+(dev|start|serve|preview)|pnpm\s+(dev|start|serve|preview)|yarn\s+(dev|start|serve|preview))\b/.test(normalized);
+  return /^(npx\s+(serve|http-server|next|vite)|npm\s+run\s+(dev|start|serve|preview)|pnpm\s+(dev|start|serve|preview)|yarn\s+(dev|start|serve|preview)|node\s+[\w\.\/-]*(server|app|index))\b/.test(normalized);
 }
 
 /**
@@ -244,6 +251,7 @@ export function parsePortFromScript(scriptText: string): number | null {
   const lower = text.toLowerCase();
   if (/\bvite\b/.test(lower) && !/\b--port\b/.test(lower)) return 5173;
   if (/\bnext\b/.test(lower)) return 3000;
+  if (/\bnode\b.*(server|app)/.test(lower)) return 3000;
   if (/\bhttp-server\b/.test(lower)) return 8080;
   if (/\bserve\b/.test(lower)) return 3000;
   return null;

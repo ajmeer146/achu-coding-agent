@@ -31,7 +31,7 @@ import { SessionState } from "./session/session-types.js";
 import { z } from "zod";
 import { SnapshotManager } from "./tools/snapshot.js";
 import { parseArchitecture, formatArchitectureSummary, ProjectArchitecture } from "./tools/architecture-parser.js";
-import { scaffoldReactViteProject, scaffoldStaticProject, validateProjectStructure, autoRepairProjectStructure } from "./tools/scaffold.js";
+import { scaffoldReactViteProject, scaffoldStaticProject, scaffoldNextjsProject, scaffoldNodeExpressProject, scaffoldFullstackEcommerceProject, validateProjectStructure, autoRepairProjectStructure } from "./tools/scaffold.js";
 
 export type ToolCall = {
   id: string;
@@ -238,7 +238,8 @@ const AGENT_TOOLS: Array<{ type: "function"; function: { name: string; descripti
   { type: "function", function: { name: "run_verification", description: "Run the exact verification command requested by the user.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
   { type: "function", function: { name: "list_directory", description: "List the contents of a directory in the workspace.", parameters: { type: "object", properties: { directoryPath: { type: "string", description: "Path of directory to list (relative to workspace root)." } }, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "create_file", description: "Create a new file in the workspace with the given content.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"], additionalProperties: false } } },
-  { type: "function", function: { name: "scaffold_project", description: "Scaffold a complete, runnable modern application structure with valid files and configurations. Templates: 'react-vite' (React 18 + Vite), 'static' (HTML5/CSS3/JS).", parameters: { type: "object", properties: { template: { type: "string", enum: ["react-vite", "static"], description: "Template to scaffold: 'react-vite' or 'static'." }, name: { type: "string", description: "Project name (optional)." } }, required: ["template"], additionalProperties: false } } },
+  { type: "function", function: { name: "scaffold_project", description: "Scaffold a complete, runnable modern application structure with valid files and configurations. Templates: 'react-vite' (React 18 + Vite), 'static' (HTML5/CSS3/JS), 'nextjs' (Next.js App Router + API), 'node-express' (Express backend + frontend), 'fullstack-ecommerce' (Complete shopping website with database, auth, cart, checkout & admin dashboard).", parameters: { type: "object", properties: { template: { type: "string", enum: ["react-vite", "static", "nextjs", "node-express", "fullstack-ecommerce"], description: "Template to scaffold: 'react-vite', 'static', 'nextjs', 'node-express', or 'fullstack-ecommerce'." }, name: { type: "string", description: "Project name (optional)." } }, required: ["template"], additionalProperties: false } } },
+  { type: "function", function: { name: "verify_api_endpoint", description: "Verify a backend REST API endpoint of the running application. Sends an HTTP request and asserts status code, response headers, and JSON body structure.", parameters: { type: "object", properties: { url: { type: "string", description: "API URL or relative path (e.g. /api/products, /api/health)." }, method: { type: "string", enum: ["GET", "POST", "PUT", "DELETE", "PATCH"], description: "HTTP method (defaults to GET)." }, headers: { type: "object", description: "Optional HTTP headers." }, body: { type: "string", description: "Optional request body string (JSON)." }, expectedStatus: { type: "number", description: "Expected HTTP status code (e.g. 200, 201)." }, expectedProperties: { type: "array", items: { type: "string" }, description: "Array of property names expected in the JSON response." } }, required: ["url"], additionalProperties: false } } },
   { type: "function", function: { name: "navigate", description: "Navigate to a URL in the browser.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
   { type: "function", function: { name: "start_app", description: "Start the development server for the current project. Detects the start command from package.json and waits for the application to be ready.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "stop_app", description: "Stop the running development server.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
@@ -626,8 +627,21 @@ export function verifyTaskCompletionEvidence(task: string, state: AgentState): T
     }
   }
 
+  // 3. For new website and application tasks, verify live execution
+  if (isNewWebsiteTask(task)) {
+    const hasLiveVerification =
+      state.completedTasks.has("browser_verify") ||
+      Array.from(state.completedTasks).some(t => t.startsWith("verify_api:")) ||
+      (state.appProcess?.status === "ready" && state.appProcess.url !== null) ||
+      state.verificationPassed;
+    const hasModifiedFiles = Array.from(state.completedTasks).some(t => t.startsWith("create_file:") || t.startsWith("edit_file:"));
+    if (!hasLiveVerification && hasModifiedFiles) {
+      missingRequirements.push("Live application verification: Start the application (start_app) and verify in browser (browser_verify) or verify API endpoints (verify_api_endpoint).");
+    }
+  }
+
   return {
-    verified: unfulfilledFiles.length === 0 && unverifiedCommands.length === 0,
+    verified: unfulfilledFiles.length === 0 && unverifiedCommands.length === 0 && (!isNewWebsiteTask(task) || missingRequirements.length === 0),
     missingRequirements,
     unfulfilledFiles,
     unverifiedCommands,
@@ -1428,6 +1442,10 @@ export function updatePlanProgress(plan: PlanStep[], completedTasks: Set<string>
         sDesc.includes("create index.html") ||
         sDesc.includes("create styles.css") ||
         sDesc.includes("create script.js") ||
+        sDesc.includes("create app.js") ||
+        sDesc.includes("create server.js") ||
+        sDesc.includes("create db.js") ||
+        sDesc.includes("create database") ||
         sDesc.includes("create package.json") ||
         sDesc.includes("check if workspace is empty") ||
         sDesc.includes("discover")
@@ -1705,13 +1723,14 @@ export function isToolResultFailure(toolName: string, result: string): boolean {
     if (result.includes("No app process running") || result.includes("App process stopped")) return false;
     if (result.includes("Failed to stop") || result.includes("Error stopping")) return true;
   }
+  if (toolName === "verify_api_endpoint" && (result.includes("API Verification FAILED") || result.includes("API Verification ERROR"))) return true;
   if (toolName === "edit_file" || toolName === "create_file") {
     if (result.startsWith("BLOCKED:")) return true;
   }
   return false;
 }
 
-const LIFECYCLE_TOOL_TYPES = ["start_app", "open_browser", "browser_verify", "close_browser", "stop_app"];
+const LIFECYCLE_TOOL_TYPES = ["start_app", "open_browser", "browser_verify", "verify_api_endpoint", "close_browser", "stop_app"];
 
 /**
  * Positive-evidence success check. A lifecycle step may only be completed when
@@ -1724,6 +1743,7 @@ export function isToolResultSuccess(toolName: string, result: string): boolean {
     case "start_app": return /ready at (https?:\/\/\S+)/i.test(result) || result.includes("reused active server") || result.includes("reused existing server");
     case "open_browser": return result.includes("Browser opened successfully") || result.includes("Browser already open") || result.includes("Browser session skipped");
     case "browser_verify": return result.includes("Browser verification passed");
+    case "verify_api_endpoint": return result.includes("API Verification PASSED");
     case "close_browser": return result.includes("Browser closed") || result.includes("Browser not open");
     case "stop_app": return result.includes("App process stopped") || result.includes("No app process running") || result.includes("remains running for Live Preview");
     default: return true;
@@ -2070,6 +2090,9 @@ export function generateRecoveryHint(state: AgentState): string | null {
         `\n- For Search: Ensure an accessible search input exists (<input type="search" class="search-input" name="q" placeholder="Search products..." aria-label="Search products">).` +
         `\n- Re-check index.html to ensure both elements exist and have accessible labels.`;
     }
+  }
+  if (err.command === "verify_api_endpoint") {
+    repeatedHint += `\n\nAPI VERIFICATION RECOVERY GUIDANCE:\n- The API test failed or returned an unexpected HTTP status / JSON body.\n- Inspect server.js or the route handler to check why the endpoint returned an error status.\n- Check if request parameters, JSON body parsing, or database queries are throwing an unhandled exception.\n- Use edit_file to fix the route logic, ensure CORS and body parser are configured, and re-test with verify_api_endpoint.`;
   }
   if (err.command === "edit_file") {
     repeatedHint += `\n\nCRITICAL FILE EDIT GUIDANCE:\n- Do NOT run shell commands to delete (del / rm) files. Destructive file deletion is blocked.\n- The "expected text was not found" error means your oldText is stale. The latest content has been provided in the [CONTEXT AUTO-RECOVERY] block of the tool result. Copy the EXACT lines from that block for oldText.\n- If the target block has multiple differences or is hard to match, use 'oldText: "*"' with the complete new content.\n- Prefer small, uniquely anchored edits over large multi-line blocks.\n- If the file does not exist on disk (ENOENT / "does not exist"), do NOT retry edit_file. Use create_file with the complete corrected content.`;
@@ -3070,8 +3093,16 @@ const schemas = {
   list_directory: z.object({ directoryPath: z.string().default(".") }),
   create_file: z.object({ path: z.string(), content: z.string(), overwrite: z.boolean().optional() }),
   scaffold_project: z.object({
-    template: z.enum(["react-vite", "static"]),
+    template: z.enum(["react-vite", "static", "nextjs", "node-express", "fullstack-ecommerce"]),
     name: z.string().optional(),
+  }),
+  verify_api_endpoint: z.object({
+    url: z.string(),
+    method: z.enum(["GET", "POST", "PUT", "DELETE", "PATCH"]).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    body: z.string().optional(),
+    expectedStatus: z.number().optional(),
+    expectedProperties: z.array(z.string()).optional(),
   }),
   navigate: z.object({ url: z.string() }),
   browser_verify: z.object({
@@ -3470,6 +3501,12 @@ async function executeToolCore(workspace: Workspace, toolCall: ToolCall, state: 
         let scaffoldRes;
         if (template === "react-vite") {
           scaffoldRes = await scaffoldReactViteProject(workspace, name, state.designSpec ?? undefined);
+        } else if (template === "nextjs") {
+          scaffoldRes = await scaffoldNextjsProject(workspace, name, state.designSpec ?? undefined);
+        } else if (template === "node-express") {
+          scaffoldRes = await scaffoldNodeExpressProject(workspace, name, state.designSpec ?? undefined);
+        } else if (template === "fullstack-ecommerce") {
+          scaffoldRes = await scaffoldFullstackEcommerceProject(workspace, name, state.designSpec ?? undefined);
         } else {
           scaffoldRes = await scaffoldStaticProject(workspace, name, state.designSpec ?? undefined);
         }
@@ -3494,6 +3531,46 @@ async function executeToolCore(workspace: Workspace, toolCall: ToolCall, state: 
           await state.snapshotManager.captureAfter(file);
         }
         return `Successfully scaffolded '${template}' project with files: ${scaffoldRes.files.join(", ")}`;
+      }
+      case "verify_api_endpoint": {
+        const rawUrl = args.url;
+        let targetUrl = rawUrl;
+        if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
+          const baseUrl = state.appUrl || (state.appProcess ? getAppUrl(state.appProcess) : null) || "http://localhost:3000";
+          targetUrl = new URL(rawUrl.startsWith("/") ? rawUrl : `/${rawUrl}`, baseUrl).toString();
+        }
+        const method = args.method || "GET";
+        const headers = { "Content-Type": "application/json", ...(args.headers || {}) };
+        console.log(chalk.cyan(`Verifying API endpoint ${method} ${targetUrl}...`));
+        try {
+          const response = await fetch(targetUrl, {
+            method,
+            headers,
+            body: args.body ? args.body : undefined,
+          });
+          const text = await response.text();
+          let json = null;
+          try { json = JSON.parse(text); } catch {}
+          const statusOk = args.expectedStatus !== undefined ? response.status === args.expectedStatus : response.ok;
+          const issues: string[] = [];
+          if (!statusOk) {
+            issues.push(`Expected HTTP status ${args.expectedStatus || 200}, got ${response.status}`);
+          }
+          if (args.expectedProperties && Array.isArray(args.expectedProperties) && json) {
+            for (const prop of args.expectedProperties) {
+              if (!(prop in json)) {
+                issues.push(`Missing expected property '${prop}' in JSON response.`);
+              }
+            }
+          }
+          if (issues.length > 0) {
+            return `API Verification FAILED for ${method} ${targetUrl} (Status ${response.status}):\n- ${issues.join("\n- ")}\nResponse preview: ${text.slice(0, 500)}`;
+          }
+          state.completedTasks.add(`verify_api:${method}:${rawUrl}`);
+          return `API Verification PASSED for ${method} ${targetUrl} (Status ${response.status}). Response: ${text.slice(0, 300)}`;
+        } catch (fetchErr) {
+          return `API Verification ERROR: Could not connect to ${targetUrl}: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`;
+        }
       }
       case "start_app": {
         if (state.executionLedger) {
@@ -4063,7 +4140,7 @@ async function executeToolCore(workspace: Workspace, toolCall: ToolCall, state: 
   } catch (error) { const message = error instanceof Error ? error.message : String(error); return `Tool error: ${message}`; }
 }
 
-async function executeTool(workspace: Workspace, toolCall: ToolCall, state: AgentState): Promise<string> {
+export async function executeTool(workspace: Workspace, toolCall: ToolCall, state: AgentState): Promise<string> {
   const toolName = toolCall.function.name;
   const startedAt = Date.now();
   const diagnostic = (event: string, details: Record<string, unknown> = {}) => {
@@ -4679,6 +4756,20 @@ export async function runAgent(
       state.stepsTaken.set(taskIdentity, (state.stepsTaken.get(taskIdentity) || 0) + 1);
       if (!isToolResultFailure(toolCall.function.name, result)) {
         state.completedTasks.add(taskIdentity);
+        if (toolName === "edit_file" || toolName === "create_file") {
+          // Edits invalidate previous verification to guarantee freshness
+          state.completedTasks.delete("browser_verify");
+          for (const t of Array.from(state.completedTasks)) {
+            if (t.startsWith("verify_api:")) {
+              state.completedTasks.delete(t);
+            }
+          }
+          for (const step of state.currentPlan) {
+            if (step.toolType === "browser_verify" || step.toolType === "verify_api_endpoint") {
+              step.status = "pending";
+            }
+          }
+        }
       }
       console.log(`[Tool Diagnostic] ${JSON.stringify({ event: isToolResultFailure(toolCall.function.name, result) ? "plan_step_not_completed" : "plan_step_execution_confirmed", tool: toolCall.function.name, target: toolTarget || undefined, resultLength: result.length })}`);
       const completedIdsBefore = new Set(state.currentPlan.filter(s => s.status === "completed").map(s => s.id));

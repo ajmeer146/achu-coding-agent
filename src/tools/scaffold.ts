@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { Workspace } from "./workspace.js";
 import type { DesignSpec } from "./design-planner.js";
 
-export type ProjectTemplate = "react-vite" | "static";
+export type ProjectTemplate = "react-vite" | "static" | "nextjs" | "node-express" | "fullstack-ecommerce";
 
 export type ScaffoldResult = {
   success: boolean;
@@ -14,7 +14,7 @@ export type ScaffoldResult = {
 
 export type ProjectValidationResult = {
   valid: boolean;
-  projectType: "react" | "static" | "node" | "unknown";
+  projectType: "react" | "static" | "node" | "nextjs" | "unknown";
   error?: string;
 };
 
@@ -67,6 +67,36 @@ export function validateProjectStructure(workingDir: string): ProjectValidationR
   const isReact = Boolean((deps.react || deps["react-dom"] || deps["@vitejs/plugin-react"]) && hasReactFiles);
   const hasVite = Boolean(deps.vite || (typeof scripts.dev === "string" && scripts.dev.includes("vite")));
 
+  // Next.js project validation
+  const isNext = Boolean(deps.next || (typeof scripts.dev === "string" && scripts.dev.includes("next")));
+  if (isNext) {
+    const hasNextEntry =
+      fs.existsSync(path.join(workingDir, "app/page.tsx")) ||
+      fs.existsSync(path.join(workingDir, "app/page.jsx")) ||
+      fs.existsSync(path.join(workingDir, "app/page.js")) ||
+      fs.existsSync(path.join(workingDir, "src/app/page.tsx")) ||
+      fs.existsSync(path.join(workingDir, "pages/index.tsx")) ||
+      fs.existsSync(path.join(workingDir, "pages/index.js"));
+    if (!hasNextEntry) {
+      return {
+        valid: false,
+        projectType: "nextjs",
+        error: `Next.js project is missing entry page (expected app/page.tsx or pages/index.js).`,
+      };
+    }
+    return { valid: true, projectType: "nextjs" };
+  }
+
+  // Node server / backend validation
+  const hasServerScript =
+    fs.existsSync(path.join(workingDir, "server.js")) ||
+    fs.existsSync(path.join(workingDir, "server.mjs")) ||
+    fs.existsSync(path.join(workingDir, "server.cjs")) ||
+    (typeof scripts.start === "string" && scripts.start.includes("node server"));
+  if (hasServerScript) {
+    return { valid: true, projectType: "node" };
+  }
+
   if (isReact) {
     // React project validation
     const devScript = String(scripts.dev || "");
@@ -114,13 +144,13 @@ export function validateProjectStructure(workingDir: string): ProjectValidationR
     return { valid: true, projectType: "react" };
   }
 
-  // Static site validation
-  const hasIndexHtml = fs.existsSync(path.join(workingDir, "index.html"));
+  // Static site validation: index.html at root or public/index.html
+  const hasIndexHtml = fs.existsSync(path.join(workingDir, "index.html")) || fs.existsSync(path.join(workingDir, "public", "index.html"));
   if (!hasIndexHtml) {
     return {
       valid: false,
       projectType: "static",
-      error: `Web project is missing 'index.html'. A root index.html is required for the application to render.`,
+      error: `Web project is missing 'index.html'. A root index.html or public/index.html is required for the application to render.`,
     };
   }
 
@@ -2508,6 +2538,2618 @@ ${reducedMotionBlock}
 `;
     await workspace.write("script.js", scriptJs);
     filesCreated.push("script.js");
+
+    return { success: true, files: filesCreated, projectRoot: workspace.root };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    return { success: false, files: filesCreated, error };
+  }
+}
+
+/**
+ * Scaffolds a complete Next.js full-stack application (App Router, API routes, layout, client page).
+ */
+export async function scaffoldNextjsProject(
+  workspace: Workspace,
+  projectName = "nextjs-app",
+  designSpec?: DesignSpec
+): Promise<ScaffoldResult> {
+  const slug = projectName.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "nextjs-app";
+  const title = projectName.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const filesCreated: string[] = [];
+
+  try {
+    // 1. package.json
+    const packageJson = {
+      name: slug,
+      version: "0.1.0",
+      private: true,
+      scripts: {
+        dev: "next dev",
+        build: "next build",
+        start: "next start",
+      },
+      dependencies: {
+        next: "^15.1.0",
+        react: "^19.0.0",
+        "react-dom": "^19.0.0",
+      },
+      devDependencies: {
+        typescript: "^5.7.0",
+        "@types/node": "^22.0.0",
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+      },
+    };
+    await workspace.write("package.json", JSON.stringify(packageJson, null, 2) + "\n");
+    filesCreated.push("package.json");
+
+    // 2. next.config.mjs
+    const nextConfig = `/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+};
+
+export default nextConfig;
+`;
+    await workspace.write("next.config.mjs", nextConfig);
+    filesCreated.push("next.config.mjs");
+
+    // 3. tsconfig.json
+    const tsconfig = `{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+`;
+    await workspace.write("tsconfig.json", tsconfig);
+    filesCreated.push("tsconfig.json");
+
+    // 4. app/globals.css
+    const globalsCss = `:root {
+  --bg: #090d16;
+  --surface: #131b2e;
+  --card: #1e293b;
+  --border: rgba(255, 255, 255, 0.08);
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--bg);
+  color: var(--text-primary);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.navbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(9, 13, 22, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: 1rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brand {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.nav-links {
+  display: flex;
+  gap: 1.5rem;
+  list-style: none;
+}
+
+.nav-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.95rem;
+  transition: color 0.2s;
+}
+
+.nav-link:hover {
+  color: var(--accent);
+}
+
+.container {
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+  flex: 1;
+}
+
+.hero {
+  text-align: center;
+  padding: 4rem 1rem 3rem;
+}
+
+.hero h1 {
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  font-weight: 800;
+  margin-bottom: 1rem;
+  background: linear-gradient(135deg, #f8fafc 0%, #94a3b8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.hero p {
+  color: var(--text-secondary);
+  font-size: 1.15rem;
+  max-width: 600px;
+  margin: 0 auto 2rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  cursor: pointer;
+  border: none;
+  transition: background-color 0.2s, transform 0.1s;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin-top: 2rem;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 24px -10px rgba(0, 0, 0, 0.5);
+}
+
+.card-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.card-desc {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+footer {
+  border-top: 1px solid var(--border);
+  padding: 2rem 1.5rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+`;
+    await workspace.write("app/globals.css", globalsCss);
+    filesCreated.push("app/globals.css");
+
+    // 5. app/layout.tsx
+    const layoutTsx = `import "./globals.css";
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "${title} — Full-Stack Application",
+  description: "Built with Next.js App Router and full-stack API integration.",
+};
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en">
+      <body>
+        <header className="navbar">
+          <a href="/" className="brand">🚀 ${title}</a>
+          <nav>
+            <ul className="nav-links">
+              <li><a href="#features" className="nav-link">Features</a></li>
+              <li><a href="#api" className="nav-link">API</a></li>
+            </ul>
+          </nav>
+        </header>
+        <main>{children}</main>
+        <footer>
+          <p>&copy; ${new Date().getFullYear()} ${title}. Built with Next.js and Achu Coding Agent.</p>
+        </footer>
+      </body>
+    </html>
+  );
+}
+`;
+    await workspace.write("app/layout.tsx", layoutTsx);
+    filesCreated.push("app/layout.tsx");
+
+    // 6. app/api/items/route.ts
+    const apiRouteTs = `import { NextResponse } from "next/server";
+
+interface Item {
+  id: string;
+  name: string;
+  description: string;
+  status: "active" | "completed";
+}
+
+let items: Item[] = [
+  { id: "1", name: "High-Performance Next.js Architecture", description: "Built with React Server Components and fast edge routing.", status: "completed" },
+  { id: "2", name: "Full-Stack API Routes", description: "Native RESTful API handlers for seamless frontend-backend integration.", status: "active" },
+  { id: "3", name: "Responsive Responsive Layout", description: "Mobile-first design with accessible components and dark mode.", status: "active" },
+];
+
+export async function GET() {
+  return NextResponse.json({ success: true, count: items.length, items });
+}
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    if (!body || !body.name) {
+      return NextResponse.json({ success: false, error: "Field 'name' is required." }, { status: 400 });
+    }
+    const newItem: Item = {
+      id: String(Date.now()),
+      name: String(body.name).trim(),
+      description: String(body.description || "Custom item added via API").trim(),
+      status: "active",
+    };
+    items.push(newItem);
+    return NextResponse.json({ success: true, item: newItem }, { status: 201 });
+  } catch {
+    return NextResponse.json({ success: false, error: "Invalid JSON body." }, { status: 400 });
+  }
+}
+`;
+    await workspace.write("app/api/items/route.ts", apiRouteTs);
+    filesCreated.push("app/api/items/route.ts");
+
+    // 7. app/page.tsx
+    const pageTsx = `"use client";
+
+import { useEffect, useState } from "react";
+
+interface Item {
+  id: string;
+  name: string;
+  description: string;
+  status: "active" | "completed";
+}
+
+export default function Home() {
+  const [items, setItems] = useState<Item[]>([]);
+  const [newItemName, setNewItemName] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/items")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.items) setItems(data.items);
+      })
+      .catch((err) => console.error("Failed to load items:", err))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleAddItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newItemName.trim()) return;
+
+    try {
+      const res = await fetch("/api/items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newItemName, description: "Interactive task created via client" }),
+      });
+      const data = await res.json();
+      if (data.success && data.item) {
+        setItems((prev) => [...prev, data.item]);
+        setNewItemName("");
+      }
+    } catch (err) {
+      console.error("Failed to add item:", err);
+    }
+  };
+
+  return (
+    <div className="container">
+      <section className="hero">
+        <h1>${title} Full-Stack App</h1>
+        <p>A production-ready full-stack application with live API endpoints and responsive UI.</p>
+        <form onSubmit={handleAddItem} style={{ display: "flex", gap: "0.5rem", maxWidth: "480px", margin: "0 auto" }}>
+          <input
+            type="text"
+            value={newItemName}
+            onChange={(e) => setNewItemName(e.target.value)}
+            placeholder="Add new feature or task..."
+            aria-label="Add new item"
+            style={{
+              flex: 1,
+              padding: "0.75rem 1rem",
+              borderRadius: "8px",
+              border: "1px solid var(--border)",
+              background: "var(--card)",
+              color: "var(--text-primary)",
+              fontSize: "0.95rem",
+            }}
+          />
+          <button type="submit" className="btn btn-primary">Add Item</button>
+        </form>
+      </section>
+
+      <section id="features" style={{ marginTop: "2rem" }}>
+        <h2 style={{ fontSize: "1.5rem", marginBottom: "1rem" }}>Application Features & Data</h2>
+        {loading ? (
+          <p style={{ color: "var(--text-secondary)" }}>Loading items from backend...</p>
+        ) : (
+          <div className="grid">
+            {items.map((item) => (
+              <div key={item.id} className="card">
+                <h3 className="card-title">{item.name}</h3>
+                <p className="card-desc">{item.description}</p>
+                <span
+                  style={{
+                    display: "inline-block",
+                    marginTop: "0.75rem",
+                    padding: "4px 8px",
+                    borderRadius: "4px",
+                    fontSize: "0.75rem",
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    background: item.status === "completed" ? "rgba(34, 197, 94, 0.15)" : "rgba(59, 130, 246, 0.15)",
+                    color: item.status === "completed" ? "#22c55e" : "#3b82f6",
+                  }}
+                >
+                  {item.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+`;
+    await workspace.write("app/page.tsx", pageTsx);
+    filesCreated.push("app/page.tsx");
+
+    // 8. index.html at root (for static preview fallbacks)
+    const indexHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+  <link rel="stylesheet" href="app/globals.css">
+</head>
+<body>
+  <header class="navbar">
+    <a href="/" class="brand">🚀 ${title}</a>
+  </header>
+  <main class="container">
+    <section class="hero">
+      <h1>${title} Full-Stack App</h1>
+      <p>Running on Next.js with App Router and native API routes.</p>
+    </section>
+  </main>
+</body>
+</html>`;
+    await workspace.write("index.html", indexHtml);
+    filesCreated.push("index.html");
+
+    return { success: true, files: filesCreated, projectRoot: workspace.root };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    return { success: false, files: filesCreated, error };
+  }
+}
+
+/**
+ * Scaffolds a complete Node.js + Express backend with REST APIs and interactive frontend.
+ */
+export async function scaffoldNodeExpressProject(
+  workspace: Workspace,
+  projectName = "express-api",
+  designSpec?: DesignSpec
+): Promise<ScaffoldResult> {
+  const slug = projectName.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "express-api";
+  const title = projectName.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const filesCreated: string[] = [];
+
+  try {
+    // 1. package.json
+    const packageJson = {
+      name: slug,
+      version: "0.1.0",
+      type: "module",
+      scripts: {
+        start: "node server.js",
+        dev: "node server.js",
+      },
+      dependencies: {
+        express: "^4.21.0",
+        cors: "^2.8.5",
+      },
+    };
+    await workspace.write("package.json", JSON.stringify(packageJson, null, 2) + "\n");
+    filesCreated.push("package.json");
+
+    // 2. server.js
+    const serverJs = `import express from "express";
+import cors from "cors";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const port = parseInt(process.env.PORT || "3000", 10);
+
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
+
+let items = [
+  { id: 1, title: "Database Connectivity", category: "Core", status: "Active" },
+  { id: 2, title: "RESTful Endpoints", category: "API", status: "Active" },
+  { id: 3, title: "Frontend Client UI", category: "Client", status: "Active" },
+];
+
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, timestamp: new Date().toISOString() });
+});
+
+app.get("/api/items", (_req, res) => {
+  res.json({ success: true, count: items.length, items });
+});
+
+app.post("/api/items", (req, res) => {
+  const { title, category } = req.body || {};
+  if (!title) {
+    return res.status(400).json({ success: false, error: "Title is required" });
+  }
+  const newItem = {
+    id: Date.now(),
+    title: String(title).trim(),
+    category: String(category || "General").trim(),
+    status: "Active",
+  };
+  items.push(newItem);
+  res.status(201).json({ success: true, item: newItem });
+});
+
+app.delete("/api/items/:id", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  items = items.filter((item) => item.id !== id);
+  res.json({ success: true, message: "Item deleted" });
+});
+
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+app.listen(port, () => {
+  console.log(\`Server is running on port \${port}\`);
+});
+`;
+    await workspace.write("server.js", serverJs);
+    filesCreated.push("server.js");
+
+    // 3. public/index.html
+    const indexHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} — Express Service</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="navbar">
+    <div class="nav-container">
+      <a href="/" class="brand-logo">⚡ ${title}</a>
+      <span class="status-badge" id="apiStatus">Checking API...</span>
+    </div>
+  </header>
+  <main class="container">
+    <section class="hero">
+      <h1>${title} Service</h1>
+      <p>Node.js & Express REST API with real-time browser client interface.</p>
+      <form id="itemForm" class="add-form">
+        <input type="text" id="itemTitle" placeholder="Enter new item name..." required aria-label="Item title" />
+        <input type="text" id="itemCategory" placeholder="Category (optional)" aria-label="Item category" />
+        <button type="submit" class="btn btn-primary">Add Item</button>
+      </form>
+    </section>
+    <section class="content-section">
+      <h2>Active Records</h2>
+      <div id="itemList" class="items-grid"></div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>`;
+    await workspace.write("public/index.html", indexHtml);
+    filesCreated.push("public/index.html");
+
+    // Also write root index.html so root preview servers locate it immediately
+    await workspace.write("index.html", indexHtml);
+    filesCreated.push("index.html");
+
+    // 4. public/styles.css
+    const stylesCss = `:root {
+  --bg: #0b0f19;
+  --card-bg: #1e293b;
+  --border: rgba(255, 255, 255, 0.1);
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background-color: var(--bg);
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+.navbar {
+  border-bottom: 1px solid var(--border);
+  padding: 1rem 1.5rem;
+  background: rgba(11, 15, 25, 0.8);
+  backdrop-filter: blur(8px);
+}
+.nav-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.brand-logo {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+.status-badge {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent);
+}
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem;
+}
+.hero {
+  text-align: center;
+  margin-bottom: 3rem;
+}
+.hero h1 { font-size: 2.5rem; margin-bottom: 0.75rem; }
+.hero p { color: var(--text-secondary); margin-bottom: 1.5rem; }
+.add-form {
+  display: flex;
+  gap: 0.75rem;
+  max-width: 600px;
+  margin: 0 auto;
+}
+.add-form input {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text-primary);
+  flex: 1;
+}
+.btn {
+  padding: 0.75rem 1.25rem;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-delete { background: #ef4444; color: #fff; padding: 4px 8px; font-size: 0.75rem; }
+.items-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+.item-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+`;
+    await workspace.write("public/styles.css", stylesCss);
+    filesCreated.push("public/styles.css");
+
+    // 5. public/app.js
+    const appJs = `document.addEventListener("DOMContentLoaded", () => {
+  const itemList = document.getElementById("itemList");
+  const itemForm = document.getElementById("itemForm");
+  const apiStatus = document.getElementById("apiStatus");
+
+  async function checkHealth() {
+    try {
+      const res = await fetch("/api/health");
+      if (res.ok) {
+        apiStatus.textContent = "● API Online";
+        apiStatus.style.color = "#22c55e";
+      }
+    } catch {
+      apiStatus.textContent = "● API Connecting...";
+    }
+  }
+
+  async function loadItems() {
+    try {
+      const res = await fetch("/api/items");
+      const data = await res.json();
+      if (data.items) {
+        renderItems(data.items);
+      }
+    } catch (err) {
+      console.error("Failed to load items:", err);
+    }
+  }
+
+  function renderItems(items) {
+    if (!itemList) return;
+    if (items.length === 0) {
+      itemList.innerHTML = "<p style='color:var(--text-secondary)'>No items recorded yet.</p>";
+      return;
+    }
+    itemList.innerHTML = items
+      .map(
+        (item) => \`
+      <div class="item-card">
+        <div>
+          <h4>\${item.title}</h4>
+          <span style="font-size:0.8rem;color:var(--text-secondary)">\${item.category}</span>
+        </div>
+        <button class="btn btn-delete" onclick="deleteItem(\${item.id})">Delete</button>
+      </div>\`
+      )
+      .join("");
+  }
+
+  window.deleteItem = async (id) => {
+    try {
+      await fetch(\`/api/items/\${id}\`, { method: "DELETE" });
+      loadItems();
+    } catch (err) {
+      console.error("Delete failed:", err);
+    }
+  };
+
+  itemForm?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const titleInput = document.getElementById("itemTitle");
+    const catInput = document.getElementById("itemCategory");
+    const title = titleInput.value.trim();
+    const category = catInput.value.trim() || "General";
+    if (!title) return;
+
+    try {
+      const res = await fetch("/api/items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, category }),
+      });
+      if (res.ok) {
+        titleInput.value = "";
+        catInput.value = "";
+        loadItems();
+      }
+    } catch (err) {
+      console.error("Add failed:", err);
+    }
+  });
+
+  checkHealth();
+  loadItems();
+});
+`;
+    await workspace.write("public/app.js", appJs);
+    filesCreated.push("public/app.js");
+
+    return { success: true, files: filesCreated, projectRoot: workspace.root };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    return { success: false, files: filesCreated, error };
+  }
+}
+
+/**
+ * Scaffolds a complete full-stack e-commerce shopping platform with authentication,
+ * persistent product catalog, cart, checkout, orders, admin dashboard, and automated tests.
+ */
+export async function scaffoldFullstackEcommerceProject(
+  workspace: Workspace,
+  projectName = "novamart-store",
+  designSpec?: DesignSpec
+): Promise<ScaffoldResult> {
+  const slug = projectName.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "novamart-store";
+  const title = projectName.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const filesCreated: string[] = [];
+
+  try {
+    // 1. package.json
+    const packageJson = {
+      name: slug,
+      version: "1.0.0",
+      private: true,
+      type: "module",
+      scripts: {
+        start: "node server.js",
+        dev: "node server.js",
+        test: "node --test tests/api.test.js",
+      },
+      dependencies: {
+        express: "^4.21.0",
+        cors: "^2.8.5",
+      },
+    };
+    await workspace.write("package.json", JSON.stringify(packageJson, null, 2) + "\n");
+    filesCreated.push("package.json");
+
+    // 2. db.js - Database persistence with SQLite & resilient storage
+    const dbJs = `import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const dataDir = path.join(__dirname, "data");
+if (!fs.existsSync(dataDir)) {
+  fs.mkdirSync(dataDir, { recursive: true });
+}
+const dbPath = path.join(dataDir, "store.json");
+
+const INITIAL_RESTAURANTS = [
+  { id: 1, name: "The Burger Loft", cuisine: "American & Burgers", rating: 4.9, eta: "20-30 min", deliveryFee: 2.99, image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Ccircle cx='100' cy='100' r='50' fill='%23f59e0b' fill-opacity='0.2'/%3E%3Ctext x='100' y='120' font-size='60' text-anchor='middle'%3E🍔%3C/text%3E%3C/svg%3E" },
+  { id: 2, name: "Napoli Fire Kitchen", cuisine: "Wood-Fired Pizza & Italian", rating: 4.8, eta: "25-35 min", deliveryFee: 3.49, image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Ccircle cx='100' cy='100' r='50' fill='%23ef4444' fill-opacity='0.2'/%3E%3Ctext x='100' y='120' font-size='60' text-anchor='middle'%3E🍕%3C/text%3E%3C/svg%3E" },
+  { id: 3, name: "Sakura Japanese Bistro", cuisine: "Sushi & Japanese", rating: 4.9, eta: "30-40 min", deliveryFee: 3.99, image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Ccircle cx='100' cy='100' r='50' fill='%233b82f6' fill-opacity='0.2'/%3E%3Ctext x='100' y='120' font-size='60' text-anchor='middle'%3E🍣%3C/text%3E%3C/svg%3E" },
+  { id: 4, name: "Sweet Craft Patisserie", cuisine: "Bakery & Desserts", rating: 4.9, eta: "15-25 min", deliveryFee: 1.99, image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Ccircle cx='100' cy='100' r='50' fill='%23ec4899' fill-opacity='0.2'/%3E%3Ctext x='100' y='120' font-size='60' text-anchor='middle'%3E🍰%3C/text%3E%3C/svg%3E" },
+  { id: 5, name: "Green Vitality Bar", cuisine: "Organic Juices & Bowls", rating: 4.6, eta: "10-20 min", deliveryFee: 1.49, image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Ccircle cx='100' cy='100' r='50' fill='%2310b981' fill-opacity='0.2'/%3E%3Ctext x='100' y='120' font-size='60' text-anchor='middle'%3E🥗%3C/text%3E%3C/svg%3E" }
+];
+
+const INITIAL_PRODUCTS = [
+  { id: 1, restaurantId: 1, restaurantName: "The Burger Loft", title: "Truffle Smash Burger", category: "Burgers", price: 14.99, rating: 4.9, stock: 40, eta: "20-30 min", description: "Double aged beef patty, black truffle aioli, melted gruyere on toasted brioche bun.", image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Ccircle cx='100' cy='100' r='50' fill='%23f59e0b' fill-opacity='0.2' stroke='%23f59e0b' stroke-width='4'/%3E%3Cpath d='M65 95 Q100 65 135 95 Z' fill='%23d97706'/%3E%3Crect x='60' y='100' width='80' height='10' rx='3' fill='%23ef4444'/%3E%3Crect x='58' y='112' width='84' height='12' rx='4' fill='%2378350f'/%3E%3Cpath d='M65 128 Q100 145 135 128 Z' fill='%23d97706'/%3E%3C/svg%3E" },
+  { id: 2, restaurantId: 2, restaurantName: "Napoli Fire Kitchen", title: "Artisan Margherita Pizza", category: "Pizza", price: 18.50, rating: 4.8, stock: 30, eta: "25-35 min", description: "San Marzano tomatoes, fresh buffalo mozzarella, fragrant sweet basil, extra virgin olive oil.", image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Ccircle cx='100' cy='100' r='55' fill='%23d97706' stroke='%23b45309' stroke-width='4'/%3E%3Ccircle cx='100' cy='100' r='45' fill='%23ef4444'/%3E%3Ccircle cx='85' cy='85' r='12' fill='%23fef08a'/%3E%3Ccircle cx='115' cy='95' r='10' fill='%23fef08a'/%3E%3Ccircle cx='95' cy='115' r='11' fill='%23fef08a'/%3E%3C/svg%3E" },
+  { id: 3, restaurantId: 3, restaurantName: "Sakura Japanese Bistro", title: "Spicy Dragon Roll Combo", category: "Sushi", price: 22.00, rating: 4.9, stock: 25, eta: "30-40 min", description: "Fresh unagi, avocado, spicy bluefin tuna, cucumber with house tare glaze and sesame.", image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Crect x='50' y='75' width='100' height='50' rx='8' fill='%230f172a' stroke='%2338bdf8' stroke-width='3'/%3E%3Ccircle cx='75' cy='100' r='14' fill='%23f8fafc' stroke='%23ef4444' stroke-width='4'/%3E%3Ccircle cx='100' cy='100' r='14' fill='%23f8fafc' stroke='%23f59e0b' stroke-width='4'/%3E%3Ccircle cx='125' cy='100' r='14' fill='%23f8fafc' stroke='%2310b981' stroke-width='4'/%3E%3C/svg%3E" },
+  { id: 4, restaurantId: 1, restaurantName: "The Burger Loft", title: "Hot Honey Fried Chicken", category: "Burgers", price: 13.50, rating: 4.7, stock: 35, eta: "20-30 min", description: "Buttermilk fried chicken breast, habanero hot honey drizzle, crunchy slaw.", image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Cpath d='M65 90 Q100 65 135 90 Z' fill='%23d97706'/%3E%3Crect x='55' y='95' width='90' height='20' rx='5' fill='%23b45309' stroke='%23f59e0b' stroke-width='2'/%3E%3Cpath d='M65 125 Q100 145 135 125 Z' fill='%23d97706'/%3E%3C/svg%3E" },
+  { id: 5, restaurantId: 2, restaurantName: "Napoli Fire Kitchen", title: "Truffle & Wild Mushroom Pizza", category: "Pizza", price: 21.00, rating: 4.9, stock: 20, eta: "25-35 min", description: "Roasted cremini, shiitake, white truffle cream, fresh thyme, fior di latte.", image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Ccircle cx='100' cy='100' r='55' fill='%2378350f' stroke='%23d97706' stroke-width='4'/%3E%3Ccircle cx='100' cy='100' r='45' fill='%23fef08a'/%3E%3Ccircle cx='85' cy='85' r='8' fill='%23451a03'/%3E%3Ccircle cx='115' cy='95' r='8' fill='%23451a03'/%3E%3Ccircle cx='95' cy='115' r='8' fill='%23451a03'/%3E%3C/svg%3E" },
+  { id: 6, restaurantId: 3, restaurantName: "Sakura Japanese Bistro", title: "Fresh Salmon Sashimi Bowl", category: "Sushi", price: 19.50, rating: 4.8, stock: 25, eta: "25-35 min", description: "Atlantic salmon, seasoned sushi rice, avocado, cucumber, edamame, ponzu.", image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Cpath d='M60 110 Q100 155 140 110 Z' fill='%230f172a' stroke='%2338bdf8' stroke-width='3'/%3E%3Crect x='70' y='80' width='35' height='25' rx='4' fill='%23f97316'/%3E%3Crect x='95' y='80' width='35' height='25' rx='4' fill='%23f97316'/%3E%3Ccircle cx='80' cy='105' r='6' fill='%2310b981'/%3E%3C/svg%3E" },
+  { id: 7, restaurantId: 4, restaurantName: "Sweet Craft Patisserie", title: "Belgian Chocolate Lava Cake", category: "Desserts", price: 9.50, rating: 4.9, stock: 50, eta: "15-25 min", description: "Warm molten Valrhona dark chocolate center, madagascar vanilla bean cream.", image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Cpath d='M70 140 L75 90 L125 90 L130 140 Z' fill='%233b1e08' stroke='%2378350f' stroke-width='3'/%3E%3Ccircle cx='100' cy='90' r='10' fill='%23ef4444'/%3E%3C/svg%3E" },
+  { id: 8, restaurantId: 5, restaurantName: "Green Vitality Bar", title: "Organic Cold-Pressed Juice", category: "Beverages", price: 6.50, rating: 4.6, stock: 60, eta: "10-20 min", description: "Organic kale, green apple, cucumber, celery, fresh lemon and ginger root.", image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Crect x='80' y='60' width='40' height='80' rx='8' fill='%2310b981' stroke='%23059669' stroke-width='3'/%3E%3C/svg%3E" }
+];
+
+const INITIAL_USERS = [
+  { id: 1, email: "admin@store.com", password: "admin123", name: "System Admin", role: "admin" },
+  { id: 2, email: "user@store.com", password: "user123", name: "Alex Customer", role: "user" }
+];
+
+class StoreDB {
+  constructor() {
+    this.data = {
+      restaurants: INITIAL_RESTAURANTS,
+      products: INITIAL_PRODUCTS,
+      users: INITIAL_USERS,
+      cart: [],
+      orders: []
+    };
+    this.load();
+  }
+
+  load() {
+    try {
+      if (fs.existsSync(dbPath)) {
+        const raw = fs.readFileSync(dbPath, "utf8");
+        const parsed = JSON.parse(raw);
+        if (parsed.products && parsed.users) {
+          this.data = {
+            restaurants: parsed.restaurants || INITIAL_RESTAURANTS,
+            ...parsed
+          };
+        }
+      } else {
+        this.save();
+      }
+    } catch {
+      this.save();
+    }
+  }
+
+  save() {
+    try {
+      fs.writeFileSync(dbPath, JSON.stringify(this.data, null, 2), "utf8");
+    } catch {}
+  }
+
+  getProducts({ q = "", category = "", sort = "featured" } = {}) {
+    let list = [...this.data.products];
+    if (category && category !== "all") {
+      list = list.filter(p => p.category.toLowerCase() === category.toLowerCase());
+    }
+    if (q) {
+      const query = q.toLowerCase();
+      list = list.filter(p => p.title.toLowerCase().includes(query) || p.description.toLowerCase().includes(query));
+    }
+    if (sort === "price-low") list.sort((a, b) => a.price - b.price);
+    else if (sort === "price-high") list.sort((a, b) => b.price - a.price);
+    else if (sort === "rating") list.sort((a, b) => b.rating - a.rating);
+    return list;
+  }
+
+  getProductById(id) {
+    return this.data.products.find(p => p.id === Number(id));
+  }
+
+  addProduct(product) {
+    const newProduct = {
+      id: Date.now(),
+      ...product,
+      price: Number(product.price) || 0,
+      rating: Number(product.rating) || 5.0,
+      stock: Number(product.stock) || 10,
+    };
+    this.data.products.push(newProduct);
+    this.save();
+    return newProduct;
+  }
+
+  authenticate(email, password) {
+    return this.data.users.find(u => u.email.toLowerCase() === String(email).toLowerCase() && u.password === String(password));
+  }
+
+  registerUser({ email, password, name }) {
+    if (this.data.users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
+      return null;
+    }
+    const newUser = {
+      id: Date.now(),
+      email,
+      password,
+      name: name || email.split("@")[0],
+      role: "user"
+    };
+    this.data.users.push(newUser);
+    this.save();
+    return newUser;
+  }
+
+  getCart(userId = 1) {
+    return this.data.cart.filter(item => item.userId === userId).map(item => {
+      const product = this.getProductById(item.productId);
+      return {
+        ...item,
+        product
+      };
+    });
+  }
+
+  addToCart(userId = 1, productId, quantity = 1) {
+    const existing = this.data.cart.find(c => c.userId === userId && c.productId === Number(productId));
+    if (existing) {
+      existing.quantity += Number(quantity);
+      if (existing.quantity <= 0) {
+        this.removeFromCart(userId, productId);
+        return null;
+      }
+    } else {
+      this.data.cart.push({
+        id: Date.now(),
+        userId,
+        productId: Number(productId),
+        quantity: Number(quantity)
+      });
+    }
+    this.save();
+    return this.getCart(userId);
+  }
+
+  removeFromCart(userId = 1, productId) {
+    this.data.cart = this.data.cart.filter(c => !(c.userId === userId && c.productId === Number(productId)));
+    this.save();
+    return this.getCart(userId);
+  }
+
+  clearCart(userId = 1) {
+    this.data.cart = this.data.cart.filter(c => c.userId !== userId);
+    this.save();
+  }
+
+  createOrder(userId = 1, shippingInfo) {
+    const cart = this.getCart(userId);
+    if (cart.length === 0) return null;
+    const total = cart.reduce((acc, item) => acc + (item.product?.price || 0) * item.quantity, 0);
+    const order = {
+      id: Date.now(),
+      orderNumber: "#ORD-" + Math.floor(10000 + Math.random() * 90000),
+      userId,
+      items: cart,
+      total: Number(total.toFixed(2)),
+      shippingInfo,
+      status: "placed",
+      timeline: [
+        { status: "placed", label: "Order Placed", time: new Date().toISOString() }
+      ],
+      createdAt: new Date().toISOString()
+    };
+    this.data.orders.push(order);
+    this.clearCart(userId);
+    this.save();
+    return order;
+  }
+
+  updateOrderStatus(orderId, status) {
+    const order = this.data.orders.find(o => String(o.id) === String(orderId) || o.orderNumber === orderId);
+    if (order) {
+      order.status = status;
+      order.updatedAt = new Date().toISOString();
+      if (!order.timeline) order.timeline = [];
+      order.timeline.push({ status, time: new Date().toISOString() });
+      this.save();
+      return order;
+    }
+    return null;
+  }
+
+  getOrderById(orderId) {
+    return this.data.orders.find(o => String(o.id) === String(orderId) || o.orderNumber === orderId);
+  }
+
+  getRestaurants() {
+    return this.data.restaurants || [];
+  }
+
+  updateProduct(id, updates) {
+    const product = this.getProductById(id);
+    if (product) {
+      Object.assign(product, updates);
+      this.save();
+      return product;
+    }
+    return null;
+  }
+
+  getOrders(userId = 1) {
+    return this.data.orders.filter(o => o.userId === userId || userId === "admin");
+  }
+
+  getAdminMetrics() {
+    const totalRevenue = this.data.orders.reduce((acc, o) => acc + o.total, 0);
+    const totalOrders = this.data.orders.length;
+    const productCount = this.data.products.length;
+    const lowStockCount = this.data.products.filter(p => p.stock < 20).length;
+    return {
+      totalRevenue: Number(totalRevenue.toFixed(2)),
+      totalOrders,
+      productCount,
+      lowStockCount,
+      recentOrders: this.data.orders.slice(-5)
+    };
+  }
+}
+
+export const db = new StoreDB();
+`;
+    await workspace.write("db.js", dbJs);
+    filesCreated.push("db.js");
+
+    // 3. server.js
+    const serverJs = `import express from "express";
+import cors from "cors";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { db } from "./db.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const port = parseInt(process.env.PORT || "3000", 10);
+
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
+
+// --- API Endpoints ---
+
+// Health & Status
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, status: "healthy", service: "${title}", timestamp: new Date().toISOString() });
+});
+
+// Auth
+app.post("/api/auth/login", (req, res) => {
+  const { email, password } = req.body || {};
+  const user = db.authenticate(email, password);
+  if (!user) {
+    return res.status(401).json({ success: false, error: "Invalid email or password." });
+  }
+  const token = "demo_token_" + Buffer.from(email).toString("base64");
+  res.json({
+    success: true,
+    user: { id: user.id, email: user.email, name: user.name, role: user.role },
+    token
+  });
+});
+
+app.post("/api/auth/register", (req, res) => {
+  const { email, password, name } = req.body || {};
+  if (!email || !password) {
+    return res.status(400).json({ success: false, error: "Email and password are required." });
+  }
+  const user = db.registerUser({ email, password, name });
+  if (!user) {
+    return res.status(409).json({ success: false, error: "Email already registered." });
+  }
+  const token = "demo_token_" + Buffer.from(email).toString("base64");
+  res.status(201).json({
+    success: true,
+    user: { id: user.id, email: user.email, name: user.name, role: user.role },
+    token
+  });
+});
+
+// Products
+app.get("/api/products", (req, res) => {
+  const { q, category, sort } = req.query;
+  const products = db.getProducts({ q, category, sort });
+  res.json({ success: true, count: products.length, products });
+});
+
+app.get("/api/products/:id", (req, res) => {
+  const product = db.getProductById(req.params.id);
+  if (!product) return res.status(404).json({ success: false, error: "Product not found" });
+  res.json({ success: true, product });
+});
+
+app.post("/api/products", (req, res) => {
+  const { title, price, category, description, stock } = req.body || {};
+  if (!title || price === undefined) {
+    return res.status(400).json({ success: false, error: "Title and price are required." });
+  }
+  const product = db.addProduct({
+    title,
+    price: Number(price),
+    category: category || "General",
+    description: description || "New catalog product",
+    stock: Number(stock) || 10,
+    image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='20' fill='%231e293b'/%3E%3Ccircle cx='100' cy='100' r='40' fill='%233b82f6'/%3E%3C/svg%3E"
+  });
+  res.status(201).json({ success: true, product });
+});
+
+// Cart
+app.get("/api/cart", (_req, res) => {
+  const items = db.getCart(1);
+  const total = items.reduce((acc, i) => acc + (i.product?.price || 0) * i.quantity, 0);
+  const itemCount = items.reduce((acc, i) => acc + i.quantity, 0);
+  res.json({ success: true, count: itemCount, total: Number(total.toFixed(2)), items });
+});
+
+app.post("/api/cart", (req, res) => {
+  const { productId, quantity } = req.body || {};
+  if (!productId) return res.status(400).json({ success: false, error: "productId is required" });
+  const items = db.addToCart(1, productId, quantity || 1);
+  const total = items.reduce((acc, i) => acc + (i.product?.price || 0) * i.quantity, 0);
+  const itemCount = items.reduce((acc, i) => acc + i.quantity, 0);
+  res.json({ success: true, count: itemCount, total: Number(total.toFixed(2)), items });
+});
+
+app.delete("/api/cart/:productId", (req, res) => {
+  const items = db.removeFromCart(1, req.params.productId);
+  const total = items.reduce((acc, i) => acc + (i.product?.price || 0) * i.quantity, 0);
+  const itemCount = items.reduce((acc, i) => acc + i.quantity, 0);
+  res.json({ success: true, count: itemCount, total: Number(total.toFixed(2)), items });
+});
+
+// Restaurants
+app.get("/api/restaurants", (_req, res) => {
+  const restaurants = db.getRestaurants();
+  res.json({ success: true, count: restaurants.length, restaurants });
+});
+
+// Checkout & Orders
+app.post("/api/checkout", (req, res) => {
+  const { shippingInfo } = req.body || {};
+  const order = db.createOrder(1, shippingInfo || { name: "Valued Customer", address: "123 Market St" });
+  if (!order) {
+    return res.status(400).json({ success: false, error: "Cannot checkout with an empty cart." });
+  }
+  res.status(201).json({ success: true, order });
+});
+
+app.get("/api/orders", (_req, res) => {
+  const orders = db.getOrders(1);
+  res.json({ success: true, orders });
+});
+
+app.get("/api/orders/:id", (req, res) => {
+  const order = db.getOrderById(req.params.id);
+  if (!order) return res.status(404).json({ success: false, error: "Order not found" });
+  res.json({ success: true, order });
+});
+
+app.patch("/api/orders/:id/status", (req, res) => {
+  const { status } = req.body || {};
+  if (!status) return res.status(400).json({ success: false, error: "status is required" });
+  const order = db.updateOrderStatus(req.params.id, status);
+  if (!order) return res.status(404).json({ success: false, error: "Order not found" });
+  res.json({ success: true, order });
+});
+
+app.put("/api/products/:id", (req, res) => {
+  const product = db.updateProduct(req.params.id, req.body || {});
+  if (!product) return res.status(404).json({ success: false, error: "Product not found" });
+  res.json({ success: true, product });
+});
+
+// Admin Dashboard
+app.get("/api/admin/metrics", (_req, res) => {
+  const metrics = db.getAdminMetrics();
+  res.json({ success: true, metrics });
+});
+
+app.get("/api/admin/orders", (_req, res) => {
+  const orders = db.getOrders("admin");
+  res.json({ success: true, orders });
+});
+
+// Catch-all to serve index.html
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+app.listen(port, () => {
+  console.log(\`${title} server listening on http://localhost:\${port}\`);
+});
+`;
+    await workspace.write("server.js", serverJs);
+    filesCreated.push("server.js");
+
+    // 4. public/index.html
+    const indexHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} — Full-Stack Online Store</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Navigation Header -->
+  <header class="navbar">
+    <div class="nav-container">
+      <a href="#" class="brand-logo" aria-label="${title} Home">
+        <span class="logo-icon">🛍️</span> ${title}
+      </a>
+      <div class="search-bar" role="search">
+        <input
+          type="search"
+          id="searchInput"
+          placeholder="Search products..."
+          aria-label="Search products"
+          autocomplete="off"
+        />
+      </div>
+      <nav class="nav-links" aria-label="Main Navigation">
+        <button id="adminBtn" class="btn btn-secondary btn-sm" aria-label="Admin Dashboard">⚙️ Admin</button>
+        <button id="authBtn" class="btn btn-secondary btn-sm" aria-label="User Account">👤 Login</button>
+        <button id="cartBtn" class="btn btn-primary btn-sm cart-btn" aria-label="Shopping Cart">
+          🛒 Cart (<span id="cartCount">0</span>)
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero Section -->
+    <section class="hero-section">
+      <div class="container hero-grid">
+        <div class="hero-content">
+          <div class="hero-badge">⚡ Instant Delivery &bull; Real Database Persistence</div>
+          <h1 class="hero-title">${title}</h1>
+          <p class="hero-subtitle">Premium goods, smart devices, and modern lifestyle essentials with working shopping cart, live checkout, and admin dashboard.</p>
+          <div class="hero-actions">
+            <a href="#catalog" class="btn btn-primary">Shop Catalog</a>
+            <button id="openAdminHeroBtn" class="btn btn-secondary">Open Admin Panel</button>
+          </div>
+          <div class="hero-trust-chips">
+            <span class="trust-chip">✓ Working REST APIs</span>
+            <span class="trust-chip">✓ Real Database Storage</span>
+            <span class="trust-chip">✓ Live Order Processing</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Catalog Section -->
+    <section id="catalog" class="container catalog-section">
+      <div class="catalog-header">
+        <div>
+          <h2>Explore Collection</h2>
+          <p class="section-desc">Handcrafted selection with real-time inventory and pricing.</p>
+        </div>
+        <div class="controls-row">
+          <div class="filter-pills" id="categoryFilters">
+            <button class="pill-btn active" data-category="all">All</button>
+            <button class="pill-btn" data-category="Electronics">Electronics</button>
+            <button class="pill-btn" data-category="Fashion">Fashion</button>
+            <button class="pill-btn" data-category="Home">Home</button>
+            <button class="pill-btn" data-category="Books">Books</button>
+          </div>
+          <select id="sortSelect" aria-label="Sort products by">
+            <option value="featured">Featured</option>
+            <option value="price-low">Price: Low to High</option>
+            <option value="price-high">Price: High to Low</option>
+            <option value="rating">Top Rated</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Product Grid -->
+      <div id="productGrid" class="product-grid" role="region" aria-label="Product listings">
+        <div class="loading-state">Loading products from database...</div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Slide-out Cart Drawer -->
+  <aside id="cartDrawer" class="cart-drawer" aria-label="Shopping Cart Drawer">
+    <div class="drawer-header">
+      <h3>Your Shopping Cart</h3>
+      <button id="closeCartBtn" class="close-btn" aria-label="Close cart">&times;</button>
+    </div>
+    <div id="cartItemsList" class="drawer-body">
+      <div class="empty-cart-msg">Your cart is currently empty.</div>
+    </div>
+    <div class="drawer-footer">
+      <div class="cart-summary-line">
+        <span>Subtotal</span>
+        <span id="cartSubtotal">$0.00</span>
+      </div>
+      <button id="checkoutBtn" class="btn btn-primary btn-block">Proceed to Checkout</button>
+    </div>
+  </aside>
+  <div id="cartBackdrop" class="drawer-backdrop"></div>
+
+  <!-- Checkout Modal -->
+  <div id="checkoutModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="checkoutTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="checkoutTitle">Complete Order</h3>
+        <button id="closeCheckoutBtn" class="close-btn" aria-label="Close checkout">&times;</button>
+      </div>
+      <form id="checkoutForm" class="modal-body">
+        <div class="form-group">
+          <label for="shippingName">Full Name</label>
+          <input type="text" id="shippingName" required placeholder="Alex Smith" />
+        </div>
+        <div class="form-group">
+          <label for="shippingEmail">Email Address</label>
+          <input type="email" id="shippingEmail" required placeholder="alex@example.com" />
+        </div>
+        <div class="form-group">
+          <label for="shippingAddress">Shipping Address</label>
+          <input type="text" id="shippingAddress" required placeholder="123 Market Street, Suite 400" />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="cardNumber">Card Number</label>
+            <input type="text" id="cardNumber" placeholder="4242 &bull;&bull;&bull;&bull; &bull;&bull;&bull;&bull; 4242" required />
+          </div>
+          <div class="form-group">
+            <label for="cardExp">Expiry</label>
+            <input type="text" id="cardExp" placeholder="MM/YY" required />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-primary btn-block">Place Order Now</button>
+        </div>
+      </form>
+      <div id="orderConfirmation" class="order-confirmation" style="display:none;">
+        <div class="success-icon">🎉</div>
+        <h4>Order Placed Successfully!</h4>
+        <p>Thank you! Your order reference is <strong id="confirmedOrderNumber">#ORD-00000</strong>.</p>
+        <div class="tracking-timeline" style="margin: 1.5rem 0; text-align: left; background: var(--bg-card); padding: 1rem; border-radius: 8px;">
+          <h5 style="margin-bottom: 0.75rem;">Live Order Tracking</h5>
+          <div class="timeline-step active" id="stepPlaced">✓ Order Placed</div>
+          <div class="timeline-step" id="stepPreparing">⏳ Kitchen Preparing</div>
+          <div class="timeline-step" id="stepOutForDelivery">🛵 Out for Delivery</div>
+          <div class="timeline-step" id="stepDelivered">📍 Delivered</div>
+        </div>
+        <button id="trackOrderBtn" class="btn btn-secondary btn-sm" onclick="trackCurrentOrder()">Refresh Status</button>
+        <button id="finishOrderBtn" class="btn btn-primary" style="margin-top:1.5rem;">Continue Shopping</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auth Modal -->
+  <div id="authModal" class="modal-overlay" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="authTitle">Customer Account</h3>
+        <button id="closeAuthBtn" class="close-btn" aria-label="Close login">&times;</button>
+      </div>
+      <div class="auth-tabs" style="display:flex;border-bottom:1px solid var(--border);">
+        <button type="button" id="tabLogin" class="tab-btn active" style="flex:1;padding:0.75rem;background:none;border:none;color:var(--text-primary);cursor:pointer;font-weight:600;">Sign In</button>
+        <button type="button" id="tabRegister" class="tab-btn" style="flex:1;padding:0.75rem;background:none;border:none;color:var(--text-secondary);cursor:pointer;font-weight:600;">Register</button>
+      </div>
+      <form id="loginForm" class="modal-body">
+        <div class="form-group">
+          <label for="authEmail">Email Address</label>
+          <input type="email" id="authEmail" required value="customer@example.com" />
+        </div>
+        <div class="form-group">
+          <label for="authPassword">Password</label>
+          <input type="password" id="authPassword" required value="customer123" />
+        </div>
+        <div id="authError" class="auth-error" style="display:none;color:#ef4444;font-size:0.85rem;margin-bottom:0.75rem;"></div>
+        <button type="submit" class="btn btn-primary btn-block">Sign In</button>
+        <p class="auth-hint" style="margin-top:1rem;font-size:0.8rem;color:var(--text-secondary)">Demo: <code>customer@example.com / customer123</code> or <code>admin@fooddelivery.com / admin123</code></p>
+      </form>
+      <form id="registerForm" class="modal-body" style="display:none;">
+        <div class="form-group">
+          <label for="regName">Full Name</label>
+          <input type="text" id="regName" required placeholder="Jane Doe" />
+        </div>
+        <div class="form-group">
+          <label for="regEmail">Email Address</label>
+          <input type="email" id="regEmail" required placeholder="jane@example.com" />
+        </div>
+        <div class="form-group">
+          <label for="regPassword">Password</label>
+          <input type="password" id="regPassword" required placeholder="Choose a password" />
+        </div>
+        <div id="regError" class="auth-error" style="display:none;color:#ef4444;font-size:0.85rem;margin-bottom:0.75rem;"></div>
+        <button type="submit" class="btn btn-primary btn-block">Create Account</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Admin Modal -->
+  <div id="adminModal" class="modal-overlay" role="dialog" aria-modal="true">
+    <div class="modal-card modal-large">
+      <div class="modal-header">
+        <h3>⚙️ Store Admin & Analytics</h3>
+        <button id="closeAdminBtn" class="close-btn" aria-label="Close admin">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <span class="metric-label">Total Revenue</span>
+            <span class="metric-value" id="metricRevenue">$0.00</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Orders Processed</span>
+            <span class="metric-value" id="metricOrders">0</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Products Active</span>
+            <span class="metric-value" id="metricProducts">0</span>
+          </div>
+        </div>
+        <h4 style="margin:1.5rem 0 0.75rem;">Active Customer Orders</h4>
+        <div id="adminOrdersList" style="max-height:200px;overflow-y:auto;background:var(--bg-card);border-radius:8px;padding:0.75rem;margin-bottom:1.5rem;">
+          <p style="color:var(--text-secondary)">Loading orders...</p>
+        </div>
+        <h4 style="margin:1.5rem 0 0.75rem;">Add New Product to Database</h4>
+        <form id="newProductForm" class="add-product-form">
+          <input type="text" id="newProdTitle" placeholder="Product Title" required />
+          <input type="number" step="0.01" id="newProdPrice" placeholder="Price ($)" required />
+          <select id="newProdCat">
+            <option value="Electronics">Electronics</option>
+            <option value="Fashion">Fashion</option>
+            <option value="Home">Home</option>
+            <option value="Books">Books</option>
+          </select>
+          <button type="submit" class="btn btn-primary">Create Product</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container footer-content">
+      <p>&copy; ${new Date().getFullYear()} ${title}. Autonomous Full-Stack Architecture powered by Achu.</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>`;
+    await workspace.write("public/index.html", indexHtml);
+    filesCreated.push("public/index.html");
+
+    // Also write root index.html so preview servers match immediately
+    await workspace.write("index.html", indexHtml);
+    filesCreated.push("index.html");
+
+    // 5. public/styles.css
+    const stylesCss = `:root {
+  --bg-primary: #090d16;
+  --bg-surface: #111827;
+  --bg-card: #1f2937;
+  --text-primary: #f9fafb;
+  --text-secondary: #9ca3af;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --border: rgba(255, 255, 255, 0.08);
+  --shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.5;
+  overflow-x: hidden;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+/* Navbar */
+.navbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(9, 13, 22, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1.5rem;
+}
+
+.nav-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.brand-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.search-bar {
+  flex: 1;
+  max-width: 440px;
+}
+
+.search-bar input {
+  width: 100%;
+  padding: 0.6rem 1rem;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  outline: none;
+  font-size: 0.9rem;
+}
+
+.search-bar input:focus {
+  border-color: var(--accent);
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0.6rem 1.25rem;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  border: none;
+  text-decoration: none;
+  transition: all 0.2s;
+  min-height: 40px;
+}
+
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-secondary { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
+.btn-secondary:hover { background: rgba(255, 255, 255, 0.15); }
+.btn-sm { padding: 0.4rem 0.85rem; font-size: 0.85rem; }
+.btn-block { width: 100%; }
+
+/* Hero */
+.hero-section {
+  padding: 4rem 0 3rem;
+  background: radial-gradient(circle at 50% 0%, rgba(59, 130, 246, 0.12) 0%, transparent 60%);
+  border-bottom: 1px solid var(--border);
+}
+
+.hero-badge {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  margin-bottom: 1rem;
+}
+
+.hero-title {
+  font-size: clamp(2.25rem, 5vw, 3.5rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin-bottom: 1rem;
+}
+
+.hero-subtitle {
+  font-size: 1.15rem;
+  color: var(--text-secondary);
+  max-width: 650px;
+  margin-bottom: 1.75rem;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.hero-trust-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.trust-chip {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+/* Catalog */
+.catalog-section {
+  padding: 3.5rem 1.5rem;
+}
+
+.catalog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.section-desc {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.controls-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.filter-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.pill-btn {
+  padding: 0.4rem 0.9rem;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.pill-btn.active, .pill-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+#sortSelect {
+  padding: 0.45rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+/* Product Grid */
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1.75rem;
+}
+
+.product-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.product-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow);
+}
+
+.product-img {
+  width: 100%;
+  height: 200px;
+  object-fit: cover;
+  background: #111827;
+}
+
+.product-body {
+  padding: 1.25rem;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.product-cat {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.product-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.product-desc {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 1rem;
+  flex: 1;
+}
+
+.product-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: auto;
+}
+
+.product-price {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+/* Cart Drawer */
+.cart-drawer {
+  position: fixed;
+  top: 0;
+  right: -420px;
+  width: 100%;
+  max-width: 400px;
+  height: 100vh;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border);
+  z-index: 200;
+  transition: right 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+}
+
+.cart-drawer.open {
+  right: 0;
+}
+
+.drawer-header {
+  padding: 1.25rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.drawer-body {
+  padding: 1.25rem;
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.cart-item {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  background: var(--bg-card);
+  padding: 0.75rem;
+  border-radius: 8px;
+}
+
+.cart-item img {
+  width: 50px;
+  height: 50px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.cart-item-info {
+  flex: 1;
+}
+
+.cart-item-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.cart-item-price {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.qty-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.qty-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.drawer-footer {
+  padding: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.cart-summary-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 150;
+  display: none;
+}
+
+.drawer-backdrop.active {
+  display: block;
+}
+
+/* Modals */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  z-index: 300;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.modal-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: 100%;
+  max-width: 480px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+  overflow: hidden;
+}
+
+.modal-large { max-width: 720px; }
+
+.modal-header {
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-body {
+  padding: 1.5rem;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.form-group input, .form-group select {
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.form-row {
+  display: flex;
+  gap: 1rem;
+}
+
+.form-row .form-group { flex: 1; }
+
+.order-confirmation {
+  text-align: center;
+  padding: 2rem 1rem;
+}
+
+.success-icon { font-size: 3rem; margin-bottom: 1rem; }
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+.metric-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  text-align: center;
+}
+
+.metric-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.metric-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.add-product-form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.add-product-form input, .add-product-form select {
+  padding: 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.footer {
+  border-top: 1px solid var(--border);
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 768px) {
+  .navbar {
+    padding: 0.5rem 0.75rem;
+  }
+  .nav-container {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .search-bar {
+    order: 3;
+    max-width: 100%;
+    width: 100%;
+  }
+  .nav-links {
+    gap: 0.4rem;
+  }
+  .btn-sm {
+    padding: 0.35rem 0.5rem;
+    font-size: 0.8rem;
+  }
+  .hero-actions {
+    flex-direction: column;
+  }
+  .controls-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .filter-pills {
+    flex-wrap: wrap;
+  }
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+  .form-row {
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 480px) {
+  .container {
+    padding: 0 0.75rem;
+  }
+  .hero-title {
+    font-size: 2rem;
+  }
+  .product-grid {
+    grid-template-columns: 1fr;
+  }
+  .cart-drawer {
+    max-width: 100%;
+  }
+}
+`;
+    await workspace.write("public/styles.css", stylesCss);
+    filesCreated.push("public/styles.css");
+
+    // 6. public/app.js - Client application logic
+    const appJs = `document.addEventListener("DOMContentLoaded", () => {
+  let products = [];
+  let cart = { count: 0, total: 0, items: [] };
+  let activeCategory = "all";
+
+  // DOM Elements
+  const productGrid = document.getElementById("productGrid");
+  const searchInput = document.getElementById("searchInput");
+  const sortSelect = document.getElementById("sortSelect");
+  const cartBtn = document.getElementById("cartBtn");
+  const closeCartBtn = document.getElementById("closeCartBtn");
+  const cartDrawer = document.getElementById("cartDrawer");
+  const cartBackdrop = document.getElementById("cartBackdrop");
+  const cartCount = document.getElementById("cartCount");
+  const cartSubtotal = document.getElementById("cartSubtotal");
+  const cartItemsList = document.getElementById("cartItemsList");
+  const checkoutBtn = document.getElementById("checkoutBtn");
+  const checkoutModal = document.getElementById("checkoutModal");
+  const closeCheckoutBtn = document.getElementById("closeCheckoutBtn");
+  const checkoutForm = document.getElementById("checkoutForm");
+  const orderConfirmation = document.getElementById("orderConfirmation");
+  const confirmedOrderNumber = document.getElementById("confirmedOrderNumber");
+  const finishOrderBtn = document.getElementById("finishOrderBtn");
+  const authBtn = document.getElementById("authBtn");
+  const authModal = document.getElementById("authModal");
+  const closeAuthBtn = document.getElementById("closeAuthBtn");
+  const loginForm = document.getElementById("loginForm");
+  const adminBtn = document.getElementById("adminBtn");
+  const openAdminHeroBtn = document.getElementById("openAdminHeroBtn");
+  const adminModal = document.getElementById("adminModal");
+  const closeAdminBtn = document.getElementById("closeAdminBtn");
+  const newProductForm = document.getElementById("newProductForm");
+
+  // Fetch and display products
+  async function loadProducts() {
+    try {
+      const q = searchInput?.value.trim() || "";
+      const sort = sortSelect?.value || "featured";
+      const res = await fetch(\`/api/products?category=\${activeCategory}&q=\${encodeURIComponent(q)}&sort=\${sort}\`);
+      const data = await res.json();
+      if (data.products) {
+        products = data.products;
+        renderProducts(products);
+      }
+    } catch (err) {
+      console.error("Failed to fetch products:", err);
+    }
+  }
+
+  function renderProducts(list) {
+    if (!productGrid) return;
+    if (list.length === 0) {
+      productGrid.innerHTML = \`<div class="empty-state" style="grid-column: 1 / -1; text-align: center; padding: 3rem;">
+        <h3>No matching products found</h3>
+        <p style="color:var(--text-secondary)">Try adjusting your search or category filter.</p>
+      </div>\`;
+      return;
+    }
+
+    productGrid.innerHTML = list
+      .map(
+        (p) => \`
+      <div class="product-card">
+        <img src="\${p.image}" alt="\${p.title}" class="product-img" />
+        <div class="product-body">
+          <div class="product-cat">\${p.category}</div>
+          <h3 class="product-title">\${p.title}</h3>
+          <p class="product-desc">\${p.description}</p>
+          <div class="product-footer">
+            <span class="product-price">$\${Number(p.price).toFixed(2)}</span>
+            <button class="btn btn-primary btn-sm add-cart-btn" onclick="addToCart(\${p.id})">Add to Cart</button>
+          </div>
+        </div>
+      </div>\`
+      )
+      .join("");
+  }
+
+  // Fetch cart
+  async function loadCart() {
+    try {
+      const res = await fetch("/api/cart");
+      const data = await res.json();
+      if (data.success) {
+        cart = data;
+        updateCartUI();
+      }
+    } catch (err) {
+      console.error("Failed to load cart:", err);
+    }
+  }
+
+  function updateCartUI() {
+    if (cartCount) cartCount.textContent = cart.count;
+    if (cartSubtotal) cartSubtotal.textContent = \`$\${cart.total.toFixed(2)}\`;
+
+    if (!cartItemsList) return;
+    if (!cart.items || cart.items.length === 0) {
+      cartItemsList.innerHTML = '<div class="empty-cart-msg" style="text-align:center;padding:2rem;color:var(--text-secondary)">Your shopping cart is empty.</div>';
+      return;
+    }
+
+    cartItemsList.innerHTML = cart.items
+      .map(
+        (item) => \`
+      <div class="cart-item">
+        <img src="\${item.product?.image || ''}" alt="\${item.product?.title}" />
+        <div class="cart-item-info">
+          <div class="cart-item-title">\${item.product?.title || 'Product'}</div>
+          <div class="cart-item-price">$\${item.product?.price.toFixed(2)} &times; \${item.quantity}</div>
+        </div>
+        <div class="qty-controls">
+          <button class="qty-btn" onclick="updateQty(\${item.productId}, \${item.quantity - 1})">-</button>
+          <span>\${item.quantity}</span>
+          <button class="qty-btn" onclick="updateQty(\${item.productId}, \${item.quantity + 1})">+</button>
+        </div>
+      </div>\`
+      )
+      .join("");
+  }
+
+  window.addToCart = async (productId) => {
+    try {
+      const res = await fetch("/api/cart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productId, quantity: 1 }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        cart = data;
+        updateCartUI();
+        openCart();
+      }
+    } catch (err) {
+      console.error("Failed to add to cart:", err);
+    }
+  };
+
+  window.updateQty = async (productId, newQty) => {
+    try {
+      if (newQty <= 0) {
+        const res = await fetch(\`/api/cart/\${productId}\`, { method: "DELETE" });
+        cart = await res.json();
+      } else {
+        const res = await fetch("/api/cart", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ productId, quantity: newQty - (cart.items.find((i) => i.productId === productId)?.quantity || 0) }),
+        });
+        cart = await res.json();
+      }
+      updateCartUI();
+    } catch (err) {
+      console.error("Failed to update qty:", err);
+    }
+  };
+
+  function openCart() {
+    cartDrawer?.classList.add("open");
+    cartBackdrop?.classList.add("active");
+  }
+
+  function closeCart() {
+    cartDrawer?.classList.remove("open");
+    cartBackdrop?.classList.remove("active");
+  }
+
+  // Category filter clicks
+  document.querySelectorAll(".pill-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".pill-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      activeCategory = btn.getAttribute("data-category") || "all";
+      loadProducts();
+    });
+  });
+
+  searchInput?.addEventListener("input", loadProducts);
+  sortSelect?.addEventListener("change", loadProducts);
+  cartBtn?.addEventListener("click", openCart);
+  closeCartBtn?.addEventListener("click", closeCart);
+  cartBackdrop?.addEventListener("click", closeCart);
+
+  // Checkout Modal
+  checkoutBtn?.addEventListener("click", () => {
+    closeCart();
+    if (checkoutModal) checkoutModal.style.display = "flex";
+  });
+
+  closeCheckoutBtn?.addEventListener("click", () => {
+    if (checkoutModal) checkoutModal.style.display = "none";
+  });
+
+  checkoutForm?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("shippingName")?.value;
+    const address = document.getElementById("shippingAddress")?.value;
+
+    try {
+      const res = await fetch("/api/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shippingInfo: { name, address } }),
+      });
+      const data = await res.json();
+      if (data.success && data.order) {
+        checkoutForm.style.display = "none";
+        if (orderConfirmation) orderConfirmation.style.display = "block";
+        if (confirmedOrderNumber) confirmedOrderNumber.textContent = data.order.orderNumber;
+        window.lastPlacedOrderId = data.order.id;
+        window.trackCurrentOrder(data.order.id);
+        loadCart();
+      }
+    } catch (err) {
+      console.error("Checkout failed:", err);
+    }
+  });
+
+  finishOrderBtn?.addEventListener("click", () => {
+    if (checkoutModal) checkoutModal.style.display = "none";
+    if (checkoutForm) {
+      checkoutForm.reset();
+      checkoutForm.style.display = "block";
+    }
+    if (orderConfirmation) orderConfirmation.style.display = "none";
+  });
+
+  // Order Tracking
+  window.lastPlacedOrderId = null;
+  window.trackCurrentOrder = async (orderId) => {
+    const id = orderId || window.lastPlacedOrderId;
+    if (!id) return;
+    try {
+      const res = await fetch(\`/api/orders/\${id}\`);
+      const data = await res.json();
+      if (data.success && data.order) {
+        const status = data.order.status;
+        const steps = ["placed", "preparing", "out_for_delivery", "delivered"];
+        const stepIdx = steps.indexOf(status);
+        const stepEls = ["stepPlaced", "stepPreparing", "stepOutForDelivery", "stepDelivered"];
+        stepEls.forEach((elId, idx) => {
+          const el = document.getElementById(elId);
+          if (el) {
+            if (idx <= stepIdx) el.classList.add("active");
+            else el.classList.remove("active");
+          }
+        });
+      }
+    } catch (err) {
+      console.error("Failed to track order:", err);
+    }
+  };
+
+  // Auth Modal & Registration Tabs
+  authBtn?.addEventListener("click", () => {
+    if (authModal) authModal.style.display = "flex";
+  });
+  closeAuthBtn?.addEventListener("click", () => {
+    if (authModal) authModal.style.display = "none";
+  });
+
+  const tabLogin = document.getElementById("tabLogin");
+  const tabRegister = document.getElementById("tabRegister");
+  const registerForm = document.getElementById("registerForm");
+
+  tabLogin?.addEventListener("click", () => {
+    tabLogin.classList.add("active");
+    tabRegister?.classList.remove("active");
+    if (loginForm) loginForm.style.display = "block";
+    if (registerForm) registerForm.style.display = "none";
+  });
+
+  tabRegister?.addEventListener("click", () => {
+    tabRegister?.classList.add("active");
+    tabLogin?.classList.remove("active");
+    if (registerForm) registerForm.style.display = "block";
+    if (loginForm) loginForm.style.display = "none";
+  });
+
+  loginForm?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = document.getElementById("authEmail")?.value;
+    const password = document.getElementById("authPassword")?.value;
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (authBtn) authBtn.textContent = \`👤 \${data.user.name.split(" ")[0]}\`;
+        if (authModal) authModal.style.display = "none";
+      } else {
+        const errEl = document.getElementById("authError");
+        if (errEl) {
+          errEl.style.display = "block";
+          errEl.textContent = data.error;
+        }
+      }
+    } catch (err) {
+      console.error("Login failed:", err);
+    }
+  });
+
+  registerForm?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("regName")?.value;
+    const email = document.getElementById("regEmail")?.value;
+    const password = document.getElementById("regPassword")?.value;
+    try {
+      const res = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, password }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (authBtn) authBtn.textContent = \`👤 \${data.user.name.split(" ")[0]}\`;
+        if (authModal) authModal.style.display = "none";
+      } else {
+        const errEl = document.getElementById("regError");
+        if (errEl) {
+          errEl.style.display = "block";
+          errEl.textContent = data.error;
+        }
+      }
+    } catch (err) {
+      console.error("Register failed:", err);
+    }
+  });
+
+  // Admin Modal & Metrics
+  async function loadAdminOrders() {
+    const listEl = document.getElementById("adminOrdersList");
+    if (!listEl) return;
+    try {
+      const res = await fetch("/api/admin/orders");
+      const data = await res.json();
+      if (data.success && data.orders) {
+        if (data.orders.length === 0) {
+          listEl.innerHTML = "<p style='color:var(--text-secondary);font-size:0.85rem;'>No orders placed yet.</p>";
+          return;
+        }
+        listEl.innerHTML = data.orders.map(o => \`
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:0.5rem;border-bottom:1px solid var(--border);font-size:0.85rem;">
+            <div>
+              <strong>\${o.orderNumber}</strong> (\${o.shippingInfo?.name || 'Customer'}) &bull; $\${o.total.toFixed(2)}
+            </div>
+            <select onchange="updateAdminOrderStatus('\${o.id}', this.value)" style="padding:4px 8px;border-radius:4px;background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border);">
+              <option value="placed" \${o.status==='placed'?'selected':''}>Placed</option>
+              <option value="preparing" \${o.status==='preparing'?'selected':''}>Preparing</option>
+              <option value="out_for_delivery" \${o.status==='out_for_delivery'?'selected':''}>Out for Delivery</option>
+              <option value="delivered" \${o.status==='delivered'?'selected':''}>Delivered</option>
+            </select>
+          </div>
+        \`).join("");
+      }
+    } catch (err) {
+      console.error("Failed to load admin orders:", err);
+    }
+  }
+
+  window.updateAdminOrderStatus = async (orderId, newStatus) => {
+    try {
+      const res = await fetch(\`/api/orders/\${orderId}/status\`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (res.ok) {
+        loadAdminOrders();
+        window.trackCurrentOrder(orderId);
+      }
+    } catch (err) {
+      console.error("Failed to update status:", err);
+    }
+  };
+
+  async function loadAdminMetrics() {
+    try {
+      const res = await fetch("/api/admin/metrics");
+      const data = await res.json();
+      if (data.success && data.metrics) {
+        document.getElementById("metricRevenue").textContent = \`$\${data.metrics.totalRevenue.toFixed(2)}\`;
+        document.getElementById("metricOrders").textContent = data.metrics.totalOrders;
+        document.getElementById("metricProducts").textContent = data.metrics.productCount;
+      }
+      loadAdminOrders();
+    } catch (err) {
+      console.error("Failed to load metrics:", err);
+    }
+  }
+
+  function openAdmin() {
+    loadAdminMetrics();
+    if (adminModal) adminModal.style.display = "flex";
+  }
+
+  adminBtn?.addEventListener("click", openAdmin);
+  openAdminHeroBtn?.addEventListener("click", openAdmin);
+  closeAdminBtn?.addEventListener("click", () => {
+    if (adminModal) adminModal.style.display = "none";
+  });
+
+  newProductForm?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = document.getElementById("newProdTitle")?.value;
+    const price = document.getElementById("newProdPrice")?.value;
+    const category = document.getElementById("newProdCat")?.value;
+    try {
+      const res = await fetch("/api/products", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, price, category }),
+      });
+      if (res.ok) {
+        newProductForm.reset();
+        loadProducts();
+        loadAdminMetrics();
+      }
+    } catch (err) {
+      console.error("Failed to add product:", err);
+    }
+  });
+
+  // Initial load
+  loadProducts();
+  loadCart();
+});
+`;
+    await workspace.write("public/app.js", appJs);
+    filesCreated.push("public/app.js");
+
+    // 7. tests/api.test.js - Integration verification tests
+    const apiTestJs = `import { test } from "node:test";
+import assert from "node:assert";
+import http from "node:http";
+
+const BASE_URL = "http://localhost:" + (process.env.PORT || 3000);
+
+function request(path, options = {}) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(path, BASE_URL);
+    const req = http.request(url, options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        let json = null;
+        try { json = JSON.parse(data); } catch {}
+        resolve({ status: res.statusCode, headers: res.headers, body: json, raw: data });
+      });
+    });
+    req.on("error", reject);
+    if (options.body) req.write(typeof options.body === "string" ? options.body : JSON.stringify(options.body));
+    req.end();
+  });
+}
+
+test("GET /api/products returns product catalog", async () => {
+  const res = await request("/api/products");
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.success, true);
+  assert.ok(Array.isArray(res.body.products));
+  assert.ok(res.body.products.length >= 8);
+});
+
+test("POST /api/cart adds items to shopping cart", async () => {
+  const res = await request("/api/cart", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: { productId: 1, quantity: 2 },
+  });
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.success, true);
+  assert.ok(res.body.count >= 2);
+});
+
+test("POST /api/checkout creates a persistent order", async () => {
+  const res = await request("/api/checkout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: { shippingInfo: { name: "Test User", address: "100 Innovation Way" } },
+  });
+  assert.strictEqual(res.status, 201);
+  assert.strictEqual(res.body.success, true);
+  assert.ok(res.body.order.orderNumber.startsWith("#ORD-"));
+});
+
+test("POST /api/auth/login verifies user credentials", async () => {
+  const res = await request("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: { email: "user@store.com", password: "user123" },
+  });
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.success, true);
+  assert.strictEqual(res.body.user.email, "user@store.com");
+});
+
+test("POST /api/auth/register creates new customer account", async () => {
+  const randEmail = "customer_" + Date.now() + "@example.com";
+  const res = await request("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: { name: "New Customer", email: randEmail, password: "password123" },
+  });
+  assert.strictEqual(res.status, 201);
+  assert.strictEqual(res.body.success, true);
+  assert.strictEqual(res.body.user.email, randEmail);
+});
+
+test("GET /api/restaurants returns partner venues", async () => {
+  const res = await request("/api/restaurants");
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.success, true);
+  assert.ok(Array.isArray(res.body.restaurants));
+});
+
+test("GET /api/admin/metrics returns store analytics", async () => {
+  const res = await request("/api/admin/metrics");
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.success, true);
+  assert.ok(res.body.metrics.totalRevenue !== undefined);
+  assert.ok(res.body.metrics.totalOrders !== undefined);
+});
+`;
+    await workspace.write("tests/api.test.js", apiTestJs);
+    filesCreated.push("tests/api.test.js");
 
     return { success: true, files: filesCreated, projectRoot: workspace.root };
   } catch (err) {

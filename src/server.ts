@@ -15,7 +15,7 @@ import { editFile } from "./tools/edit-file.js";
 import { buildFileTree } from "./tools/file-tree.js";
 import { browseDirectory } from "./tools/directory-browser.js";
 import { runAgent } from "./agent.js";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { captureWorkspaceBaseline, detectChanges, ChangedFile, generateDiffForDisplay, TaskBaseline } from "./tools/file-tracker.js";
 import { getAppRuntime, isUrlServing, isProcessAlive, ensureAppServer, clearAppRuntime } from "./tools/app-lifecycle.js";
 import { createSessionManager } from "./session/session-manager.js";
@@ -198,9 +198,9 @@ function isAuthorizedForExport(candidateRoot: string, realRoot?: string): boolea
   return false;
 }
 
-const app = express();
-const server = createServer(app);
-const wss = new WebSocketServer({ server });
+export const app = express();
+export const server = createServer(app);
+export const wss = new WebSocketServer({ server });
 
 app.use(express.json());
 app.use((req, res, next) => {
@@ -587,11 +587,11 @@ async function terminateTaskProcess(task: LocalTaskRecord): Promise<void> {
     if (pid) {
       if (process.platform === "win32") {
         try {
-          spawn("taskkill", ["/pid", pid.toString(), "/t", "/f"], { windowsHide: true });
+          spawnSync("taskkill", ["/pid", pid.toString(), "/t", "/f"], { windowsHide: true });
         } catch {}
       }
       try {
-        task.childProcess.kill("SIGTERM");
+        task.childProcess.kill("SIGKILL");
       } catch {}
     }
     task.childProcess = null;
@@ -601,9 +601,9 @@ async function terminateTaskProcess(task: LocalTaskRecord): Promise<void> {
     const runtime = getAppRuntime(task.workspaceRoot);
     if (runtime && runtime.pid && isProcessAlive(runtime.pid)) {
       if (process.platform === "win32") {
-        spawn("taskkill", ["/pid", runtime.pid.toString(), "/t", "/f"], { windowsHide: true });
+        spawnSync("taskkill", ["/pid", runtime.pid.toString(), "/t", "/f"], { windowsHide: true });
       } else {
-        process.kill(runtime.pid, "SIGTERM");
+        process.kill(runtime.pid, "SIGKILL");
       }
       clearAppRuntime(task.workspaceRoot);
     }

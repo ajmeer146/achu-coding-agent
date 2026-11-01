@@ -99,24 +99,19 @@ function getWorkspaceRegistry(): WorkspaceRegistry {
   return WorkspaceRegistry.getInstance();
 }
 
-export const codingAgentTask = schemaTask({
-  id: "coding-agent-run",
-  schema: AgentTaskPayloadSchema,
-  maxDuration: 1800, // 30 minutes max
-  machine: "small-2x",
-  retry: {
-    maxAttempts: 2,
-    minTimeoutInMs: 30000, // 30 seconds
-    maxTimeoutInMs: 300000, // 5 minutes
-    factor: 2,
-  },
-  run: async (payload: AgentTaskPayload): Promise<AgentTaskResult> => {
-    console.log(`[Trigger.dev] Starting coding agent task`);
-    console.log(`[Trigger.dev] Task: ${payload.task}`);
+function safeMetadataSet(key: string, value: any): void {
+  try {
+    metadata.set(key, value);
+  } catch {}
+}
 
-    metadata.set("step", 1);
-    metadata.set("stepName", "Preparing isolated workspace");
-    metadata.set("progress", 10);
+export async function executeAgentTask(payload: AgentTaskPayload): Promise<AgentTaskResult> {
+  console.log(`[Trigger.dev] Starting coding agent task`);
+  console.log(`[Trigger.dev] Task: ${payload.task}`);
+
+  safeMetadataSet("step", 1);
+  safeMetadataSet("stepName", "Preparing isolated workspace");
+  safeMetadataSet("progress", 10);
 
     let workspace: Workspace | GitWorkspace;
 
@@ -242,9 +237,9 @@ export const codingAgentTask = schemaTask({
       console.log(`[Trigger.dev] Running agent with task: ${payload.task}`);
       console.log(`[Trigger.dev] Session ID: ${process.env.SESSION_ID}`);
 
-      metadata.set("step", 2);
-      metadata.set("stepName", "Planning and executing coding task");
-      metadata.set("progress", 30);
+      safeMetadataSet("step", 2);
+      safeMetadataSet("stepName", "Planning and executing coding task");
+      safeMetadataSet("progress", 30);
 
       // Run the agent - this will execute the full agent loop (or generate plan in Plan Mode)
       const result = await runAgent(payload.task, {
@@ -254,19 +249,19 @@ export const codingAgentTask = schemaTask({
         planOnly: payload.planOnly,
         approvedPlan: payload.approvedPlan,
         onProgress: (stepNum, stepName, log) => {
-          metadata.set("step", stepNum);
-          metadata.set("stepName", stepName);
+          safeMetadataSet("step", stepNum);
+          safeMetadataSet("stepName", stepName);
           if (log) {
-            metadata.set("latestLog", log);
+            safeMetadataSet("latestLog", log);
           }
         },
       }) as AgentResult;
 
       console.log(`[Trigger.dev] Agent task completed`);
 
-      metadata.set("step", 5);
-      metadata.set("stepName", "Collecting generated artifacts");
-      metadata.set("progress", 90);
+      safeMetadataSet("step", 5);
+      safeMetadataSet("stepName", "Collecting generated artifacts");
+      safeMetadataSet("progress", 90);
 
       let gitCommitted = false;
       let gitPushed = false;
@@ -299,8 +294,19 @@ export const codingAgentTask = schemaTask({
         console.warn(`[Trigger.dev] Optional build step skipped or failed:`, buildErr);
       }
 
+      // Ensure any SQLite WAL database is flushed and checkpointed before artifact collection
+      try {
+        const dbCandidate = path.join(rootPath, "data.db");
+        if (fs.existsSync(dbCandidate)) {
+          const { DatabaseSync } = await import("node:sqlite");
+          const sdb = new DatabaseSync(dbCandidate);
+          sdb.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+          sdb.close();
+        }
+      } catch {}
+
       const IGNORE_SCAN = new Set(["node_modules", ".git", ".achu-sessions", ".turbo", ".cache", ".registry"]);
-      const BINARY_SCAN_EXTS = new Set(["db", "sqlite", "sqlite3", "db-journal", "bin", "exe", "iso", "tar", "zip", "wasm"]);
+      const BINARY_SCAN_EXTS = new Set(["db", "sqlite", "sqlite3", "db-journal", "db-wal", "db-shm", "sqlite-wal", "sqlite-shm", "sqlite-journal", "bin", "exe", "iso", "tar", "zip", "wasm"]);
       const artifactsMap = new Map<string, string>();
 
       async function scanDirectory(dir: string, relPrefix = "") {
@@ -352,9 +358,9 @@ export const codingAgentTask = schemaTask({
 
       console.log(`[Trigger.dev] Artifact persistence confirmed: ${artifacts.length} artifact(s), files=${artifacts.slice(0, 20).map((a) => a.path).join(", ") || "<none>"}`);
 
-      metadata.set("step", 6);
-      metadata.set("stepName", "Completed");
-      metadata.set("progress", 100);
+      safeMetadataSet("step", 6);
+      safeMetadataSet("stepName", "Completed");
+      safeMetadataSet("progress", 100);
 
       // If using GitWorkspace, commit and push changes
       if (workspace instanceof GitWorkspace) {
@@ -464,5 +470,18 @@ export const codingAgentTask = schemaTask({
         delete process.env.NVIDIA_MODEL;
       }
     }
+  }
+
+export const codingAgentTask = schemaTask({
+  id: "coding-agent-run",
+  schema: AgentTaskPayloadSchema,
+  maxDuration: 1800, // 30 minutes max
+  machine: "small-2x",
+  retry: {
+    maxAttempts: 2,
+    minTimeoutInMs: 30000, // 30 seconds
+    maxTimeoutInMs: 300000, // 5 minutes
+    factor: 2,
   },
+  run: executeAgentTask,
 });

@@ -113,7 +113,7 @@ export class BrowserSession {
           const rType = req.resourceType();
           // Filter out automatic browser-initiated favicon 404s that are not project assets
           if (response.url().includes("favicon.ico")) return;
-          if (["image", "stylesheet", "script", "media", "font", "document"].includes(rType)) {
+          if (["image", "stylesheet", "script", "media", "font", "document", "fetch", "xhr"].includes(rType)) {
             this.pageErrors.push(`Failed ${rType} request: ${response.url()} (HTTP ${status})`);
           }
         }

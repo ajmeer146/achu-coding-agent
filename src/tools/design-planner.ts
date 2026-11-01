@@ -107,7 +107,7 @@ export interface DesignSpec {
 const SUBJECT_ARCHETYPES: ReadonlyArray<{ type: ProductType; pattern: RegExp }> = [
   { type: "login_auth", pattern: /\b(login|log[\s-]?in|sign[\s-]?in|signin|sign[\s-]?up|signup|register|registration|authentication|auth|password)\b/ },
   { type: "portfolio", pattern: /\b(portfolio|showcase|resume|curriculum|vitae)\b/ },
-  { type: "ecommerce", pattern: /\b(e[\s-]?commerce|store|shop|catalog|cart|checkout|marketplace)\b/ },
+  { type: "ecommerce", pattern: /\b(e[\s-]?commerce|store|shop|catalog|cart|checkout|marketplace|food\s+delivery|restaurant|food|delivery)\b/ },
   { type: "dashboard", pattern: /\b(dashboard|admin|kpi|analytics|metrics|reporting)\b/ },
   { type: "blog", pattern: /\b(blog|article|magazine|newsletter|cms)\b/ },
   { type: "documentation", pattern: /\b(docs|documentation|api\s+reference|developer\s+guide|readme|knowledge\s+base)\b/ },
