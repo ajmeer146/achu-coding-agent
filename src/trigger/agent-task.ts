@@ -178,22 +178,22 @@ export async function executeAgentTask(payload: AgentTaskPayload): Promise<Agent
         workspace = new Workspace(cloudWorkspaceDir);
         console.log(`[Trigger.dev] Isolated cloud workspace initialized at: ${cloudWorkspaceDir}`);
       }
-    } else if (payload.files && payload.files.length > 0) {
-      // Cloud task created from browser-uploaded project files
+    } else if ((payload.files && payload.files.length > 0) || (payload.attachments && payload.attachments.length > 0)) {
+      // Cloud task created from browser-uploaded project files or attachments
       const tmpDir = path.join(os.tmpdir(), "achu-workspace", `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
       await fs.promises.mkdir(tmpDir, { recursive: true });
       workspace = new Workspace(tmpDir);
-      console.log(`[Trigger.dev] File-based workspace initialized at: ${tmpDir}`);
+      console.log(`[Trigger.dev] File/attachment-based workspace initialized at: ${tmpDir}`);
     } else {
       // Should not happen due to schema refinement
       return {
         success: false,
-        stopReason: "Either workspaceId, workspaceRoot, gitUrl, or files must be provided",
+        stopReason: "Either workspaceId, workspaceRoot, gitUrl, files, or attachments must be provided",
         verificationPassed: false,
         completedSteps: 0,
         totalSteps: 0,
         filesModified: [],
-        error: "Either workspaceId, workspaceRoot, gitUrl, or files must be provided",
+        error: "Either workspaceId, workspaceRoot, gitUrl, files, or attachments must be provided",
       };
     }
 
@@ -319,6 +319,7 @@ export async function executeAgentTask(payload: AgentTaskPayload): Promise<Agent
             const ext = entry.name.split(".").pop()?.toLowerCase() || "";
             if (BINARY_SCAN_EXTS.has(ext)) continue;
 
+            const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "avif"]);
             if (entry.isDirectory()) {
               if (artifactsMap.size < 250) {
                 await scanDirectory(full, rel);
@@ -328,8 +329,14 @@ export async function executeAgentTask(payload: AgentTaskPayload): Promise<Agent
                 try {
                   const stat = await fs.promises.stat(full);
                   if (stat.size < 2 * 1024 * 1024) {
-                    const raw = await fs.promises.readFile(full, "utf8");
-                    artifactsMap.set(rel.replace(/\\/g, "/"), raw.replace(/\0/g, ""));
+                    if (IMAGE_EXTS.has(ext)) {
+                      const buf = await fs.promises.readFile(full);
+                      const mime = (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : (ext === "png" ? "image/png" : (ext === "webp" ? "image/webp" : (ext === "gif" ? "image/gif" : `image/${ext}`)));
+                      artifactsMap.set(rel.replace(/\\/g, "/"), `data:${mime};base64,${buf.toString("base64")}`);
+                    } else {
+                      const raw = await fs.promises.readFile(full, "utf8");
+                      artifactsMap.set(rel.replace(/\\/g, "/"), raw.replace(/\0/g, ""));
+                    }
                   }
                 } catch {}
               }
