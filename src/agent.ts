@@ -32,6 +32,7 @@ import { z } from "zod";
 import { SnapshotManager } from "./tools/snapshot.js";
 import { parseArchitecture, formatArchitectureSummary, ProjectArchitecture } from "./tools/architecture-parser.js";
 import { scaffoldReactViteProject, scaffoldStaticProject, scaffoldNextjsProject, scaffoldNodeExpressProject, scaffoldFullstackEcommerceProject, validateProjectStructure, autoRepairProjectStructure } from "./tools/scaffold.js";
+import { processAttachmentsForAgent, isImageAttachment } from "./utils/multimodal-processor.js";
 
 export type ToolCall = {
   id: string;
@@ -2799,6 +2800,19 @@ async function callModelWithRetry(
       return { type: "QUOTA_EXHAUSTED", message: `QUOTA_EXHAUSTED: ${error.message || 'API quota or rate limit exceeded'}`, retriable: false };
     }
 
+    // Multimodal capability mismatch (non-retriable on text-only endpoint - fail fast)
+    if (
+      lowerMessage.includes("multimodal") ||
+      lowerMessage.includes("enable-multimodal") ||
+      lowerMessage.includes("unsupported modality")
+    ) {
+      return {
+        type: "UNSUPPORTED_MODALITY",
+        message: `UNSUPPORTED_MODALITY: ${error.message || "Model endpoint does not support multimodal image input"}`,
+        retriable: false,
+      };
+    }
+
     // Timeout/abort (including OpenAI SDK APIUserAbortError and signal abortion)
     if (
       signalAborted ||
@@ -4495,7 +4509,6 @@ export async function runAgent(
 
   const MAX_MESSAGE_HISTORY = 60;
 
-  let initialUserContent: string | MessageContentPart[] = task + planContext;
   let rawAttachments = options?.attachments;
   if (!rawAttachments && process.env.ACHU_ATTACHMENTS) {
     try {
@@ -4503,26 +4516,18 @@ export async function runAgent(
     } catch {}
   }
 
-  if (rawAttachments && rawAttachments.length > 0) {
-    const parts: MessageContentPart[] = [];
-    for (const att of rawAttachments) {
-      if (att.type?.startsWith("image/") && (att.content.startsWith("data:") || att.content.startsWith("http"))) {
-        parts.push({
-          type: "image_url",
-          image_url: { url: att.content, detail: "auto" },
-        });
-      } else if (att.content) {
-        parts.push({
-          type: "text",
-          text: `[Attached Reference: ${att.name}]\n${att.content.slice(0, 10000)}`,
-        });
-      }
-    }
-    parts.push({
-      type: "text",
-      text: task + planContext,
-    });
-    initialUserContent = parts;
+  const { initialUserContent, imageContextPrompt, savedImagePaths } = await processAttachmentsForAgent(
+    workspace,
+    rawAttachments,
+    task + planContext,
+    activeModel
+  );
+
+  for (const imgPath of savedImagePaths) {
+    state.completedTasks.add(`create_file:${imgPath}`);
+    await state.snapshotManager.captureBefore(imgPath, "create");
+    await state.snapshotManager.captureAfter(imgPath);
+    console.log(chalk.green(`[Multimodal] Persisted image asset to workspace: ${imgPath}`));
   }
 
   let messages: ChatMessage[] = [
