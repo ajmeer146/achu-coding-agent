@@ -61,50 +61,60 @@ export const websiteDeploymentTask = schemaTask({
     const webPlatformUrl = (process.env.WEB_PLATFORM_URL || "https://www.workswithachu.me").replace(/\/+$/, "");
     const secret = process.env.DEPLOYMENT_SECRET || process.env.SESSION_SECRET || process.env.WORKSPACE_SECRET || "";
 
-    if (secret) {
-      try {
-        const res = await fetch(`${webPlatformUrl}/api/deployments/internal-execute`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-deployment-secret": secret,
-          },
-          body: JSON.stringify({
-            deploymentId: payload.deploymentId,
-            files: payload.files,
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.deployment?.productionUrl) {
-            metadata.set("productionUrl", data.deployment.productionUrl);
-            return {
-              success: true,
-              deploymentId: payload.deploymentId,
-              productionUrl: data.deployment.productionUrl,
-              githubRepoUrl: data.deployment.githubRepoUrl,
-              vercelDeploymentUrl: data.deployment.vercelDeploymentUrl,
-            };
-          }
-        }
-      } catch (callErr) {
-        console.warn(`[Trigger.dev] Callback to web platform notice:`, callErr);
-      }
+    if (!secret) {
+      const errMsg = "Missing DEPLOYMENT_SECRET/SESSION_SECRET in worker environment. Cannot securely authorize internal deployment execution.";
+      console.error(`[Trigger.dev] ${errMsg}`);
+      throw new Error(errMsg);
     }
 
-    const productionUrl = `https://${payload.subdomain}.workswithachu.me`;
-    const githubRepoUrl = `https://github.com/achu-platform/achu-site-${payload.subdomain}`;
+    try {
+      const res = await fetch(`${webPlatformUrl}/api/deployments/internal-execute`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-deployment-secret": secret,
+        },
+        body: JSON.stringify({
+          deploymentId: payload.deploymentId,
+          subdomain: payload.subdomain,
+          siteName: payload.siteName,
+          userId: payload.userId,
+          userEmail: payload.userEmail,
+          framework: payload.framework,
+          files: payload.files,
+        }),
+      });
 
-    metadata.set("step", 4);
-    metadata.set("stepName", "Verifying production URL availability");
-    metadata.set("productionUrl", productionUrl);
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        const errDetail = errData?.error?.message || res.statusText || `HTTP ${res.status}`;
+        throw new Error(`Web platform deployment execution failed (${res.status}): ${errDetail}`);
+      }
 
-    console.log(`[Trigger.dev] Website deployment ${payload.deploymentId} completed successfully.`);
-    return {
-      success: true,
-      deploymentId: payload.deploymentId,
-      productionUrl,
-      githubRepoUrl,
-    };
+      const data = await res.json();
+      const dep = data?.deployment;
+      if (!dep) {
+        throw new Error("Web platform did not return deployment details.");
+      }
+      if (dep.status === "FAILED" || !dep.productionUrl) {
+        throw new Error(`Deployment failed: ${dep.errorMessage || "Deployment did not produce a production URL."}`);
+      }
+
+      metadata.set("step", 4);
+      metadata.set("stepName", "Deployment complete");
+      metadata.set("productionUrl", dep.productionUrl || `https://${payload.subdomain}.workswithachu.me`);
+
+      console.log(`[Trigger.dev] Website deployment ${payload.deploymentId} completed successfully.`);
+      return {
+        success: true,
+        deploymentId: payload.deploymentId,
+        productionUrl: dep.productionUrl,
+        githubRepoUrl: dep.githubRepoUrl,
+        vercelDeploymentUrl: dep.vercelDeploymentUrl,
+      };
+    } catch (err: unknown) {
+      console.error(`[Trigger.dev] Durable deployment execution error:`, err);
+      throw err;
+    }
   },
 });
