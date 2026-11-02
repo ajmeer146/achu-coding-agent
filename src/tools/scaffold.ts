@@ -365,12 +365,17 @@ export default defineConfig({
     filesCreated.push("vite.config.js");
 
     // 3. index.html
+    const rty = designSpec?.typography;
+    const googleFontsHtml = rty?.googleFontsUrl
+      ? `<link rel="preconnect" href="https://fonts.googleapis.com" />\n    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />\n    <link href="${rty.googleFontsUrl}" rel="stylesheet" />\n    `
+      : "";
     const indexHtml = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>${title}</title>
+    ${googleFontsHtml}
   </head>
   <body>
     <div id="root"></div>
@@ -383,34 +388,56 @@ export default defineConfig({
 
     // 4. src/index.css — driven by DesignSpec when provided
     const rt = designSpec?.tokens;
-    const rty = designSpec?.typography;
+    const googleFontsImport = rty?.googleFontsUrl
+      ? `@import url('${rty.googleFontsUrl}');\n\n`
+      : "";
     const indexCss = rt
-      ? `/* Phase 13 Design Tokens */
+      ? `${googleFontsImport}/* Phase 13 Design Tokens */
 :root {
-  --bg-primary:    ${rt.bgPrimary};
-  --bg-surface:    ${rt.bgSurface};
-  --bg-card:       ${rt.bgCard};
-  --text-primary:  ${rt.textPrimary};
-  --text-secondary:${rt.textSecondary};
-  --accent-primary:${rt.accentPrimary};
-  --accent-hover:  ${rt.accentHover};
-  --border-subtle: ${rt.borderSubtle};
-  --shadow-card:   ${rt.shadowCard};
-  --radius-md:     ${rt.radiusMd};
-  --radius-sm:     ${rt.radiusSm};
+  --bg-primary:      ${rt.bgPrimary};
+  --bg-surface:      ${rt.bgSurface};
+  --bg-card:         ${rt.bgCard};
+  --text-primary:    ${rt.textPrimary};
+  --text-secondary:  ${rt.textSecondary};
+  --accent-primary:  ${rt.accentPrimary};
+  --accent-hover:    ${rt.accentHover};
+  --border-subtle:   ${rt.borderSubtle};
+  --shadow-card:     ${rt.shadowCard};
+  --radius-md:       ${rt.radiusMd};
+  --radius-sm:       ${rt.radiusSm};
+  --gradient-hero:   ${rt.gradientHero};
+  --gradient-accent: ${rt.gradientAccent};
 }
 
 *, *::before, *::after {
   box-sizing: border-box;
 }
 
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   font-family: ${rty?.fontStack ?? 'system-ui, sans-serif'};
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   background-color: var(--bg-primary);
   color: var(--text-primary);
   min-height: 100vh;
+  line-height: 1.6;
+}
+
+.container {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+@media (max-width: 480px) {
+  .container { padding: 0 1rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -424,6 +451,11 @@ body {
   box-sizing: border-box;
 }
 
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -431,46 +463,205 @@ body {
   background-color: #0f172a;
   color: #f8fafc;
   min-height: 100vh;
+  line-height: 1.6;
+}
+
+.container {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 `;
     await workspace.write("src/index.css", indexCss);
     filesCreated.push("src/index.css");
 
-    // 5. src/App.jsx
+    // 5. src/App.jsx — token-aware starter shell
+    const heroSizeCss = rty?.heroSize ?? "2.5rem";
     const appJsx = `import React from 'react';
 
 export default function App() {
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <header style={{
-        padding: '3rem 2rem',
-        textAlign: 'center',
-        background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)',
-        color: '#ffffff'
+      {/* Navbar */}
+      <nav style={{
+        background: 'var(--bg-surface)',
+        borderBottom: '1px solid var(--border-subtle)',
+        position: 'sticky',
+        top: 0,
+        zIndex: 100,
+        backdropFilter: 'blur(12px)',
       }}>
-        <h1 style={{ fontSize: '2.5rem', margin: '0 0 1rem 0', fontWeight: '800' }}>
-          ${title}
-        </h1>
-        <p style={{ fontSize: '1.2rem', margin: 0, opacity: 0.9 }}>
-          Built with React &amp; Vite
-        </p>
+        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.5rem', maxWidth: '1200px', margin: '0 auto' }}>
+          <span style={{ fontWeight: 700, fontSize: '1.2rem', color: 'var(--text-primary)' }}>${title}</span>
+          <div style={{ display: 'flex', gap: '2rem' }}>
+            {['Features', 'Pricing', 'About'].map(link => (
+              <a key={link} href={\`#\${link.toLowerCase()}\`} style={{ color: 'var(--text-secondary)', textDecoration: 'none', fontSize: '0.95rem', transition: 'color 0.2s' }}
+                onMouseOver={e => e.target.style.color = 'var(--text-primary)'}
+                onMouseOut={e => e.target.style.color = 'var(--text-secondary)'}
+              >{link}</a>
+            ))}
+          </div>
+          <button style={{
+            background: 'var(--accent-primary)',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 'var(--radius-sm)',
+            padding: '0.5rem 1.25rem',
+            fontWeight: 600,
+            fontSize: '0.9rem',
+            cursor: 'pointer',
+            transition: 'background 0.2s',
+          }}>Get Started</button>
+        </div>
+      </nav>
+
+      {/* Hero */}
+      <header style={{
+        padding: '6rem 1.5rem',
+        textAlign: 'center',
+        background: 'var(--gradient-hero)',
+        color: '#ffffff',
+        position: 'relative',
+        overflow: 'hidden',
+      }}>
+        <div style={{ position: 'relative', zIndex: 1, maxWidth: '800px', margin: '0 auto' }}>
+          <div style={{
+            display: 'inline-block',
+            background: 'rgba(255,255,255,0.15)',
+            border: '1px solid rgba(255,255,255,0.25)',
+            borderRadius: '100px',
+            padding: '0.35rem 1rem',
+            fontSize: '0.85rem',
+            fontWeight: 500,
+            marginBottom: '1.5rem',
+            backdropFilter: 'blur(8px)',
+          }}>✦ Welcome to ${title}</div>
+          <h1 style={{
+            fontSize: \`clamp(2rem, 5vw, ${heroSizeCss})\`,
+            margin: '0 0 1.25rem 0',
+            fontWeight: 800,
+            lineHeight: 1.1,
+            letterSpacing: '-0.02em',
+          }}>${title}</h1>
+          <p style={{ fontSize: '1.15rem', margin: '0 0 2.5rem 0', opacity: 0.88, lineHeight: 1.6 }}>
+            Build something remarkable. Start with a clean slate and a powerful design system.
+          </p>
+          <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button style={{
+              background: '#ffffff',
+              color: 'var(--accent-primary)',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.85rem 2rem',
+              fontWeight: 700,
+              fontSize: '1rem',
+              cursor: 'pointer',
+            }}>Get Started →</button>
+            <button style={{
+              background: 'rgba(255,255,255,0.12)',
+              color: '#ffffff',
+              border: '1px solid rgba(255,255,255,0.3)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.85rem 2rem',
+              fontWeight: 600,
+              fontSize: '1rem',
+              cursor: 'pointer',
+              backdropFilter: 'blur(8px)',
+            }}>Learn More</button>
+          </div>
+        </div>
       </header>
 
-      <main style={{ flex: 1, maxWidth: '1000px', margin: '0 auto', width: '100%', padding: '2rem' }}>
-        {/* Welcome Card */}
-        <section style={{
-          background: '#1e293b',
-          borderRadius: '12px',
-          padding: '2rem',
-          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-          marginBottom: '2rem'
-        }}>
-          <h2 style={{ marginTop: 0, color: '#60a5fa' }}>Welcome to Your Application</h2>
-          <p style={{ color: '#cbd5e1', lineHeight: '1.6' }}>
-            This application is running live with hot-module reloading and full React component support.
-          </p>
+      {/* Features */}
+      <main style={{ flex: 1, background: 'var(--bg-primary)' }}>
+        <section id="features" style={{ padding: '5rem 1.5rem' }}>
+          <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+            <h2 style={{
+              fontSize: 'clamp(1.75rem, 3vw, 2.25rem)',
+              textAlign: 'center',
+              marginBottom: '0.75rem',
+              color: 'var(--text-primary)',
+              fontWeight: 700,
+            }}>Everything you need</h2>
+            <p style={{ textAlign: 'center', color: 'var(--text-secondary)', marginBottom: '3rem', maxWidth: '560px', margin: '0 auto 3rem' }}>
+              A complete foundation to build fast, accessible, and beautiful web applications.
+            </p>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))',
+              gap: '1.5rem',
+            }}>
+              {[
+                { icon: '⚡', title: 'Lightning Fast', desc: 'Optimised for performance with Vite HMR and tree-shaking out of the box.' },
+                { icon: '🎨', title: 'Design System', desc: 'Consistent tokens for color, spacing, and typography across every component.' },
+                { icon: '📱', title: 'Fully Responsive', desc: 'Every layout works beautifully from 320px phones to 1920px desktop screens.' },
+                { icon: '♿', title: 'Accessible', desc: 'WCAG-compliant markup, keyboard navigation, and reduced-motion support built in.' },
+                { icon: '🔧', title: 'Easy to Customise', desc: 'CSS custom properties make theming and overrides trivial — change one variable.' },
+                { icon: '🚀', title: 'Production Ready', desc: 'Built for deployment from day one — zero config, instant preview, clean output.' },
+              ].map(({ icon, title, desc }) => (
+                <div key={title} style={{
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '1.75rem',
+                  boxShadow: 'var(--shadow-card)',
+                  transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+                }}
+                  onMouseOver={e => { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = 'var(--shadow-card), 0 8px 24px rgba(0,0,0,0.15)'; }}
+                  onMouseOut={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'var(--shadow-card)'; }}
+                >
+                  <div style={{ fontSize: '2rem', marginBottom: '0.75rem' }}>{icon}</div>
+                  <h3 style={{ margin: '0 0 0.5rem', fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-primary)' }}>{title}</h3>
+                  <p style={{ margin: 0, color: 'var(--text-secondary)', lineHeight: 1.6, fontSize: '0.95rem' }}>{desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* CTA */}
+        <section id="pricing" style={{ padding: '5rem 1.5rem', background: 'var(--bg-surface)' }}>
+          <div style={{ maxWidth: '640px', margin: '0 auto', textAlign: 'center' }}>
+            <h2 style={{ fontSize: 'clamp(1.75rem, 3vw, 2.25rem)', margin: '0 0 1rem', color: 'var(--text-primary)', fontWeight: 700 }}>
+              Ready to build?
+            </h2>
+            <p style={{ color: 'var(--text-secondary)', margin: '0 0 2.5rem', lineHeight: 1.6 }}>
+              Start with the template and make it your own. Everything is customisable.
+            </p>
+            <button style={{
+              background: 'var(--gradient-accent)',
+              color: '#ffffff',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              padding: '1rem 2.5rem',
+              fontWeight: 700,
+              fontSize: '1.05rem',
+              cursor: 'pointer',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+            }}>Start Building →</button>
+          </div>
         </section>
       </main>
+
+      {/* Footer */}
+      <footer id="about" style={{
+        background: 'var(--bg-surface)',
+        borderTop: '1px solid var(--border-subtle)',
+        padding: '2.5rem 1.5rem',
+        textAlign: 'center',
+        color: 'var(--text-secondary)',
+        fontSize: '0.9rem',
+      }}>
+        <p style={{ margin: 0 }}>© {new Date().getFullYear()} ${title}. Built with React &amp; Vite.</p>
+      </footer>
     </div>
   );
 }
@@ -550,6 +741,10 @@ export async function scaffoldStaticProject(
     filesCreated.push("package.json");
 
     const isEcommerce = designSpec?.productType === "ecommerce" || /ecommerce|store|shop|catalog|cart/i.test(projectName);
+    const ty = designSpec?.typography;
+    const googleFontsHtml = ty?.googleFontsUrl
+      ? `<link rel="preconnect" href="https://fonts.googleapis.com">\n  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n  <link href="${ty.googleFontsUrl}" rel="stylesheet">\n  `
+      : "";
 
     // 2. index.html
     const indexHtml = isEcommerce
@@ -559,7 +754,7 @@ export async function scaffoldStaticProject(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title} Storefront</title>
-  <link rel="stylesheet" href="styles.css">
+  ${googleFontsHtml}<link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header class="navbar">
@@ -786,7 +981,7 @@ export async function scaffoldStaticProject(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title}</title>
-  <link rel="stylesheet" href="styles.css">
+  ${googleFontsHtml}<link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header class="navbar">
@@ -840,7 +1035,7 @@ export async function scaffoldStaticProject(
       <div class="contact-card">
         <h2>Get in Touch</h2>
         <p>Send a message and we'll respond promptly.</p>
-        <form id="contact-form" class="contact-form">
+        <form id="contact-form" class="contact-form" novalidate>
           <div class="form-group">
             <label for="name">Your Name</label>
             <input type="text" id="name" name="name" placeholder="Jane Doe" required>
@@ -875,42 +1070,50 @@ export async function scaffoldStaticProject(
 
     // 3. styles.css — tokens driven by DesignSpec when provided
     const t = designSpec?.tokens;
-    const ty = designSpec?.typography;
     const sp = designSpec?.spacing;
 
+    const googleFontsImportStatic = ty?.googleFontsUrl
+      ? `@import url('${ty.googleFontsUrl}');\n\n`
+      : "";
+
     const cssTokens = t
-      ? `/* Design Tokens — Phase 13 Design Intelligence */
+      ? `${googleFontsImportStatic}/* Design Tokens — Phase 13 Design Intelligence */
 :root {
-  --bg-primary:    ${t.bgPrimary};
-  --bg-surface:    ${t.bgSurface};
-  --bg-card:       ${t.bgCard};
-  --text-primary:  ${t.textPrimary};
-  --text-secondary:${t.textSecondary};
-  --accent-primary:${t.accentPrimary};
-  --accent-hover:  ${t.accentHover};
-  --border-subtle: ${t.borderSubtle};
-  --shadow-card:   ${t.shadowCard};
-  --radius-md:     ${t.radiusMd};
-  --radius-sm:     ${t.radiusSm};
+  --bg-primary:      ${t.bgPrimary};
+  --bg-surface:      ${t.bgSurface};
+  --bg-card:         ${t.bgCard};
+  --text-primary:    ${t.textPrimary};
+  --text-secondary:  ${t.textSecondary};
+  --accent-primary:  ${t.accentPrimary};
+  --accent-hover:    ${t.accentHover};
+  --border-subtle:   ${t.borderSubtle};
+  --shadow-card:     ${t.shadowCard};
+  --radius-md:       ${t.radiusMd};
+  --radius-sm:       ${t.radiusSm};
+  --gradient-hero:   ${t.gradientHero};
+  --gradient-accent: ${t.gradientAccent};
 }`
       : `/* Design Tokens */
 :root {
-  --bg-primary:    #0b0f19;
-  --bg-surface:    #131c2e;
-  --bg-card:       #1e293b;
-  --text-primary:  #f8fafc;
-  --text-secondary:#94a3b8;
-  --accent-primary:#38bdf8;
-  --accent-hover:  #0ea5e9;
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --shadow-card:   0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
-  --radius-md:     12px;
-  --radius-sm:     8px;
+  --bg-primary:      #0b0f19;
+  --bg-surface:      #131c2e;
+  --bg-card:         #1e293b;
+  --text-primary:    #f8fafc;
+  --text-secondary:  #94a3b8;
+  --accent-primary:  #38bdf8;
+  --accent-hover:    #0ea5e9;
+  --border-subtle:   rgba(255, 255, 255, 0.08);
+  --shadow-card:     0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
+  --radius-md:       12px;
+  --radius-sm:       8px;
+  --gradient-hero:   linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+  --gradient-accent: linear-gradient(90deg, #38bdf8, #0ea5e9);
 }`;
 
     const heroFontSize = ty?.heroSize ?? "2.75rem";
     const h2FontSize   = ty?.h2Size   ?? "2rem";
     const bodyFont     = ty?.fontStack ?? "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif";
+    const displayFont  = ty?.fontDisplay ?? bodyFont;
     const heroV        = sp?.heroVertical    ?? "5rem";
     const sectionV     = sp?.sectionVertical ?? "4rem";
     const cardPad      = sp?.cardPadding     ?? "2rem";
@@ -953,6 +1156,10 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+h1, h2, h3, .hero-title, .brand-logo {
+  font-family: ${displayFont};
 }
 
 /* Navbar */
@@ -1817,6 +2024,10 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+h1, h2, h3, .hero-title, .brand-logo {
+  font-family: ${displayFont};
 }
 
 /* Navigation */

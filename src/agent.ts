@@ -15,6 +15,7 @@ import { listDirectory } from "./tools/list-directory.js";
 import { createFile } from "./tools/create-file.js";
 import { runCommand } from "./tools/terminal.js";
 import { isUITask, generateDesignSpec, formatDesignSpecForPrompt, type DesignSpec } from "./tools/design-planner.js";
+import { getDesignReferenceForDirection, formatDesignReference } from "./quality/design-references.js";
 import {
   buildWebsiteQualityGuidance,
   evaluateWebsiteQuality,
@@ -2439,6 +2440,8 @@ ${websiteQualityGuidance ? `${websiteQualityGuidance}
 A design specification has been pre-computed for this task. YOU MUST follow it faithfully:
 
 ${formatDesignSpecForPrompt(designSpec)}
+
+${formatDesignReference(getDesignReferenceForDirection(designSpec.direction))}
 
 VISUAL VERIFICATION SELF-IMPROVEMENT LOOP (Phase 13.2):
 After browser_verify passes content assertions, it automatically runs measurable layout checks at desktop (1280x800) and mobile (375x667) viewports.

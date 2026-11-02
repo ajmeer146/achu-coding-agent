@@ -42,7 +42,15 @@ export type DesignDirection =
   | "tech_cyberpunk"
   | "editorial_luxury"
   | "playful_colorful"
-  | "dark_saas";
+  | "dark_saas"
+  | "luxury_brand"
+  | "startup_growth"
+  | "creative_agency"
+  | "glassmorphism_dark"
+  | "brutalist"
+  | "modern_saas_light"
+  | "editorial_magazine"
+  | "neon_futuristic";
 
 export interface DesignTokens {
   bgPrimary: string;
@@ -56,6 +64,8 @@ export interface DesignTokens {
   shadowCard: string;
   radiusMd: string;
   radiusSm: string;
+  gradientHero: string;
+  gradientAccent: string;
 }
 
 export interface DesignTypography {
@@ -64,6 +74,8 @@ export interface DesignTypography {
   h2Size: string;
   bodySize: string;
   monoStack?: string;
+  fontDisplay?: string;
+  googleFontsUrl?: string;
 }
 
 export interface DesignSpacing {
@@ -107,7 +119,7 @@ export interface DesignSpec {
 const SUBJECT_ARCHETYPES: ReadonlyArray<{ type: ProductType; pattern: RegExp }> = [
   { type: "login_auth", pattern: /\b(login|log[\s-]?in|sign[\s-]?in|signin|sign[\s-]?up|signup|register|registration|authentication|auth|password)\b/ },
   { type: "portfolio", pattern: /\b(portfolio|showcase|resume|curriculum|vitae)\b/ },
-  { type: "ecommerce", pattern: /\b(e[\s-]?commerce|store|shop|catalog|cart|checkout|marketplace|food\s+delivery|restaurant|food|delivery)\b/ },
+  { type: "ecommerce", pattern: /\b(e[\s-]?commerce|store|shop|catalog|cart|checkout|marketplace|food\s+delivery)\b/ },
   { type: "dashboard", pattern: /\b(dashboard|admin|kpi|analytics|metrics|reporting)\b/ },
   { type: "blog", pattern: /\b(blog|article|magazine|newsletter|cms)\b/ },
   { type: "documentation", pattern: /\b(docs|documentation|api\s+reference|developer\s+guide|readme|knowledge\s+base)\b/ },
@@ -192,13 +204,33 @@ export function selectDesignDirection(productType: ProductType, task: string): D
 
   switch (productType) {
     case "portfolio":
-      if (/\b(luxury|premium|exclusive|high[\s-]?end|elegant|refined)\b/.test(lower))
+      if (/\b(creative\s+agency|agency|design\s+studio|studio)\b/.test(lower))
+        return "creative_agency";
+      if (/\b(luxury|high[\s-]?end|exclusive|refined)\b/.test(lower))
+        return "luxury_brand";
+      if (/\b(editorial|magazine)\b/.test(lower))
         return "editorial_luxury";
+      if (/\b(brutalist|brutalism)\b/.test(lower))
+        return "brutalist";
       if (/\b(minimal|clean|white|simple|understated)\b/.test(lower))
         return "minimal_clean";
       return "editorial_luxury"; // portfolios default to editorial feel
 
     case "landing_page":
+      if (/\b(luxury|high[- ]end|premium\s+brand|boutique|exclusive)\b/.test(lower))
+        return "luxury_brand";
+      if (/\b(growth|founder|vc|pitch|scale|startup[\s_]growth)\b/.test(lower))
+        return "startup_growth";
+      if (/\b(creative\s+agency|design\s+studio|branding\s+agency)\b/.test(lower))
+        return "creative_agency";
+      if (/\b(glassmorphism|glass|frosted)\b/.test(lower))
+        return "glassmorphism_dark";
+      if (/\b(brutalist|brutalism|brutal|raw\s+design)\b/.test(lower))
+        return "brutalist";
+      if (/\b(saas\s+light|clean\s+saas|light\s+mode|product\s+hunt)\b/.test(lower))
+        return "modern_saas_light";
+      if (/\b(neon|cyberpunk|futur)\b/.test(lower))
+        return "neon_futuristic";
       if (/\b(dark|midnight|night|black)\b/.test(lower) && /\b(saas|startup|tech|software)\b/.test(lower))
         return "dark_saas";
       if (/\b(bold|vibrant|energetic|bright|colorful|vivid)\b/.test(lower))
@@ -213,7 +245,11 @@ export function selectDesignDirection(productType: ProductType, task: string): D
       return "dark_saas";
 
     case "ecommerce":
-      if (/\b(minimal|elegant|luxury|boutique|fashion|clean)\b/.test(lower))
+      if (/\b(restaurant|cafe|food|coffee|bakery|bistro|kitchen|dining|warm|organic)\b/.test(lower))
+        return "warm_organic";
+      if (/\b(luxury|high[- ]end|premium|boutique|jewellery|jewelry|exclusive)\b/.test(lower))
+        return "luxury_brand";
+      if (/\b(minimal|elegant|clean)\b/.test(lower))
         return "minimal_clean";
       if (/\b(bold|sale|discount|flash|bright|fun)\b/.test(lower))
         return "bold_vibrant";
@@ -246,6 +282,22 @@ export function selectDesignDirection(productType: ProductType, task: string): D
         return "playful_colorful";
       if (/\b(corporate|enterprise|professional|business|law|finance|consult)\b/.test(lower))
         return "professional_corporate";
+      if (/\b(luxury|high[- ]end|premium|boutique|jewellery|jewelry|exclusive)\b/.test(lower))
+        return "luxury_brand";
+      if (/\b(startup|growth|founder|vc|pitch|saas\s+landing)\b/.test(lower))
+        return "startup_growth";
+      if (/\b(creative\s+agency|design\s+studio|branding\s+agency)\b/.test(lower))
+        return "creative_agency";
+      if (/\b(glassmorphism|glass|frosted)\b/.test(lower))
+        return "glassmorphism_dark";
+      if (/\b(brutalist|brutalism|brutal|raw\s+design)\b/.test(lower))
+        return "brutalist";
+      if (/\b(saas\s+light|clean\s+saas|product\s+hunt)\b/.test(lower))
+        return "modern_saas_light";
+      if (/\b(magazine|editorial|journalism|newspaper)\b/.test(lower))
+        return "editorial_magazine";
+      if (/\b(neon|cyberpunk)\b/.test(lower))
+        return "neon_futuristic";
       return "professional_corporate";
 
     default:
@@ -275,6 +327,8 @@ export function buildDesignTokens(direction: DesignDirection, colorScheme: Color
         shadowCard: "0 4px 16px -4px rgba(99,102,241,0.15), 0 2px 8px -2px rgba(0,0,0,0.1)",
         radiusMd: "16px",
         radiusSm: "8px",
+        gradientHero: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
+        gradientAccent: "linear-gradient(90deg, #6366f1, #4f46e5)",
       };
 
     case "bold_vibrant":
@@ -290,6 +344,8 @@ export function buildDesignTokens(direction: DesignDirection, colorScheme: Color
         shadowCard: "0 8px 32px -8px rgba(255,107,53,0.3), 0 4px 12px -4px rgba(0,0,0,0.4)",
         radiusMd: "6px",
         radiusSm: "4px",
+        gradientHero: "linear-gradient(135deg, #FF6B35 0%, #ff2d78 100%)",
+        gradientAccent: "linear-gradient(90deg, #FF6B35, #ff8c5a)",
       };
 
     case "professional_corporate":
@@ -305,6 +361,8 @@ export function buildDesignTokens(direction: DesignDirection, colorScheme: Color
         shadowCard: "0 2px 8px -2px rgba(37,99,235,0.12), 0 1px 4px -1px rgba(0,0,0,0.08)",
         radiusMd: "8px",
         radiusSm: "4px",
+        gradientHero: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+        gradientAccent: "linear-gradient(90deg, #2563eb, #1d4ed8)",
       };
 
     case "warm_organic":
@@ -320,6 +378,8 @@ export function buildDesignTokens(direction: DesignDirection, colorScheme: Color
         shadowCard: "0 4px 16px -4px rgba(217,119,6,0.2), 0 2px 8px -2px rgba(0,0,0,0.08)",
         radiusMd: "20px",
         radiusSm: "12px",
+        gradientHero: "linear-gradient(135deg, #D97706 0%, #B45309 100%)",
+        gradientAccent: "linear-gradient(90deg, #D97706, #f59e0b)",
       };
 
     case "tech_cyberpunk":
@@ -335,6 +395,8 @@ export function buildDesignTokens(direction: DesignDirection, colorScheme: Color
         shadowCard: "0 0 20px rgba(34,211,238,0.2), 0 4px 16px rgba(0,0,0,0.5)",
         radiusMd: "4px",
         radiusSm: "2px",
+        gradientHero: "linear-gradient(135deg, #22D3EE 0%, #0891b2 100%)",
+        gradientAccent: "linear-gradient(90deg, #22D3EE, #06B6D4)",
       };
 
     case "editorial_luxury":
@@ -350,6 +412,8 @@ export function buildDesignTokens(direction: DesignDirection, colorScheme: Color
         shadowCard: "0 4px 24px -6px rgba(184,150,62,0.15), 0 2px 8px rgba(0,0,0,0.06)",
         radiusMd: "4px",
         radiusSm: "2px",
+        gradientHero: "linear-gradient(135deg, #B8963E 0%, #9A7B2E 100%)",
+        gradientAccent: "linear-gradient(90deg, #B8963E, #d4a853)",
       };
 
     case "playful_colorful":
@@ -365,9 +429,163 @@ export function buildDesignTokens(direction: DesignDirection, colorScheme: Color
         shadowCard: "0 8px 24px -6px rgba(255,107,107,0.25), 0 4px 12px rgba(0,0,0,0.08)",
         radiusMd: "24px",
         radiusSm: "16px",
+        gradientHero: "linear-gradient(135deg, #FF6B6B 0%, #4ecdc4 100%)",
+        gradientAccent: "linear-gradient(90deg, #FF6B6B, #FF4040)",
       };
 
     case "dark_saas":
+      return {
+        bgPrimary: "#0F1117",
+        bgSurface: "#1A1F2E",
+        bgCard: "#232938",
+        textPrimary: "#f8fafc",
+        textSecondary: "#94a3b8",
+        accentPrimary: "#60a5fa",
+        accentHover: "#3b82f6",
+        borderSubtle: "rgba(255,255,255,0.06)",
+        shadowCard: "0 8px 24px -6px rgba(96,165,250,0.15), 0 4px 12px rgba(0,0,0,0.3)",
+        radiusMd: "10px",
+        radiusSm: "6px",
+        gradientHero: "linear-gradient(135deg, #60a5fa 0%, #818cf8 100%)",
+        gradientAccent: "linear-gradient(90deg, #60a5fa, #3b82f6)",
+      };
+
+    case "luxury_brand":
+      return {
+        bgPrimary: "#0a0a0a",
+        bgSurface: "#121212",
+        bgCard: "#1a1410",
+        textPrimary: "#F5F5F0",
+        textSecondary: "#A8945C",
+        accentPrimary: "#C9A84C",
+        accentHover: "#E8C97C",
+        borderSubtle: "rgba(201,168,76,0.15)",
+        shadowCard: "0 4px 24px -6px rgba(201,168,76,0.15), 0 2px 8px rgba(0,0,0,0.06)",
+        radiusMd: "4px",
+        radiusSm: "2px",
+        gradientHero: "linear-gradient(135deg, #C9A84C 0%, #8B6914 100%)",
+        gradientAccent: "linear-gradient(90deg, #C9A84C, #E8C97C)",
+      };
+
+    case "startup_growth":
+      return {
+        bgPrimary: "#0f0c1a",
+        bgSurface: "#1a1530",
+        bgCard: "#241e40",
+        textPrimary: "#ffffff",
+        textSecondary: "#e2d5f1",
+        accentPrimary: "#f093fb",
+        accentHover: "#f5576c",
+        borderSubtle: "rgba(240,147,251,0.2)",
+        shadowCard: "0 8px 32px -8px rgba(240,147,251,0.3), 0 4px 12px -4px rgba(0,0,0,0.4)",
+        radiusMd: "6px",
+        radiusSm: "4px",
+        gradientHero: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+        gradientAccent: "linear-gradient(90deg, #f093fb, #f5576c)",
+      };
+
+    case "creative_agency":
+      return {
+        bgPrimary: "#000000",
+        bgSurface: "#111111",
+        bgCard: "#0a0a0a",
+        textPrimary: "#ffffff",
+        textSecondary: "#e0e0e0",
+        accentPrimary: "#FFD60A",
+        accentHover: "#FFB800",
+        borderSubtle: "rgba(255,214,10,0.2)",
+        shadowCard: "0 8px 32px -8px rgba(255,214,10,0.3), 0 4px 12px -4px rgba(0,0,0,0.4)",
+        radiusMd: "4px",
+        radiusSm: "2px",
+        gradientHero: "linear-gradient(135deg, #FFD60A 0%, #FF6B00 100%)",
+        gradientAccent: "linear-gradient(90deg, #FFD60A, #FFB800)",
+      };
+
+    case "glassmorphism_dark":
+      return {
+        bgPrimary: "#0f0c29",
+        bgSurface: "#302b63",
+        bgCard: "#24243e",
+        textPrimary: "#ffffff",
+        textSecondary: "#d0d4f0",
+        accentPrimary: "#bf5af2",
+        accentHover: "#ff2d78",
+        borderSubtle: "rgba(255,255,255,0.1)",
+        shadowCard: "0 4px 24px -6px rgba(191,90,242,0.15), 0 2px 8px rgba(0,0,0,0.06)",
+        radiusMd: "8px",
+        radiusSm: "4px",
+        gradientHero: "linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%)",
+        gradientAccent: "linear-gradient(90deg, #bf5af2, #ff2d78)",
+      };
+
+    case "brutalist":
+      return {
+        bgPrimary: "#ffffff",
+        bgSurface: "#f0f0f0",
+        bgCard: "#f5f5f5",
+        textPrimary: "#000000",
+        textSecondary: "#333333",
+        accentPrimary: "#FF0000",
+        accentHover: "#CC0000",
+        borderSubtle: "rgba(255,0,0,0.15)",
+        shadowCard: "4px 4px 0px #000000",
+        radiusMd: "0px",
+        radiusSm: "0px",
+        gradientHero: "none",
+        gradientAccent: "none",
+      };
+
+    case "modern_saas_light":
+      return {
+        bgPrimary: "#f8fafc",
+        bgSurface: "#e2e8f0",
+        bgCard: "#ffffff",
+        textPrimary: "#0f172a",
+        textSecondary: "#64748b",
+        accentPrimary: "#3b82f6",
+        accentHover: "#60a5fa",
+        borderSubtle: "rgba(59,130,246,0.1)",
+        shadowCard: "0 4px 16px -4px rgba(59,130,246,0.12), 0 1px 4px -1px rgba(0,0,0,0.08)",
+        radiusMd: "12px",
+        radiusSm: "6px",
+        gradientHero: "linear-gradient(135deg, #3b82f6 0%, #6366f1 100%)",
+        gradientAccent: "linear-gradient(90deg, #3b82f6, #60a5fa)",
+      };
+
+    case "editorial_magazine":
+      return {
+        bgPrimary: "#f5f5f0",
+        bgSurface: "#ebe9e0",
+        bgCard: "#ffffff",
+        textPrimary: "#1a1a1a",
+        textSecondary: "#333333",
+        accentPrimary: "#c0392b",
+        accentHover: "#e74c3c",
+        borderSubtle: "rgba(26,26,26,0.1)",
+        shadowCard: "0 4px 16px -4px rgba(26,26,26,0.1), 0 2px 8px rgba(0,0,0,0.05)",
+        radiusMd: "4px",
+        radiusSm: "2px",
+        gradientHero: "linear-gradient(135deg, #1a1a1a 0%, #c0392b 100%)",
+        gradientAccent: "linear-gradient(90deg, #c0392b, #e74c3c)",
+      };
+
+    case "neon_futuristic":
+      return {
+        bgPrimary: "#050508",
+        bgSurface: "#0d0520",
+        bgCard: "#100a18",
+        textPrimary: "#e8d4f0",
+        textSecondary: "#bf5af2",
+        accentPrimary: "#bf5af2",
+        accentHover: "#ff2d78",
+        borderSubtle: "rgba(191,90,242,0.2)",
+        shadowCard: "0 0 20px rgba(191,90,242,0.3), 0 4px 16px rgba(0,0,0,0.5)",
+        radiusMd: "6px",
+        radiusSm: "4px",
+        gradientHero: "linear-gradient(135deg, #bf5af2 0%, #ff2d78 100%)",
+        gradientAccent: "linear-gradient(90deg, #bf5af2, #ff2d78)",
+      };
+
     default:
       return {
         bgPrimary: "#0F1117",
@@ -381,6 +599,8 @@ export function buildDesignTokens(direction: DesignDirection, colorScheme: Color
         shadowCard: "0 8px 24px -6px rgba(96,165,250,0.15), 0 4px 12px rgba(0,0,0,0.3)",
         radiusMd: "10px",
         radiusSm: "6px",
+        gradientHero: "linear-gradient(135deg, #60a5fa 0%, #818cf8 100%)",
+        gradientAccent: "linear-gradient(90deg, #60a5fa, #3b82f6)",
       };
   }
 }
@@ -397,6 +617,8 @@ export function buildTypography(direction: DesignDirection): DesignTypography {
         heroSize: "3.5rem",
         h2Size: "2.25rem",
         bodySize: "1.1rem",
+        fontDisplay: "'Cormorant Garamond', Georgia, serif",
+        googleFontsUrl: "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=Montserrat:wght@300;400;500;600&display=swap",
       };
 
     case "minimal_clean":
@@ -449,6 +671,97 @@ export function buildTypography(direction: DesignDirection): DesignTypography {
       };
 
     case "dark_saas":
+      return {
+        fontStack: '"Inter", "SF Pro Display", "Helvetica Neue", system-ui, sans-serif',
+        heroSize: "3.25rem",
+        h2Size: "2.125rem",
+        bodySize: "1rem",
+        fontDisplay: '"Inter", system-ui, sans-serif',
+        googleFontsUrl: "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap",
+      };
+
+    case "luxury_brand":
+      return {
+        fontStack: '"Playfair Display", Georgia, serif',
+        heroSize: "4rem",
+        h2Size: "2.5rem",
+        bodySize: "1rem",
+        fontDisplay: '"Playfair Display", Georgia, serif',
+        googleFontsUrl: "https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Jost:wght@300;400;500&display=swap",
+      };
+
+    case "startup_growth":
+      return {
+        fontStack: '"Plus Jakarta Sans", "Inter", system-ui, sans-serif',
+        heroSize: "3.75rem",
+        h2Size: "2.25rem",
+        bodySize: "1.05rem",
+        fontDisplay: '"Plus Jakarta Sans", system-ui, sans-serif',
+        googleFontsUrl: "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap",
+      };
+
+    case "creative_agency":
+      return {
+        fontStack: '"Space Grotesk", "Arial Black", system-ui, sans-serif',
+        heroSize: "5rem",
+        h2Size: "3rem",
+        bodySize: "1.05rem",
+        fontDisplay: '"Space Grotesk", system-ui, sans-serif',
+        googleFontsUrl: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap",
+      };
+
+    case "glassmorphism_dark":
+      return {
+        fontStack: '"Outfit", "Inter", system-ui, sans-serif',
+        heroSize: "3.5rem",
+        h2Size: "2.25rem",
+        bodySize: "1rem",
+        fontDisplay: '"Outfit", system-ui, sans-serif',
+        googleFontsUrl: "https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap",
+      };
+
+    case "brutalist":
+      return {
+        fontStack: '"Bebas Neue", "Arial Black", Impact, sans-serif',
+        heroSize: "6rem",
+        h2Size: "3.5rem",
+        bodySize: "1rem",
+        fontDisplay: '"Bebas Neue", Impact, sans-serif',
+        googleFontsUrl: "https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;500&display=swap",
+        monoStack: '"IBM Plex Mono", monospace',
+      };
+
+    case "modern_saas_light":
+      return {
+        fontStack: '"Geist", "Inter", system-ui, sans-serif',
+        heroSize: "3.25rem",
+        h2Size: "2rem",
+        bodySize: "1rem",
+        fontDisplay: '"Geist", "Inter", system-ui, sans-serif',
+        googleFontsUrl: "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap",
+      };
+
+    case "editorial_magazine":
+      return {
+        fontStack: '"Libre Baskerville", Georgia, serif',
+        heroSize: "4rem",
+        h2Size: "2.5rem",
+        bodySize: "1.1rem",
+        fontDisplay: '"Libre Baskerville", Georgia, serif',
+        googleFontsUrl: "https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Source+Sans+3:wght@300;400;600&display=swap",
+      };
+
+    case "neon_futuristic":
+      return {
+        fontStack: '"Orbitron", "Courier New", monospace',
+        heroSize: "3.5rem",
+        h2Size: "2.25rem",
+        bodySize: "0.95rem",
+        fontDisplay: '"Orbitron", monospace',
+        googleFontsUrl: "https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&display=swap",
+        monoStack: '"Share Tech Mono", monospace',
+      };
+
     default:
       return {
         fontStack: '"Inter", "SF Pro Display", "Helvetica Neue", system-ui, sans-serif',
@@ -518,7 +831,8 @@ export function generateDesignSpec(task: string): DesignSpec {
     colorScheme = "light";
   } else if (direction === "editorial_luxury" || direction === "warm_organic" ||
              direction === "minimal_clean" || direction === "playful_colorful" ||
-             direction === "professional_corporate") {
+             direction === "professional_corporate" || direction === "modern_saas_light" ||
+             direction === "editorial_magazine" || direction === "brutalist") {
     // These directions have their own light defaults
     colorScheme = "light";
   }
@@ -537,6 +851,14 @@ export function generateDesignSpec(task: string): DesignSpec {
     editorial_luxury: "Editorial Luxury — off-white, gold accent, serif typography, refined spacing",
     playful_colorful: "Playful & Colourful — white canvas, coral/teal accents, rounded corners",
     dark_saas: "Dark SaaS — deep surface, blue/violet accents, utility-focused layout",
+    luxury_brand: "Luxury Brand — near-black with gold accents, Playfair Display, ultra-premium feel",
+    startup_growth: "Startup Growth — deep purple gradient, vibrant accent, Plus Jakarta Sans",
+    creative_agency: "Creative Agency — pure black with yellow accent, bold Space Grotesk, high contrast",
+    glassmorphism_dark: "Glassmorphism Dark — deep purple backdrop, frosted glass cards, purple/pink accent",
+    brutalist: "Brutalist — stark white/black, red accent, Bebas Neue, zero radius, raw borders",
+    modern_saas_light: "Modern SaaS Light — clean white, blue accent, Inter, Product Hunt-style polish",
+    editorial_magazine: "Editorial Magazine — warm off-white, Libre Baskerville, red accent, newspaper grid",
+    neon_futuristic: "Neon Futuristic — near-black, Orbitron font, purple/pink neon glow effects",
   };
 
   return {
@@ -565,6 +887,13 @@ export function formatDesignSpecForPrompt(spec: DesignSpec): string {
   const ty = spec.typography;
   const sp = spec.spacing;
 
+  const googleFontsSection = ty.googleFontsUrl
+    ? `**Google Fonts Import (add to HTML <head>):**
+   <link rel="preconnect" href="https://fonts.googleapis.com">
+   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+   <link href="${ty.googleFontsUrl}" rel="stylesheet>`
+    : "";
+
   return `
 **Product Type:** ${spec.productType.replace(/_/g, " ")}
 **Design Direction:** ${spec.direction.replace(/_/g, " ")} — ${spec.visualSummary}
@@ -573,23 +902,25 @@ export function formatDesignSpecForPrompt(spec: DesignSpec): string {
 **50 Principles Framework Version:** ${spec.principlesVersion ?? WEBSITE_50_PRINCIPLES_VERSION}
 
 **CSS Design Tokens (use in :root):**
-  --bg-primary:    ${t.bgPrimary}
-  --bg-surface:    ${t.bgSurface}
-  --bg-card:       ${t.bgCard}
-  --text-primary:  ${t.textPrimary}
-  --text-secondary:${t.textSecondary}
-  --accent-primary:${t.accentPrimary}
-  --accent-hover:  ${t.accentHover}
-  --border-subtle: ${t.borderSubtle}
-  --shadow-card:   ${t.shadowCard}
-  --radius-md:     ${t.radiusMd}
-  --radius-sm:     ${t.radiusSm}
+  --bg-primary:      ${t.bgPrimary}
+  --bg-surface:      ${t.bgSurface}
+  --bg-card:         ${t.bgCard}
+  --text-primary:    ${t.textPrimary}
+  --text-secondary:  ${t.textSecondary}
+  --accent-primary:  ${t.accentPrimary}
+  --accent-hover:    ${t.accentHover}
+  --border-subtle:   ${t.borderSubtle}
+  --shadow-card:     ${t.shadowCard}
+  --radius-md:       ${t.radiusMd}
+  --radius-sm:       ${t.radiusSm}
+  --gradient-hero:   ${t.gradientHero}
+  --gradient-accent: ${t.gradientAccent}
 
 **Typography:**
   Font stack:  ${ty.fontStack}
   Hero:        ${ty.heroSize}
   H2:          ${ty.h2Size}
-  Body:        ${ty.bodySize}${ty.monoStack ? `\n  Mono:        ${ty.monoStack}` : ""}
+  Body:        ${ty.bodySize}${ty.monoStack ? `\n  Mono:        ${ty.monoStack}` : ""}${ty.fontDisplay ? `\n  Display:     ${ty.fontDisplay}` : ""}
 
 **Spacing:**
   Hero vertical padding:    ${sp.heroVertical}
@@ -608,6 +939,8 @@ export function formatDesignSpecForPrompt(spec: DesignSpec): string {
   ${spec.expectedSections.join(", ")}
 
 **Animations:** ${spec.useAnimations ? "Enabled — add entrance/hover transitions. ALWAYS include:\n  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }" : "Disabled"}
+
+${googleFontsSection}
 `.trim();
 }
 
