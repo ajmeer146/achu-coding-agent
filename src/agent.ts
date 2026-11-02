@@ -33,7 +33,7 @@ import { SessionState } from "./session/session-types.js";
 import { z } from "zod";
 import { SnapshotManager } from "./tools/snapshot.js";
 import { parseArchitecture, formatArchitectureSummary, ProjectArchitecture } from "./tools/architecture-parser.js";
-import { scaffoldReactViteProject, scaffoldStaticProject, scaffoldNextjsProject, scaffoldNodeExpressProject, scaffoldFullstackEcommerceProject, validateProjectStructure, autoRepairProjectStructure } from "./tools/scaffold.js";
+import { scaffoldReactViteProject, scaffoldStaticProject, scaffoldNextjsProject, scaffoldNodeExpressProject, scaffoldFullstackEcommerceProject, scaffold2DGameProject, scaffold3DExperienceProject, validateProjectStructure, autoRepairProjectStructure } from "./tools/scaffold.js";
 import { processAttachmentsForAgent, isImageAttachment } from "./utils/multimodal-processor.js";
 
 export type ToolCall = {
@@ -241,7 +241,7 @@ const AGENT_TOOLS: Array<{ type: "function"; function: { name: string; descripti
   { type: "function", function: { name: "run_verification", description: "Run the exact verification command requested by the user.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } } },
   { type: "function", function: { name: "list_directory", description: "List the contents of a directory in the workspace.", parameters: { type: "object", properties: { directoryPath: { type: "string", description: "Path of directory to list (relative to workspace root)." } }, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "create_file", description: "Create a new file in the workspace with the given content.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"], additionalProperties: false } } },
-  { type: "function", function: { name: "scaffold_project", description: "Scaffold a complete, runnable modern application structure with valid files and configurations. Templates: 'react-vite' (React 18 + Vite), 'static' (HTML5/CSS3/JS), 'nextjs' (Next.js App Router + API), 'node-express' (Express backend + frontend), 'fullstack-ecommerce' (Complete shopping website with database, auth, cart, checkout & admin dashboard).", parameters: { type: "object", properties: { template: { type: "string", enum: ["react-vite", "static", "nextjs", "node-express", "fullstack-ecommerce"], description: "Template to scaffold: 'react-vite', 'static', 'nextjs', 'node-express', or 'fullstack-ecommerce'." }, name: { type: "string", description: "Project name (optional)." } }, required: ["template"], additionalProperties: false } } },
+  { type: "function", function: { name: "scaffold_project", description: "Scaffold a complete, runnable modern application structure with valid files and configurations. Templates: 'react-vite' (React 18 + Vite), 'static' (HTML5/CSS3/JS), 'nextjs' (Next.js App Router + API), 'node-express' (Express backend + frontend), 'fullstack-ecommerce' (Complete shopping website with database, auth, cart, checkout & admin dashboard), 'game-2d' (Interactive 2D browser arcade game with canvas, Web Audio sound effects, particles, and mobile touch/keyboard controls), 'experience-3d' (Interactive 3D WebGL scene with Three.js, OrbitControls, dynamic lighting, and HUD panel).", parameters: { type: "object", properties: { template: { type: "string", enum: ["react-vite", "static", "nextjs", "node-express", "fullstack-ecommerce", "game-2d", "experience-3d"], description: "Template to scaffold: 'react-vite', 'static', 'nextjs', 'node-express', 'fullstack-ecommerce', 'game-2d', or 'experience-3d'." }, name: { type: "string", description: "Project name (optional)." } }, required: ["template"], additionalProperties: false } } },
   { type: "function", function: { name: "verify_api_endpoint", description: "Verify a backend REST API endpoint of the running application. Sends an HTTP request and asserts status code, response headers, and JSON body structure.", parameters: { type: "object", properties: { url: { type: "string", description: "API URL or relative path (e.g. /api/products, /api/health)." }, method: { type: "string", enum: ["GET", "POST", "PUT", "DELETE", "PATCH"], description: "HTTP method (defaults to GET)." }, headers: { type: "object", description: "Optional HTTP headers." }, body: { type: "string", description: "Optional request body string (JSON)." }, expectedStatus: { type: "number", description: "Expected HTTP status code (e.g. 200, 201)." }, expectedProperties: { type: "array", items: { type: "string" }, description: "Array of property names expected in the JSON response." } }, required: ["url"], additionalProperties: false } } },
   { type: "function", function: { name: "navigate", description: "Navigate to a URL in the browser.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
   { type: "function", function: { name: "start_app", description: "Start the development server for the current project. Detects the start command from package.json and waits for the application to be ready.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
@@ -3113,7 +3113,7 @@ const schemas = {
   list_directory: z.object({ directoryPath: z.string().default(".") }),
   create_file: z.object({ path: z.string(), content: z.string(), overwrite: z.boolean().optional() }),
   scaffold_project: z.object({
-    template: z.enum(["react-vite", "static", "nextjs", "node-express", "fullstack-ecommerce"]),
+    template: z.enum(["react-vite", "static", "nextjs", "node-express", "fullstack-ecommerce", "game-2d", "experience-3d"]),
     name: z.string().optional(),
   }),
   verify_api_endpoint: z.object({
@@ -3535,6 +3535,10 @@ async function executeToolCore(workspace: Workspace, toolCall: ToolCall, state: 
           scaffoldRes = await scaffoldNodeExpressProject(workspace, name, state.designSpec ?? undefined);
         } else if (template === "fullstack-ecommerce") {
           scaffoldRes = await scaffoldFullstackEcommerceProject(workspace, name, state.designSpec ?? undefined);
+        } else if (template === "game-2d") {
+          scaffoldRes = await scaffold2DGameProject(workspace, name, state.designSpec ?? undefined);
+        } else if (template === "experience-3d") {
+          scaffoldRes = await scaffold3DExperienceProject(workspace, name, state.designSpec ?? undefined);
         } else {
           scaffoldRes = await scaffoldStaticProject(workspace, name, state.designSpec ?? undefined);
         }
@@ -4782,13 +4786,31 @@ export async function runAgent(
     }
 
     const toolCallsToExecute = [...response.toolCalls];
+    const turnDeduplicationMap = new Map<string, string>();
+
     for (let tcIndex = 0; tcIndex < toolCallsToExecute.length; tcIndex++) {
       const toolCall = toolCallsToExecute[tcIndex];
       if (state.stopReason) {
         messages.push({ role: "tool", content: "Execution stopped.", tool_call_id: toolCall.id });
         continue;
       }
-      const result = await executeTool(workspace, toolCall, state);
+
+      const dedupeKey = `${toolCall.function.name}:${toolCall.function.arguments}`;
+      let result: string;
+
+      if (turnDeduplicationMap.has(dedupeKey)) {
+        const prevResult = turnDeduplicationMap.get(dedupeKey)!;
+        const toolName = toolCall.function.name;
+        if (toolName === "read_file" || toolName === "list_directory" || toolName === "search_code") {
+          result = prevResult;
+        } else {
+          result = `Deduplicated: Identical tool call ${toolName} already executed in this turn.`;
+        }
+      } else {
+        result = await executeTool(workspace, toolCall, state);
+        turnDeduplicationMap.set(dedupeKey, result);
+      }
+
       messages.push({ role: "tool", content: result, tool_call_id: toolCall.id });
       const toolTarget = getToolTarget(toolCall);
       const toolDesc = `${toolCall.function.name}${toolTarget ? `: ${toolTarget}` : ""}`;

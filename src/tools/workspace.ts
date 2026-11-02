@@ -128,7 +128,7 @@ export function deriveProjectSlug(taskOrName: string): string {
 export function isNewWebsiteTask(task: string): boolean {
   const lower = String(task || "").toLowerCase();
   const hasBuild = /\b(build|create|scaffold|generate|setup)\b/i.test(lower);
-  const hasTarget = /\b(website|web app|webapp|landing page|portfolio|e-commerce|store|dashboard|site|application)\b/i.test(lower);
+  const hasTarget = /\b(website|web app|webapp|landing page|portfolio|e-commerce|store|dashboard|site|application|game|arcade|experience|simulator|scene)\b/i.test(lower);
   const isFollowUp = /\b(modify|update|improve|extend|change|fix|add to|refactor|test|check)\b/i.test(lower);
   return hasBuild && hasTarget && !isFollowUp;
 }

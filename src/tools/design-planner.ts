@@ -39,6 +39,8 @@ export type ProductType =
   | "login_auth"
   | "saas_app"
   | "documentation"
+  | "game_2d"
+  | "experience_3d"
   | "generic_website";
 
 export interface RequiredVisualAsset {
@@ -138,6 +140,8 @@ export interface DesignSpec {
  */
 const SUBJECT_ARCHETYPES: ReadonlyArray<{ type: ProductType; pattern: RegExp }> = [
   { type: "login_auth", pattern: /\b(login|log[\s-]?in|sign[\s-]?in|signin|sign[\s-]?up|signup|register|registration|authentication|auth|password)\b/ },
+  { type: "game_2d", pattern: /\b(2d\s+game|browser\s+game|arcade|platformer|space\s+shooter|phaser|flappy|snake\s+game|pong|canvas\s+game|interactive\s+game)\b/ },
+  { type: "experience_3d", pattern: /\b(3d\s+experience|3d\s+scene|three[\s-]?js|threejs|babylon[\s-]?js|babylonjs|webgl|3d\s+model|3d\s+viewer|3d\s+solar\s+system|3d\s+animation)\b/ },
   { type: "automotive", pattern: /\b(automotive|cars?\b|vehicles?\b|dealership|supercars?|sports\s+cars?|bmw|mercedes|audi|porsche|ferrari|lamborghini|tesla|mustang|m4\b|m3\b|amg)\b/ },
   { type: "real_estate", pattern: /\b(real\s+estate|realtor|propert(?:y|ies)|villas?\b|apartments?\b|penthouse|listing|brokerage|mansions?)\b/ },
   { type: "restaurant_hospitality", pattern: /\b(restaurants?|cafes?|bistros?|bakery|dining|bars?\b|cocktails?|menu\b|culinary|chef|steakhouses?|pizzerias?)\b/ },
@@ -193,6 +197,12 @@ export function analyseTaskBrief(task: string): ProductType {
   }
 
   // Ordered from most specific to most generic
+  if (/\b(2d\s+game|browser\s+game|arcade|platformer|space\s+shooter|phaser|flappy|snake\s+game|pong|canvas\s+game|interactive\s+game)\b/.test(lower))
+    return "game_2d";
+
+  if (/\b(3d\s+experience|3d\s+scene|three[\s-]?js|threejs|babylon[\s-]?js|babylonjs|webgl|3d\s+model|3d\s+viewer|3d\s+solar\s+system|3d\s+animation)\b/.test(lower))
+    return "experience_3d";
+
   if (/\b(login|sign[\s-]?in|sign[\s-]?up|register|auth|password|forgot\s+password)\b/.test(lower))
     return "login_auth";
 
@@ -377,6 +387,16 @@ export function selectDesignDirection(productType: ProductType, task: string): D
 
     case "documentation":
       return "minimal_clean";
+
+    case "game_2d":
+      if (/\b(playful|arcade|retro|pixel|cartoon|kids)\b/.test(lower))
+        return "playful_colorful";
+      return "neon_futuristic";
+
+    case "experience_3d":
+      if (/\b(cyber|space|scifi|sci-fi|neon|dark)\b/.test(lower))
+        return "tech_cyberpunk";
+      return "neon_futuristic";
 
     case "generic_website":
       if (/\b(restaurant|cafe|food|coffee|bakery|bistro|kitchen|eat|dining)\b/.test(lower))
@@ -916,6 +936,10 @@ export function buildSpacing(productType: ProductType): DesignSpacing {
     case "documentation":
       return { heroVertical: "3rem", sectionVertical: "3rem", cardPadding: "1.75rem" };
 
+    case "game_2d":
+    case "experience_3d":
+      return { heroVertical: "1.5rem", sectionVertical: "2rem", cardPadding: "1.25rem" };
+
     case "ecommerce":
       return { heroVertical: "4rem", sectionVertical: "3.5rem", cardPadding: "1.5rem" };
 
@@ -956,6 +980,8 @@ function buildExpectedSections(productType: ProductType): string[] {
     case "login_auth":   return ["Login Form", "Email Input", "Password Input", "Submit Button"];
     case "saas_app":     return ["Navigation", "Hero", "Features", "Pricing", "Footer"];
     case "documentation":return ["Sidebar Navigation", "Content", "Code Examples"];
+    case "game_2d":      return ["Game Canvas Container", "Score and Status HUD", "Control Guide / Instructions", "Restart / Pause Controls"];
+    case "experience_3d":return ["3D WebGL Canvas", "Interactive Controls Panel", "Scene Information Overlay", "Performance / Quality Toggle"];
     default:             return ["Navigation", "Hero", "Content", "Footer"];
   }
 }
@@ -1145,6 +1171,6 @@ ${assetsSection}
 // ---------------------------------------------------------------------------
 
 export function isUITask(task: string): boolean {
-  return /\b(build|create|design|make|scaffold|generate|implement|add)\b.*\b(website|web\s*app|landing\s*page|landing|page|portfolio|dashboard|login|sign[\s-]?up|site|app\b|ui\b|frontend|interface|hero|navbar|header|footer|section|component|form)\b/i
+  return /\b(build|create|design|make|scaffold|generate|implement|add)\b.*\b(website|web\s*app|landing\s*page|landing|page|portfolio|dashboard|login|sign[\s-]?up|site|app\b|ui\b|frontend|interface|hero|navbar|header|footer|section|component|form|game|experience|canvas|scene|3d|2d)\b/i
     .test(task);
 }

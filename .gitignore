@@ -4,3 +4,12 @@ node_modules
 .env
 dist-installer
 *.log
+*.tsbuildinfo
+*.backup*
+*.whitespace-backup
+.stale-js-backup
+smoke-test-output*
+test-workspace*
+saas-landing
+calculator.ts
+test-*.ts

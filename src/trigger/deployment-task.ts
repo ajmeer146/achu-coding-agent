@@ -54,10 +54,16 @@ export const websiteDeploymentTask = schemaTask({
     metadata.set("subdomain", payload.subdomain);
 
     const webPlatformUrl = (process.env.WEB_PLATFORM_URL || "https://www.workswithachu.me").replace(/\/+$/, "");
-    const secret = process.env.DEPLOYMENT_SECRET || process.env.SESSION_SECRET || process.env.WORKSPACE_SECRET || "";
+    const secret = (
+      process.env.DEPLOYMENT_SECRET ||
+      process.env.SESSION_SECRET ||
+      process.env.TRIGGER_SECRET_KEY ||
+      process.env.WORKSPACE_SECRET ||
+      ""
+    ).trim().replace(/^["']|["']$/g, "");
 
     if (!secret) {
-      const errMsg = "Missing DEPLOYMENT_SECRET/SESSION_SECRET in worker environment. Cannot securely authorize internal deployment execution.";
+      const errMsg = "Missing internal orchestration secret (DEPLOYMENT_SECRET, SESSION_SECRET, or TRIGGER_SECRET_KEY) in worker environment.";
       console.error(`[Trigger.dev] ${errMsg}`);
       throw new Error(errMsg);
     }
