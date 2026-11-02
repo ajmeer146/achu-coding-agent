@@ -228,6 +228,32 @@ export class BrowserSession {
         return document.body.innerText;
       });
 
+      // Scroll to trigger lazy loading of images across the document
+      await this.page.evaluate(async () => {
+        try {
+          const totalHeight = document.body.scrollHeight;
+          window.scrollTo(0, totalHeight / 2);
+          await new Promise(r => setTimeout(r, 150));
+          window.scrollTo(0, totalHeight);
+          await new Promise(r => setTimeout(r, 150));
+          window.scrollTo(0, 0);
+        } catch {}
+      }).catch(() => {});
+
+      // Settle pending images before inspection
+      await this.page.evaluate(() => {
+        return Promise.all(
+          Array.from(document.images || []).map(img => {
+            if (img.complete) return Promise.resolve();
+            return new Promise(resolve => {
+              img.addEventListener("load", resolve, { once: true });
+              img.addEventListener("error", resolve, { once: true });
+              setTimeout(resolve, 2000);
+            });
+          })
+        );
+      }).catch(() => {});
+
       // Get interactive elements: buttons, inputs, links, selects, textareas, styles
       const evalResults = await Promise.all([
         // Buttons: button elements, elements with role="button", and button-styled CTA anchors
@@ -326,8 +352,12 @@ export class BrowserSession {
               issues.push(`Broken image: <img> has missing or empty src attribute (alt: "${alt || 'none'}").`);
             } else if (/placeholder|placehold\.co|dummyimage|lorempixel/.test(srcLower) || /placeholder/.test(altLower)) {
               issues.push(`Image uses a placeholder source or alt text: ${src || alt || "(empty)"}`);
+            } else if (/model\s*[1-9]|sports\s*car\s*model|product\s*image/i.test(altLower)) {
+              issues.push(`Image uses generic placeholder alt text: "${alt}". Use authentic, descriptive photography.`);
             } else if (img.complete && (img.naturalWidth === 0 || img.naturalHeight === 0)) {
-              issues.push(`Broken image: <img> with src "${src.slice(0, 80)}" failed to load (naturalWidth=0).`);
+              issues.push(`Broken image: <img> with src "${src.slice(0, 80)}" failed to load (naturalWidth=0, alt="${alt || 'none'}").`);
+            } else if (!img.complete) {
+              issues.push(`Unloaded image: <img> with src "${src.slice(0, 80)}" did not complete loading.`);
             }
           }
           for (const svg of Array.from(document.querySelectorAll("svg"))) {
@@ -530,6 +560,18 @@ export class BrowserSession {
       await this.setViewport(viewport);
       await this.page.evaluate(() => window.scrollTo(0, 0));
 
+      // Scroll through page to trigger lazy loading of images across the document
+      await this.page.evaluate(async () => {
+        try {
+          const totalHeight = document.body.scrollHeight;
+          window.scrollTo(0, totalHeight / 2);
+          await new Promise(r => setTimeout(r, 150));
+          window.scrollTo(0, totalHeight);
+          await new Promise(r => setTimeout(r, 150));
+          window.scrollTo(0, 0);
+        } catch {}
+      }).catch(() => {});
+
       // Settle pending images so natural dimensions and layout reflect final visual state
       await this.page.evaluate(() => {
         return Promise.all(
@@ -538,7 +580,7 @@ export class BrowserSession {
             return new Promise(resolve => {
               img.addEventListener("load", resolve, { once: true });
               img.addEventListener("error", resolve, { once: true });
-              setTimeout(resolve, 1500);
+              setTimeout(resolve, 2000);
             });
           })
         );
@@ -735,17 +777,23 @@ export class BrowserSession {
       }
     }
   }
-  // Broken image detection on rendered page
+  // Broken image detection on rendered page: check ALL <img> elements in the document
   var imgElements = Array.prototype.slice.call(document.querySelectorAll("img"));
   for (var ie = 0; ie < imgElements.length; ie++) {
     var imEl = imgElements[ie];
-    if (!isVisible(imEl)) continue;
     var rawSrc = imEl.getAttribute("src");
     var trimSrc = (rawSrc || "").trim();
+    var alt = (imEl.getAttribute("alt") || "").trim();
+    var altLower = alt.toLowerCase();
+    if (/model\s*[1-9]|sports\s*car\s*model|product\s*image/i.test(altLower)) {
+      push("critical", "placeholder_alt_text", 'Image ' + describe(imEl) + ' uses placeholder alt text: "' + alt + '".');
+    }
     if (!rawSrc || trimSrc === "" || trimSrc === "#") {
-      push("critical", "broken_image", "Visible image " + describe(imEl) + " has an empty or missing src attribute.");
+      push("critical", "broken_image", "Image " + describe(imEl) + " has an empty or missing src attribute.");
     } else if (imEl.complete && (imEl.naturalWidth === 0 || imEl.naturalHeight === 0)) {
-      push("critical", "broken_image", "Visible image " + describe(imEl) + ' with src "' + trimSrc.slice(0, 60) + '" failed to load (rendered: ' + Math.round(imEl.getBoundingClientRect().width) + 'px, naturalWidth: 0).');
+      push("critical", "broken_image", 'Image ' + describe(imEl) + ' with src "' + trimSrc.slice(0, 60) + '" failed to load (naturalWidth: 0, alt: "' + (alt || 'none') + '").');
+    } else if (!imEl.complete) {
+      push("critical", "broken_image", 'Image ' + describe(imEl) + ' with src "' + trimSrc.slice(0, 60) + '" did not complete loading.');
     }
   }
   // Navigation layout quality: detect unstyled bulleted lists or accidental vertical stacking in headers
@@ -803,6 +851,84 @@ export class BrowserSession {
         recoverable: true
       };
     }
+  }
+
+  /**
+   * Verifies that all image elements in the document loaded cleanly in the browser.
+   * Asserts naturalWidth > 0, naturalHeight > 0, and no broken image or placeholder alt text.
+   */
+  async verifyImageRendering(): Promise<{
+    passed: boolean;
+    total: number;
+    loaded: number;
+    broken: Array<{ src: string; alt: string; naturalWidth: number; naturalHeight: number; error: string }>;
+  }> {
+    if (!this.page) {
+      return { passed: false, total: 0, loaded: 0, broken: [{ src: "", alt: "", naturalWidth: 0, naturalHeight: 0, error: "Browser not initialized" }] };
+    }
+
+    // Scroll to trigger lazy loading across the page
+    await this.page.evaluate(async () => {
+      try {
+        const totalHeight = document.body.scrollHeight;
+        window.scrollTo(0, totalHeight / 2);
+        await new Promise(r => setTimeout(r, 150));
+        window.scrollTo(0, totalHeight);
+        await new Promise(r => setTimeout(r, 150));
+        window.scrollTo(0, 0);
+      } catch {}
+    }).catch(() => {});
+
+    // Settle pending images
+    await this.page.evaluate(() => {
+      return Promise.all(
+        Array.from(document.images || []).map(img => {
+          if (img.complete) return Promise.resolve();
+          return new Promise(resolve => {
+            img.addEventListener("load", resolve, { once: true });
+            img.addEventListener("error", resolve, { once: true });
+            setTimeout(resolve, 2500);
+          });
+        })
+      );
+    }).catch(() => {});
+
+    const stats = await this.page.evaluate(() => {
+      const imgs = Array.from(document.querySelectorAll("img"));
+      return imgs.map(img => {
+        const rawSrc = img.getAttribute("src") || "";
+        const alt = img.getAttribute("alt") || "";
+        const complete = img.complete;
+        const nw = img.naturalWidth;
+        const nh = img.naturalHeight;
+        let err = "";
+        if (!rawSrc || rawSrc.trim() === "" || rawSrc === "#") {
+          err = "Missing or empty src attribute";
+        } else if (/model\s*[1-9]|sports\s*car\s*model|product\s*image/i.test(alt)) {
+          err = `Placeholder alt text: "${alt}"`;
+        } else if (!complete) {
+          err = "Image network load incomplete";
+        } else if (nw === 0 || nh === 0) {
+          err = "Image failed to render (naturalWidth=0)";
+        }
+        return {
+          src: rawSrc,
+          alt,
+          naturalWidth: nw,
+          naturalHeight: nh,
+          error: err,
+        };
+      });
+    });
+
+    const broken = stats.filter(s => s.error !== "");
+    const loaded = stats.filter(s => s.error === "").length;
+    return {
+      passed: broken.length === 0,
+      total: stats.length,
+      loaded,
+      broken,
+    };
   }
 
   /**

@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { Workspace } from "./workspace.js";
 import type { DesignSpec } from "./design-planner.js";
+import { provisionVisualAssets } from "./image-intelligence.js";
 
 export type ProjectTemplate = "react-vite" | "static" | "nextjs" | "node-express" | "fullstack-ecommerce" | "game-2d" | "experience-3d";
 
@@ -436,6 +437,15 @@ body {
   padding: 0 1.5rem;
 }
 
+@media (max-width: 768px) {
+  .desktop-nav-links {
+    display: none !important;
+  }
+  .mobile-menu-btn {
+    display: flex !important;
+  }
+}
+
 @media (max-width: 480px) {
   .container { padding: 0 1rem; }
 }
@@ -473,6 +483,15 @@ body {
   padding: 0 1.5rem;
 }
 
+@media (max-width: 768px) {
+  .desktop-nav-links {
+    display: none !important;
+  }
+  .mobile-menu-btn {
+    display: flex !important;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation: none !important;
@@ -485,11 +504,18 @@ body {
 
     // 5. src/App.jsx — token-aware starter shell
     const heroSizeCss = rty?.heroSize ?? "2.5rem";
-    const isAutomotive = designSpec?.productType === "automotive" || /automotive|car\b|bmw|porsche|audi|vehicle|dealership|m4\b/i.test(projectName);
+    const isAutomotive = designSpec?.productType === "automotive" || /automotive|automobile|automobiles|car\b|bmw|porsche|audi|vehicle|dealership|m4\b|sports\s*car|motors?\b/i.test(projectName);
+    if (isAutomotive || (designSpec?.visualAssets && designSpec.visualAssets.length > 0)) {
+      try {
+        await provisionVisualAssets(workspace.root, isAutomotive ? "automotive" : designSpec?.productType || "generic_website", title);
+        filesCreated.push("image-manifest.json");
+      } catch {}
+    }
     const appJsx = isAutomotive
       ? `import React, { useState } from 'react';
 
 export default function App() {
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [formSubmitted, setFormSubmitted] = useState(false);
   const [formData, setFormData] = useState({ name: '', email: '', notes: '' });
 
@@ -511,28 +537,74 @@ export default function App() {
         zIndex: 100,
         backdropFilter: 'blur(16px)',
       }}>
-        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.5rem', maxWidth: '1200px', margin: '0 auto' }}>
-          <span style={{ fontWeight: 800, fontSize: '1.25rem', color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.85rem 1.25rem', maxWidth: '1200px', margin: '0 auto', width: '100%' }}>
+          <span style={{ fontWeight: 800, fontSize: 'clamp(1rem, 3.5vw, 1.25rem)', color: 'var(--text-primary)', letterSpacing: '-0.02em', whiteSpace: 'nowrap', maxWidth: 'calc(100% - 60px)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             <span style={{ color: 'var(--accent-primary)', marginRight: '6px' }}>///</span>\${title}
           </span>
-          <div style={{ display: 'flex', gap: '2rem' }}>
+          <div className="desktop-nav-links" style={{ display: 'flex', gap: '1.75rem', alignItems: 'center' }}>
             {['Specifications', 'Design', 'Cockpit', 'Gallery', 'Enquire'].map(link => (
               <a key={link} href={\`#\${link.toLowerCase()}\`} style={{ color: 'var(--text-secondary)', textDecoration: 'none', fontSize: '0.95rem', fontWeight: 500, transition: 'color 0.2s' }}
                 onMouseOver={e => e.target.style.color = 'var(--text-primary)'}
                 onMouseOut={e => e.target.style.color = 'var(--text-secondary)'}
               >{link}</a>
             ))}
+            <a href="#enquire" style={{
+              background: 'var(--accent-primary)',
+              color: '#fff',
+              textDecoration: 'none',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.55rem 1.35rem',
+              fontWeight: 700,
+              fontSize: '0.9rem',
+              whiteSpace: 'nowrap',
+            }}>Book Test Drive</a>
           </div>
-          <a href="#enquire" style={{
-            background: 'var(--accent-primary)',
-            color: '#fff',
-            textDecoration: 'none',
-            borderRadius: 'var(--radius-sm)',
-            padding: '0.55rem 1.35rem',
-            fontWeight: 700,
-            fontSize: '0.9rem',
-          }}>Book Test Drive</a>
+          <button 
+            id="mobileMenuToggle"
+            className="mobile-menu-btn"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            aria-label="Toggle navigation menu"
+            style={{
+              background: 'transparent',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.5rem',
+              color: 'var(--text-primary)',
+              cursor: 'pointer',
+              display: 'none',
+              minHeight: '44px',
+              minWidth: '44px',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.25rem',
+            }}
+          >
+            {mobileMenuOpen ? '✕' : '☰'}
+          </button>
         </div>
+        {mobileMenuOpen && (
+          <div className="mobile-nav-drawer" style={{
+            background: 'var(--bg-surface)',
+            borderTop: '1px solid var(--border-subtle)',
+            padding: '1.25rem 1.5rem',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1rem',
+          }}>
+            {['Specifications', 'Design', 'Cockpit', 'Gallery', 'Enquire'].map(link => (
+              <a key={link} href={\`#\${link.toLowerCase()}\`} onClick={() => setMobileMenuOpen(false)} style={{ color: 'var(--text-primary)', textDecoration: 'none', fontSize: '1.1rem', fontWeight: 600 }}>{link}</a>
+            ))}
+            <a href="#enquire" onClick={() => setMobileMenuOpen(false)} style={{
+              background: 'var(--accent-primary)',
+              color: '#fff',
+              textDecoration: 'none',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.75rem',
+              fontWeight: 700,
+              textAlign: 'center',
+            }}>Book Test Drive</a>
+          </div>
+        )}
       </nav>
 
       {/* Hero Section with Verified Vehicle Photography */}
@@ -1010,7 +1082,13 @@ export async function scaffoldStaticProject(
     filesCreated.push("package.json");
 
     const isEcommerce = designSpec?.productType === "ecommerce" || /ecommerce|store|shop|catalog|cart/i.test(projectName);
-    const isAutomotive = designSpec?.productType === "automotive" || /automotive|car\b|bmw|porsche|audi|vehicle|dealership|m4\b/i.test(projectName);
+    const isAutomotive = designSpec?.productType === "automotive" || /automotive|automobile|automobiles|car\b|bmw|porsche|audi|vehicle|dealership|m4\b|sports\s*car|motors?\b/i.test(projectName);
+    if (isAutomotive || (designSpec?.visualAssets && designSpec.visualAssets.length > 0)) {
+      try {
+        await provisionVisualAssets(workspace.root, isAutomotive ? "automotive" : designSpec?.productType || "generic_website", title);
+        filesCreated.push("image-manifest.json");
+      } catch {}
+    }
     const ty = designSpec?.typography;
     const googleFontsHtml = ty?.googleFontsUrl
       ? `<link rel="preconnect" href="https://fonts.googleapis.com">\n  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n  <link href="${ty.googleFontsUrl}" rel="stylesheet">\n  `
@@ -1258,9 +1336,12 @@ export async function scaffoldStaticProject(
   <header class="navbar">
     <div class="nav-container">
       <a href="#" class="brand-logo" aria-label="${title} Home">
-        <span class="logo-accent">///</span> ${title}
+        <span class="logo-accent">///</span> <span class="brand-text">${title}</span>
       </a>
-      <nav class="nav-links" aria-label="Main Navigation">
+      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+      <nav class="nav-links" id="navLinks" aria-label="Main Navigation">
         <ul class="nav-menu">
           <li><a href="#specifications" class="nav-link">Specifications</a></li>
           <li><a href="#design" class="nav-link">Design &amp; Aerodynamics</a></li>
@@ -1268,14 +1349,14 @@ export async function scaffoldStaticProject(
           <li><a href="#gallery" class="nav-link">Gallery</a></li>
           <li><a href="#contact" class="nav-link">Enquire</a></li>
         </ul>
-        <a href="#contact" class="btn btn-primary btn-sm">Book Test Drive</a>
+        <a href="#contact" class="btn btn-primary btn-sm nav-cta">Book Test Drive</a>
       </nav>
     </div>
   </header>
 
   <main>
     <section class="vehicle-hero">
-      <div class="vehicle-hero-bg" style="background-image: linear-gradient(180deg, rgba(10,10,10,0.3) 0%, rgba(10,10,10,0.85) 100%), url('https://images.unsplash.com/photo-1555215695-3004980ad54e?auto=format&fit=crop&w=1920&q=85');"></div>
+      <div class="vehicle-hero-bg" style="background-image: linear-gradient(180deg, rgba(10,10,10,0.3) 0%, rgba(10,10,10,0.85) 100%), url('images/hero-car.jpg'), url('https://images.unsplash.com/photo-1555215695-3004980ad54e?auto=format&fit=crop&w=1920&q=85');"></div>
       <div class="vehicle-hero-content">
         <div class="hero-badge">⚡ M POWER &bull; THE ULTIMATE DRIVING MACHINE</div>
         <h1 class="hero-title">${title}</h1>
@@ -1346,7 +1427,7 @@ export async function scaffoldStaticProject(
       <div class="container">
         <div class="feature-split">
           <div class="feature-image-wrapper">
-            <img src="https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=1200&q=85" alt="Aerodynamic front fascia and carbon exterior elements" class="feature-image" loading="lazy" width="1200" height="800">
+            <img src="images/front-car.jpg" onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=1200&q=85'" alt="Aerodynamic front fascia and carbon exterior elements" class="feature-image" loading="lazy" width="1200" height="800">
           </div>
           <div class="feature-text">
             <div class="section-tag">Aerodynamics</div>
@@ -1366,7 +1447,7 @@ export async function scaffoldStaticProject(
       <div class="container">
         <div class="feature-split feature-reverse">
           <div class="feature-image-wrapper">
-            <img src="https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1200&q=85" alt="Cockpit with sport seats and curved display" class="feature-image" loading="lazy" width="1200" height="800">
+            <img src="images/cockpit-car.jpg" onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1200&q=85'" alt="Cockpit with sport seats and curved display" class="feature-image" loading="lazy" width="1200" height="800">
           </div>
           <div class="feature-text">
             <div class="section-tag">Cockpit &amp; Craft</div>
@@ -1390,19 +1471,19 @@ export async function scaffoldStaticProject(
         </div>
         <div class="vehicle-gallery-grid">
           <figure class="gallery-item">
-            <img src="https://images.unsplash.com/photo-1555215695-3004980ad54e?auto=format&fit=crop&w=1200&q=85" alt="Vehicle front three-quarter dynamic stance" loading="lazy" width="1200" height="800">
-            <figcaption>Front Dynamic Stance</figcaption>
+            <img src="images/gallery-model-1.jpg" onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1555215695-3004980ad54e?auto=format&fit=crop&w=1200&q=85'" alt="GT Sports Coupe Edition dynamic stance" loading="lazy" width="1200" height="800">
+            <figcaption>GT Sports Coupe Edition</figcaption>
           </figure>
           <figure class="gallery-item">
-            <img src="https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=1200&q=85" alt="Grille and aerodynamic front detailing" loading="lazy" width="1200" height="800">
-            <figcaption>M Grille &amp; Aerodynamics</figcaption>
+            <img src="images/gallery-model-2.jpg" onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1584345604476-8ec5e12e42dd?auto=format&fit=crop&w=1200&q=85'" alt="Roadster Convertible Edition open-top photography" loading="lazy" width="1200" height="800">
+            <figcaption>Roadster Convertible Edition</figcaption>
           </figure>
           <figure class="gallery-item">
-            <img src="https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1200&q=85" alt="Interior cockpit and driver controls" loading="lazy" width="1200" height="800">
-            <figcaption>Interior Cockpit &amp; Leather</figcaption>
+            <img src="images/gallery-model-3.jpg" onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1563720223185-11003d516935?auto=format&fit=crop&w=1200&q=85'" alt="Motorsport Track Competition Spec on circuit" loading="lazy" width="1200" height="800">
+            <figcaption>Track Competition Edition</figcaption>
           </figure>
           <figure class="gallery-item">
-            <img src="https://images.unsplash.com/photo-1552519507-da3b142c6e3d?auto=format&fit=crop&w=1200&q=85" alt="Rear track angle and quad exhaust" loading="lazy" width="1200" height="800">
+            <img src="images/rear-car.jpg" onerror="this.onerror=null;this.src='https://images.unsplash.com/photo-1552519507-da3b142c6e3d?auto=format&fit=crop&w=1200&q=85'" alt="Rear track angle and quad exhaust" loading="lazy" width="1200" height="800">
             <figcaption>Rear Diffuser &amp; Quad Exhaust</figcaption>
           </figure>
         </div>
@@ -2935,8 +3016,84 @@ nav li {
   font-size: 0.85rem;
 }
 
+.nav-toggle {
+  display: none;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem;
+  cursor: pointer;
+  width: 44px;
+  height: 44px;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 5px;
+  min-width: 44px;
+  min-height: 44px;
+  color: var(--text-primary);
+}
+.nav-toggle span {
+  display: block;
+  width: 22px;
+  height: 2px;
+  background: var(--text-primary);
+  border-radius: 2px;
+  transition: all 0.25s ease;
+}
+
 /* Mobile Responsiveness */
 @media (max-width: 768px) {
+  .nav-toggle {
+    display: flex;
+  }
+  .nav-container {
+    padding: 0.75rem 1rem;
+    position: relative;
+    flex-wrap: nowrap;
+    justify-content: space-between;
+  }
+  .brand-logo {
+    font-size: clamp(0.95rem, 3.5vw, 1.25rem);
+    max-width: calc(100% - 56px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .nav-links {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 1.25rem 1rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1rem;
+    display: none;
+    box-shadow: 0 12px 24px rgba(0,0,0,0.5);
+    z-index: 200;
+  }
+  .nav-links.open {
+    display: flex;
+  }
+  .navbar ul, .nav-links ul, nav ul, ul.nav-menu {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+  .nav-links .nav-link {
+    padding: 0.6rem 0;
+    font-size: 1.05rem;
+    color: var(--text-primary);
+  }
+  .nav-links .nav-cta, .nav-links .btn {
+    width: 100%;
+    text-align: center;
+    padding: 0.75rem;
+    margin-top: 0.5rem;
+  }
   .specs-bar {
     grid-template-columns: repeat(2, 1fr);
     padding: 1.25rem;
@@ -2952,9 +3109,6 @@ nav li {
   }
   .hero-title {
     font-size: calc(${heroFontSize} * 0.72);
-  }
-  .nav-links a:not(.btn) {
-    display: none;
   }
   .hero-section {
     padding: calc(${heroV} * 0.6) 1rem 2.5rem;
@@ -3374,6 +3528,22 @@ ${reducedMotionBlock}
   window.PRODUCTS = PRODUCTS;
 });`
       : `document.addEventListener('DOMContentLoaded', () => {
+  // Mobile navigation drawer toggle
+  const navToggle = document.getElementById('navToggle') || document.getElementById('menuToggle');
+  const navLinks = document.getElementById('navLinks');
+  if (navToggle && navLinks) {
+    navToggle.addEventListener('click', () => {
+      const isOpen = navLinks.classList.toggle('open');
+      navToggle.setAttribute('aria-expanded', String(isOpen));
+    });
+    navLinks.querySelectorAll('a').forEach(link => {
+      link.addEventListener('click', () => {
+        navLinks.classList.remove('open');
+        navToggle.setAttribute('aria-expanded', 'false');
+      });
+    });
+  }
+
   const form = document.getElementById('contact-form');
   const feedback = document.getElementById('form-feedback');
 

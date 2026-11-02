@@ -376,11 +376,22 @@ export class Workspace {
     return fs.readFile(this.resolve(relativePath), "utf8");
   }
 
+  async readBuffer(relativePath: string): Promise<Buffer> {
+    return fs.readFile(this.resolve(relativePath));
+  }
+
   async write(relativePath: string, content: string): Promise<void> {
     const target = this.resolve(relativePath);
 
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, content, "utf8");
+  }
+
+  async writeBuffer(relativePath: string, buffer: Buffer): Promise<void> {
+    const target = this.resolve(relativePath);
+
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, buffer);
   }
 
   async list(relativePath = "."): Promise<string[]> {

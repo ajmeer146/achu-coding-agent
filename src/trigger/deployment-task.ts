@@ -54,19 +54,15 @@ export const websiteDeploymentTask = schemaTask({
     metadata.set("subdomain", payload.subdomain);
 
     const webPlatformUrl = (process.env.WEB_PLATFORM_URL || "https://www.workswithachu.me").replace(/\/+$/, "");
-    const secret = (
-      process.env.DEPLOYMENT_SECRET ||
-      process.env.SESSION_SECRET ||
-      process.env.TRIGGER_SECRET_KEY ||
-      process.env.WORKSPACE_SECRET ||
-      ""
-    ).trim().replace(/^["']|["']$/g, "");
+    const secret = (process.env.DEPLOYMENT_SECRET || "").trim().replace(/^["']|["']$/g, "");
 
     if (!secret) {
-      const errMsg = "Missing internal orchestration secret (DEPLOYMENT_SECRET, SESSION_SECRET, or TRIGGER_SECRET_KEY) in worker environment.";
+      const errMsg = "Missing canonical DEPLOYMENT_SECRET in worker environment. Cannot securely authorize internal deployment execution.";
       console.error(`[Trigger.dev] ${errMsg}`);
       throw new Error(errMsg);
     }
+
+    metadata.set("authConfigured", true);
 
     try {
       const res = await fetch(`${webPlatformUrl}/api/deployments/internal-execute`, {
@@ -101,9 +97,11 @@ export const websiteDeploymentTask = schemaTask({
         throw new Error(`Deployment failed: ${dep.errorMessage || "Deployment did not produce a production URL."}`);
       }
 
-      metadata.set("step", 4);
-      metadata.set("stepName", "Deployment complete");
+      metadata.set("step", 2);
+      metadata.set("stepName", "Pipeline executed successfully");
       metadata.set("productionUrl", dep.productionUrl || `https://${payload.subdomain}.workswithachu.me`);
+      if (dep.githubRepoUrl) metadata.set("githubRepoUrl", dep.githubRepoUrl);
+      metadata.set("status", "completed");
 
       console.log(`[Trigger.dev] Website deployment ${payload.deploymentId} completed successfully.`);
       return {

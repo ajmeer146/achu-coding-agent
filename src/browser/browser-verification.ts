@@ -1219,6 +1219,16 @@ export async function runVerificationSuite(
   // Placeholder and broken visual content are a quality failure regardless of which content
   // assertions were supplied. They must be replaced with real content before
   // verification can pass.
+  const imageVerification = await session.verifyImageRendering();
+  if (!imageVerification.passed && imageVerification.broken.length > 0) {
+    results.push({
+      structural: true,
+      passed: false,
+      target: { type: "text", text: "Image rendering verification" },
+      error: `Broken or placeholder image(s) detected (${imageVerification.broken.length}/${imageVerification.total}): ${imageVerification.broken.slice(0, 3).map(b => `"${b.src.slice(0, 60)}" [${b.error}] (alt: "${b.alt}")`).join("; ")}. All real images must render with non-zero dimensions without placeholder text.`,
+    });
+  }
+
   if (pageInfo?.qualityIssues && pageInfo.qualityIssues.length > 0) {
     const brokenImgIssues = pageInfo.qualityIssues.filter(q => q.toLowerCase().includes("broken image"));
     const placeholderIssues = pageInfo.qualityIssues.filter(q => !q.toLowerCase().includes("broken image"));
@@ -1497,6 +1507,31 @@ export function generateVerificationTargetsFromTask(task: string): VerificationT
       selector: '#catalog, #productGrid, .catalog-section, .products-grid, .product-grid, .cards-grid, [data-section*="product" i]',
       required: true,
     });
+  }
+
+  if (productType === "automotive") {
+    addTarget({
+      type: "section",
+      selector: '#specifications, [id*="spec"], .specifications-section, .specs-bar, [class*="spec"]',
+      required: true,
+    });
+    addTarget({
+      type: "section",
+      selector: '#gallery, [id*="gallery"], [id*="collection"], .gallery-section, .vehicle-gallery-grid, [class*="gallery"]',
+      required: true,
+    });
+    if (/\b(test[\s-]?drive|enquir|book|schedul|contact)\b/i.test(task)) {
+      addTarget({
+        type: "section",
+        selector: '#enquire, #contact, form, [id*="enquire"], [id*="contact"], [class*="enquire"], [class*="contact"]',
+        required: true,
+      });
+      addTarget({
+        type: "input",
+        selector: 'input[type="email"], input[type="text"], #email, #name',
+        required: true,
+      });
+    }
   }
 
   return targets;

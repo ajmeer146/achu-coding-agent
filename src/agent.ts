@@ -16,7 +16,7 @@ import { createFile } from "./tools/create-file.js";
 import { runCommand } from "./tools/terminal.js";
 import { isUITask, generateDesignSpec, formatDesignSpecForPrompt, type DesignSpec } from "./tools/design-planner.js";
 import { getDesignReferenceForDirection, formatDesignReference } from "./quality/design-references.js";
-import { searchImages, downloadAndValidateImage } from "./tools/image-intelligence.js";
+import { searchImages, downloadAndValidateImage, provisionVisualAssets, repairBrokenImage, type ImageAssetManifest } from "./tools/image-intelligence.js";
 import {
   buildWebsiteQualityGuidance,
   evaluateWebsiteQuality,
@@ -176,6 +176,7 @@ export type AgentState = {
     taskPrompt?: string;
     taskScope?: TaskScope;
     designSpec?: DesignSpec | null;
+    imageManifest?: ImageAssetManifest | null;
     scopedTargetFiles?: string[];
     executionLedger?: ExecutionLedger;
   };
@@ -252,7 +253,8 @@ const AGENT_TOOLS: Array<{ type: "function"; function: { name: string; descripti
   { type: "function", function: { name: "take_screenshot", description: "Captures a PNG screenshot of the current browser page for human review. Returns only the image size; the agent cannot visually interpret screenshot pixels. Use inspect_visual_quality for measurable layout checks.", parameters: { type: "object", properties: { viewport: { type: "string", enum: ["desktop", "mobile"], description: "Optional viewport to capture: 'desktop' (1280x800) or 'mobile' (375x667)." } }, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "inspect_visual_quality", description: "Runs measurable layout checks (horizontal overflow, clipped interactive elements, navigation overlap, text overflow, small touch targets) at desktop and mobile viewports. Use after browser_verify to find real layout defects. Does not interpret screenshot pixels.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "search_images", description: "Search for genuine, high-resolution, CC-licensed photography (automotive, real estate, restaurants, fashion, luxury items, tech, landmarks) from Wikimedia Commons and verified photo repositories. Returns genuine image URLs, titles, dimensions, and attribution.", parameters: { type: "object", properties: { query: { type: "string", description: "Search query describing the real-world subject, product, vehicle, or scene (e.g. 'BMW M4 black exterior', 'Modern luxury villa pool', 'Gourmet plated dish')." }, count: { type: "number", description: "Number of images to return (1-10, default 4)." } }, required: ["query"], additionalProperties: false } } },
-  { type: "function", function: { name: "download_image", description: "Download a verified image URL and save it into the workspace (e.g. 'public/images/hero.jpg' or 'assets/car.jpg'). Validates image bytes and returns the saved file path.", parameters: { type: "object", properties: { url: { type: "string", description: "Direct URL of the image to download." }, path: { type: "string", description: "Relative destination path in workspace (e.g. 'public/images/bmw-m4-hero.jpg')." } }, required: ["url", "path"], additionalProperties: false } } },
+  { type: "function", function: { name: "download_image", description: "Download a verified image URL and save it into the workspace (e.g. 'images/hero.jpg' or 'public/images/hero.jpg'). Validates image bytes and returns the saved file path.", parameters: { type: "object", properties: { url: { type: "string", description: "Direct URL of the image to download." }, path: { type: "string", description: "Relative destination path in workspace (e.g. 'images/bmw-m4-hero.jpg')." } }, required: ["url", "path"], additionalProperties: false } } },
+  { type: "function", function: { name: "provision_images", description: "Automatically provision and download genuine, verified photographic assets for the application into images/ and public/images/. Saves image-manifest.json and returns verified local asset paths and alt texts.", parameters: { type: "object", properties: { category: { type: "string", description: "Industry category: 'automotive', 'real_estate', 'restaurant', 'luxury_brand', 'saas_tech', or 'ecommerce'." }, prompt: { type: "string", description: "Optional descriptive prompt for specific vehicle or scene focus." } }, required: [], additionalProperties: false } } },
 ];
 
 function truncate(value: string, max = MAX_OUTPUT): string {
@@ -1252,6 +1254,10 @@ const hasCRUD = /\b(create.*read.*update.*delete|crud|list.*create|add.*edit.*de
             }
           } else {
             if (!hasTestCreation) {
+              const hasVisualAssetsIntent = /\b(automotive|automobile|automobiles|cars?\b|vehicles?\b|sports\s*cars?|supercars?|dealership|real\s*estate|villas?\b|restaurant|dining|food|dishes|luxury|watch|timepiece|photography|photos?|images?|gallery)\b/i.test(lowerTask);
+              if (hasVisualAssetsIntent && !hasSimilarStep("provision_images", "image")) {
+                addStep("Provision authentic photographic assets and image manifest", "provision_images");
+              }
               if (!hasSimilarStep("create_file", "index.html")) addStep("Create index.html", "create_file", "index.html");
               if (!hasSimilarStep("create_file", "styles.css")) addStep("Create styles.css", "create_file", "styles.css");
               if (!hasSimilarStep("create_file", "script.js")) addStep("Create script.js", "create_file", "script.js");
@@ -2325,11 +2331,32 @@ async function executeVerification(workspace: Workspace, command: string, state:
   return verification;
 }
 
-export function createSystemPrompt(workspaceRoot: string, requestedVerification: string | null, architectureSummary: string | null, taskScope?: TaskScope, designSpec?: DesignSpec | null, websiteQualityGuidance?: string | null): string {
+export function createSystemPrompt(
+  workspaceRoot: string,
+  requestedVerification: string | null,
+  architectureSummary: string | null,
+  taskScope?: TaskScope,
+  designSpec?: DesignSpec | null,
+  websiteQualityGuidance?: string | null,
+  imageManifest?: ImageAssetManifest | null
+): string {
   const scopeSection = taskScope ? `
 TASK CLASSIFICATION & SCOPE:
 - Mode: ${taskScope.classification.toUpperCase()} (${taskScope.reason})
 ${taskScope.isTargetedEdit ? `- TARGETED EDIT SCOPE: Make the smallest necessary source-code change for the requested edit. Preserve surrounding code, comments, imports, and unrelated components. DO NOT rewrite entire files when a targeted patch suffices.\n` : ''}${taskScope.targetFiles.length > 0 ? `- Scoped Target Files: ${taskScope.targetFiles.join(", ")}\n` : ''}` : '';
+
+  const manifestSection = imageManifest && imageManifest.assets && imageManifest.assets.length > 0
+    ? `\n**VERIFIED REAL PHOTOGRAPHY ASSETS READY IN WORKSPACE (USE THESE EXACT BROWSER PATHS IN <img> TAGS):**\n` +
+      imageManifest.assets.map((a, i) => `  ${i + 1}. [${a.slot.toUpperCase()}] ${a.subject}:
+     - Browser URL: "${a.browserUrl}"
+     - Suggested alt text: "${a.title}"
+     - Dimensions: ${a.width}x${a.height}`).join("\n") +
+      `\n\n* ASSET INTEGRATION RULES (STRICT):\n` +
+      `  1. Use the exact relative paths above in your HTML <img> tags or React JSX (e.g. <img src="${imageManifest.assets[0]?.browserUrl || 'images/hero.jpg'}" alt="${imageManifest.assets[0]?.title || 'Vehicle photography'}">).\n` +
+      `  2. NEVER use fictitious unverified paths like "/images/sports-car-1.jpg".\n` +
+      `  3. NEVER use placeholder alt text like "Sports car model 1", "Sports car model 2", or "product placeholder".\n` +
+      `  4. Always ensure every <img> element has "max-width: 100%; height: auto; display: block;" or container dimensions so images never overflow their cards.\n`
+    : "";
 
   return `You are Achu Coding Agent, an autonomous general-purpose software engineering agent.
 
@@ -2455,7 +2482,7 @@ After browser_verify passes content assertions, it automatically runs measurable
 5. You CANNOT see screenshot pixels. Never claim visual inspection based on a screenshot; base visual fixes only on measurable defects reported by these tools.
 6. Report any remaining visual issues honestly.
 DO NOT make unrelated changes to pass a layout check.
-` : ""}
+` : ""}${manifestSection}
 EXECUTION SPEED AND EFFICIENCY:
 - Keep the process efficient. Simple tasks must not trigger excessive planning or over-decomposition.
 - Avoid redundant model calls and repeated analysis of unchanged files.
@@ -2731,19 +2758,30 @@ export function buildInitialSystemPrompt(
   requestedVerification: string | null,
   architectureSummary: string | null,
   taskScope?: TaskScope,
-  designSpec?: DesignSpec | null
+  designSpec?: DesignSpec | null,
+  imageManifest?: ImageAssetManifest | null
 ): string {
   const websiteQualityGuidance = buildWebsiteQualityGuidance(
     task,
     designSpec?.productType ?? null
   );
+  let manifest = imageManifest;
+  if (!manifest) {
+    try {
+      const manifestPath = path.join(workspaceRoot, "image-manifest.json");
+      if (fs.existsSync(manifestPath)) {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      }
+    } catch {}
+  }
   return createSystemPrompt(
     workspaceRoot,
     requestedVerification,
     architectureSummary,
     taskScope,
     designSpec,
-    websiteQualityGuidance
+    websiteQualityGuidance,
+    manifest
   );
 }
 
@@ -3155,6 +3193,10 @@ const schemas = {
   download_image: z.object({
     url: z.string(),
     path: z.string(),
+  }),
+  provision_images: z.object({
+    category: z.string().optional(),
+    prompt: z.string().optional(),
   }),
 };
 
@@ -4054,6 +4096,37 @@ async function executeToolCore(workspace: Workspace, toolCall: ToolCall, state: 
               .join("\n- ")})`;
           }
 
+          // Image Rendering Verification and Automatic Repair Loop
+          const imgVerification = await state.browserSession.verifyImageRendering();
+          if (!imgVerification.passed && imgVerification.broken.length > 0) {
+            console.log(chalk.yellow(`[Visual Intelligence] Detected ${imgVerification.broken.length} broken/placeholder image(s) in browser. Initiating automatic image repair loop...`));
+            let repaired = 0;
+            for (const b of imgVerification.broken) {
+              try {
+                const rep = await repairBrokenImage(workspace.root, b.src, b.alt, state.taskPrompt);
+                if (rep.success && rep.newSrc) {
+                  repaired++;
+                  state.completedTasks.add("edit_file:index.html");
+                  if (state.executionLedger) state.executionLedger.filesModified.add("index.html");
+                  console.log(chalk.green(`[Visual Intelligence] Hot-repaired image: '${b.src}' -> '${rep.newSrc}' (alt: '${rep.newAlt}')`));
+                }
+              } catch (e) {
+                console.warn(chalk.yellow(`[Visual Intelligence] Hot-repair failed for '${b.src}': ${e}`));
+              }
+            }
+            if (repaired > 0) {
+              await state.browserSession.navigate(baseUrl);
+              const recheck = await state.browserSession.verifyImageRendering();
+              if (!recheck.passed && recheck.broken.length > 0) {
+                const brokenDetails = recheck.broken.map(b => `"${b.src}" [${b.error}] (alt: "${b.alt}")`).join("; ");
+                return `Browser verification: Image repair attempted, but ${recheck.broken.length} image(s) remain broken at ${baseUrl}: ${brokenDetails}. Replace with valid local assets or verified URLs, then re-run browser_verify.`;
+              }
+            } else {
+              const brokenDetails = imgVerification.broken.map(b => `"${b.src}" [${b.error}] (alt: "${b.alt}")`).join("; ");
+              return `Browser verification failed at ${baseUrl}: ${imgVerification.broken.length} broken or placeholder image(s) detected: ${brokenDetails}. Real photographic images must render with non-zero dimensions without placeholder text.`;
+            }
+          }
+
           const visualReport = await runVisualQualityChecks(state.browserSession, baseUrl);
           if (visualReport && visualReport.critical.length > 0) {
             const visualDetail = formatVisualQualityReport(visualReport);
@@ -4191,9 +4264,41 @@ async function executeToolCore(workspace: Workspace, toolCall: ToolCall, state: 
           return `Tool error: Failed to download image: ${dlRes.error}`;
         }
         state.completedTasks.add(`create_file:${targetPath}`);
+        if (state.executionLedger) {
+          state.executionLedger.filesModified.add(targetPath);
+        }
+        const normalized = targetPath.replace(/\\/g, "/");
+        if (normalized.startsWith("images/")) {
+          const pub = `public/${normalized}`;
+          state.completedTasks.add(`create_file:${pub}`);
+          if (state.executionLedger) state.executionLedger.filesModified.add(pub);
+        } else if (normalized.startsWith("public/images/")) {
+          const rootImg = normalized.replace(/^public\//, "");
+          state.completedTasks.add(`create_file:${rootImg}`);
+          if (state.executionLedger) state.executionLedger.filesModified.add(rootImg);
+        }
         await state.snapshotManager.captureBefore(targetPath, "create");
         await state.snapshotManager.captureAfter(targetPath);
         return `Successfully downloaded image (${dlRes.bytes} bytes) to '${targetPath}'.`;
+      }
+      case "provision_images": {
+        const category = (args as any).category || state.designSpec?.productType || "generic_website";
+        const prompt = (args as any).prompt || state.taskPrompt || "";
+        console.log(chalk.cyan(`[Visual Intelligence] Provisioning photographic assets for category '${category}'...`));
+        const manifest = await provisionVisualAssets(workspace.root, category, prompt);
+        state.imageManifest = manifest;
+        for (const asset of manifest.assets) {
+          state.completedTasks.add(`create_file:${asset.localPath}`);
+          if (state.executionLedger) {
+            state.executionLedger.filesModified.add(asset.localPath);
+          }
+        }
+        state.completedTasks.add("create_file:image-manifest.json");
+        if (state.executionLedger) {
+          state.executionLedger.filesModified.add("image-manifest.json");
+        }
+        return `Successfully provisioned ${manifest.assets.length} verified real images into workspace:\n` +
+          manifest.assets.map(a => `- [${a.slot.toUpperCase()}] ${a.subject}: "${a.browserUrl}" (alt: "${a.title}")`).join("\n");
       }
       default: return `Unknown tool: ${toolCall.function.name}`;
     }
@@ -4549,6 +4654,29 @@ export async function runAgent(
   if (p13DesignSpec) {
     console.log(chalk.magenta(`[Phase 13] Design Intelligence: ${p13DesignSpec.direction} / ${p13DesignSpec.productType}`));
   }
+
+  // Visual Intelligence: Auto-provision genuine photographic assets for UI tasks requiring real imagery
+  if (p13DesignSpec && p13DesignSpec.visualAssets && p13DesignSpec.visualAssets.length > 0) {
+    console.log(chalk.cyan(`[Visual Intelligence] Auto-provisioning genuine photographic assets for ${p13DesignSpec.productType}...`));
+    try {
+      const manifest = await provisionVisualAssets(workspace.root, p13DesignSpec.productType, task);
+      state.imageManifest = manifest;
+      for (const asset of manifest.assets) {
+        state.completedTasks.add(`create_file:${asset.localPath}`);
+        if (state.executionLedger) {
+          state.executionLedger.filesModified.add(asset.localPath);
+        }
+      }
+      state.completedTasks.add("create_file:image-manifest.json");
+      if (state.executionLedger) {
+        state.executionLedger.filesModified.add("image-manifest.json");
+      }
+      console.log(chalk.green(`[Visual Intelligence] Successfully provisioned ${manifest.assets.length} image(s) and image-manifest.json.`));
+    } catch (err) {
+      console.warn(chalk.yellow(`[Visual Intelligence] Asset provisioning notice: ${err}`));
+    }
+  }
+
   const principlesEval = evaluatePrinciplesApplicability(task, p13DesignSpec?.productType ?? null);
   state.principlesSummary = principlesEval.summary;
   console.log(chalk.cyan(`[50 Principles] ${principlesEval.summary}`));
@@ -4577,7 +4705,7 @@ export async function runAgent(
   }
 
   let messages: ChatMessage[] = [
-    { role: "system", content: buildInitialSystemPrompt(task, workspace.root, requestedVerification, architectureSummary, taskScope, p13DesignSpec) },
+    { role: "system", content: buildInitialSystemPrompt(task, workspace.root, requestedVerification, architectureSummary, taskScope, p13DesignSpec, state.imageManifest) },
     { role: "user", content: initialUserContent },
   ];
 

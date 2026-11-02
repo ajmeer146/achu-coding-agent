@@ -142,7 +142,7 @@ const SUBJECT_ARCHETYPES: ReadonlyArray<{ type: ProductType; pattern: RegExp }> 
   { type: "login_auth", pattern: /\b(login|log[\s-]?in|sign[\s-]?in|signin|sign[\s-]?up|signup|register|registration|authentication|auth|password)\b/ },
   { type: "game_2d", pattern: /\b(2d\s+game|browser\s+game|arcade|platformer|space\s+shooter|phaser|flappy|snake\s+game|pong|canvas\s+game|interactive\s+game)\b/ },
   { type: "experience_3d", pattern: /\b(3d\s+experience|3d\s+scene|three[\s-]?js|threejs|babylon[\s-]?js|babylonjs|webgl|3d\s+model|3d\s+viewer|3d\s+solar\s+system|3d\s+animation)\b/ },
-  { type: "automotive", pattern: /\b(automotive|cars?\b|vehicles?\b|dealership|supercars?|sports\s+cars?|bmw|mercedes|audi|porsche|ferrari|lamborghini|tesla|mustang|m4\b|m3\b|amg)\b/ },
+  { type: "automotive", pattern: /\b(automotive|automobiles?\b|cars?\b|vehicles?\b|dealership|supercars?|sports\s+cars?|motors?\b|bmw|mercedes|audi|porsche|ferrari|lamborghini|tesla|mustang|m4\b|m3\b|amg)\b/ },
   { type: "real_estate", pattern: /\b(real\s+estate|realtor|propert(?:y|ies)|villas?\b|apartments?\b|penthouse|listing|brokerage|mansions?)\b/ },
   { type: "restaurant_hospitality", pattern: /\b(restaurants?|cafes?|bistros?|bakery|dining|bars?\b|cocktails?|menu\b|culinary|chef|steakhouses?|pizzerias?)\b/ },
   { type: "luxury_fashion", pattern: /\b(luxury\s+fashion|haute\s+couture|timepieces?|watches?\b|jewel(?:ry|lery)|apparel\s+brand)\b/ },
@@ -221,7 +221,7 @@ export function analyseTaskBrief(task: string): ProductType {
   if (/\b(docs|documentation|api\s+reference|developer\s+guide|readme|technical\s+guide)\b/.test(lower))
     return "documentation";
 
-  if (/\b(automotive|cars?\b|vehicles?\b|dealership|supercars?|sports\s+cars?|bmw|mercedes|audi|porsche|ferrari|lamborghini|tesla|mustang|m4\b|m3\b|amg)\b/.test(lower))
+  if (/\b(automotive|automobiles?\b|cars?\b|vehicles?\b|dealership|supercars?|sports\s+cars?|motors?\b|bmw|mercedes|audi|porsche|ferrari|lamborghini|tesla|mustang|m4\b|m3\b|amg)\b/.test(lower))
     return "automotive";
 
   if (/\b(real\s+estate|realtor|propert(?:y|ies)|villas?\b|apartments?\b|penthouse|listing|brokerage|mansions?)\b/.test(lower))
@@ -993,12 +993,13 @@ export function buildRequiredVisualAssets(productType: ProductType, task: string
     case "automotive": {
       const isBmw = /bmw|m4|m3/.test(lower);
       const isPorsche = /porsche|911/.test(lower);
-      const brand = isBmw ? "BMW M4" : isPorsche ? "Porsche 911" : "sports car";
+      const brand = isBmw ? "BMW M4" : isPorsche ? "Porsche 911" : "luxury sports car";
       return [
         { slot: "hero", description: `Full-width dramatic exterior ${brand} hero photography`, query: `${brand} exterior`, aspectRatio: "16:9" },
         { slot: "feature", description: `${brand} front fascia aerodynamic styling and headlights`, query: `${brand} front`, aspectRatio: "4:3" },
         { slot: "detail", description: `${brand} cockpit sport seats, steering wheel and digital display`, query: `${brand} interior`, aspectRatio: "4:3" },
         { slot: "gallery", description: `${brand} rear diffuser, wheels and quad exhaust`, query: `${brand} rear`, aspectRatio: "4:3" },
+        { slot: "showcase", description: `Showroom vehicle collection models (coupe, roadster, track edition)`, query: `luxury sports car collection`, aspectRatio: "4:3" },
       ];
     }
     case "real_estate":
@@ -1112,7 +1113,8 @@ export function formatDesignSpecForPrompt(spec: DesignSpec): string {
   const assetsSection = spec.visualAssets && spec.visualAssets.length > 0
     ? `\n**Required Real Photography Assets (MANDATORY — DO NOT USE ABSTRACT SVG SHAPES FOR REAL OBJECTS):**\n` +
       spec.visualAssets.map((a, i) => `  ${i + 1}. [${a.slot.toUpperCase()}] ${a.description} (Recommended query: "${a.query}", aspect-ratio: ${a.aspectRatio})`).join("\n") +
-      `\n  * Real Photography Rule: For vehicles, properties, culinary dishes, and luxury items, use genuine photographic assets. Call search_images to find authentic media or download them directly into public/images/.`
+      `\n  * Real Photography Rule: For vehicles, properties, culinary dishes, and luxury items, genuine photographic assets must be provisioned and verified.` +
+      `\n  * Asset Path Rule: When referencing downloaded image assets in HTML/JSX, use relative paths matching the asset manifest (e.g. 'images/<name>.jpg' or '/images/<name>.jpg'). NEVER invent fictitious non-existent paths. NEVER use placeholder alt text like 'Sports car model 1'. Provide authentic, accessible alt text describing the vehicle or scene.`
     : "";
 
   return `

@@ -45,7 +45,17 @@ const server = http.createServer((req, res) => {
     if (filePath !== root && !filePath.startsWith(root + path.sep)) return send(res, 403, "Forbidden");
     let target = filePath;
     try { if (fs.statSync(target).isDirectory()) target = path.join(target, "index.html"); } catch {}
-    if (!fs.existsSync(target)) target = path.join(root, "index.html");
+    // Check public/ directory fallback for static assets (e.g. /images/car.jpg -> public/images/car.jpg)
+    if (!fs.existsSync(target)) {
+      const publicTarget = path.resolve(root, "public", "." + rawPath);
+      if (fs.existsSync(publicTarget)) target = publicTarget;
+    }
+    const ext = path.extname(rawPath).toLowerCase();
+    const isAsset = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".ico", ".css", ".js", ".mjs", ".woff", ".woff2", ".ttf", ".json"].includes(ext);
+    if (!fs.existsSync(target)) {
+      if (isAsset) return send(res, 404, "Asset Not Found: " + rawPath);
+      target = path.join(root, "index.html");
+    }
     if (!fs.existsSync(target)) return send(res, 404, "Not found");
     const body = fs.readFileSync(target);
     res.writeHead(200, { "Content-Type": types[path.extname(target).toLowerCase()] || "application/octet-stream", "Content-Length": body.length, "Cache-Control": "no-store" });

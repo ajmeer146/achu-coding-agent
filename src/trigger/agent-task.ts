@@ -352,8 +352,19 @@ export async function executeAgentTask(payload: AgentTaskPayload): Promise<Agent
         try {
           const normalized = filePath.replace(/\\/g, "/");
           if (!artifactsMap.has(normalized)) {
-            const content = await workspace.read(filePath);
-            artifactsMap.set(normalized, content);
+            const ext = filePath.split(".").pop()?.toLowerCase() || "";
+            const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "avif"]);
+            if (IMAGE_EXTS.has(ext)) {
+              const full = path.resolve(rootPath, filePath);
+              if (fs.existsSync(full)) {
+                const buf = await fs.promises.readFile(full);
+                const mime = (ext === "jpg" || ext === "jpeg") ? "image/jpeg" : (ext === "png" ? "image/png" : (ext === "webp" ? "image/webp" : (ext === "gif" ? "image/gif" : `image/${ext}`)));
+                artifactsMap.set(normalized, `data:${mime};base64,${buf.toString("base64")}`);
+              }
+            } else {
+              const content = await workspace.read(filePath);
+              artifactsMap.set(normalized, content);
+            }
           }
         } catch {}
       }
