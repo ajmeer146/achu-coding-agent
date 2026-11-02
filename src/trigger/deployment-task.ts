@@ -47,16 +47,11 @@ export const websiteDeploymentTask = schemaTask({
   run: async (payload: DeploymentTaskPayload): Promise<DeploymentTaskResult> => {
     console.log(`[Trigger.dev] Starting durable website deployment: ${payload.deploymentId} (${payload.subdomain})`);
     
+    metadata.set("status", "running");
     metadata.set("step", 1);
-    metadata.set("stepName", "Creating isolated GitHub repository");
+    metadata.set("stepName", "Executing cloud deployment pipeline");
     metadata.set("deploymentId", payload.deploymentId);
     metadata.set("subdomain", payload.subdomain);
-
-    metadata.set("step", 2);
-    metadata.set("stepName", "Uploading source files to GitHub");
-
-    metadata.set("step", 3);
-    metadata.set("stepName", "Deploying Vercel project and custom subdomain");
 
     const webPlatformUrl = (process.env.WEB_PLATFORM_URL || "https://www.workswithachu.me").replace(/\/+$/, "");
     const secret = process.env.DEPLOYMENT_SECRET || process.env.SESSION_SECRET || process.env.WORKSPACE_SECRET || "";

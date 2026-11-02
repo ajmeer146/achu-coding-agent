@@ -22,6 +22,15 @@ import {
 // ---------------------------------------------------------------------------
 
 export type ProductType =
+  | "automotive"
+  | "real_estate"
+  | "restaurant_hospitality"
+  | "luxury_fashion"
+  | "healthcare_medical"
+  | "education"
+  | "finance_fintech"
+  | "entertainment_media"
+  | "travel_tourism"
   | "landing_page"
   | "portfolio"
   | "dashboard"
@@ -31,6 +40,13 @@ export type ProductType =
   | "saas_app"
   | "documentation"
   | "generic_website";
+
+export interface RequiredVisualAsset {
+  slot: "hero" | "gallery" | "feature" | "showcase" | "detail" | "profile" | "background";
+  description: string;
+  query: string;
+  aspectRatio: "16:9" | "4:3" | "1:1" | "21:9" | "3:4";
+}
 
 export type ColorScheme = "dark" | "light" | "auto";
 
@@ -105,6 +121,10 @@ export interface DesignSpec {
   qualityChecklist: QualityChecklistItem[];
   /** Tailored 50-principles evaluation */
   principlesEvaluations?: PrincipleEvaluation[];
+  /** Industry category determining layout composition and storytelling */
+  industry?: string;
+  /** Required real visual photography specifications */
+  visualAssets?: RequiredVisualAsset[];
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +138,15 @@ export interface DesignSpec {
  */
 const SUBJECT_ARCHETYPES: ReadonlyArray<{ type: ProductType; pattern: RegExp }> = [
   { type: "login_auth", pattern: /\b(login|log[\s-]?in|sign[\s-]?in|signin|sign[\s-]?up|signup|register|registration|authentication|auth|password)\b/ },
+  { type: "automotive", pattern: /\b(automotive|cars?\b|vehicles?\b|dealership|supercars?|sports\s+cars?|bmw|mercedes|audi|porsche|ferrari|lamborghini|tesla|mustang|m4\b|m3\b|amg)\b/ },
+  { type: "real_estate", pattern: /\b(real\s+estate|realtor|propert(?:y|ies)|villas?\b|apartments?\b|penthouse|listing|brokerage|mansions?)\b/ },
+  { type: "restaurant_hospitality", pattern: /\b(restaurants?|cafes?|bistros?|bakery|dining|bars?\b|cocktails?|menu\b|culinary|chef|steakhouses?|pizzerias?)\b/ },
+  { type: "luxury_fashion", pattern: /\b(luxury\s+fashion|haute\s+couture|timepieces?|watches?\b|jewel(?:ry|lery)|apparel\s+brand)\b/ },
+  { type: "healthcare_medical", pattern: /\b(healthcare|medical|clinics?|doctors?|dental|dentists?|hospitals?|pharmacy|telehealth)\b/ },
+  { type: "education", pattern: /\b(education|academy|schools?|university|courses?|e-learning|bootcamp|tutors?)\b/ },
+  { type: "finance_fintech", pattern: /\b(finance|fintech|banking|banks?\b|investments?|wealth|crypto|trading|insurance)\b/ },
+  { type: "entertainment_media", pattern: /\b(entertainment|music|bands?\b|record\s+labels?|movies?|films?|cinemas?|podcasts?|gaming|game\s+studios?)\b/ },
+  { type: "travel_tourism", pattern: /\b(travel|tourism|tours?\b|resorts?|hotels?|vacations?|destinations?|safari)\b/ },
   { type: "portfolio", pattern: /\b(portfolio|showcase|resume|curriculum|vitae)\b/ },
   { type: "ecommerce", pattern: /\b(e[\s-]?commerce|store|shop|catalog|cart|checkout|marketplace|food\s+delivery)\b/ },
   { type: "dashboard", pattern: /\b(dashboard|admin|kpi|analytics|metrics|reporting)\b/ },
@@ -182,6 +211,33 @@ export function analyseTaskBrief(task: string): ProductType {
   if (/\b(docs|documentation|api\s+reference|developer\s+guide|readme|technical\s+guide)\b/.test(lower))
     return "documentation";
 
+  if (/\b(automotive|cars?\b|vehicles?\b|dealership|supercars?|sports\s+cars?|bmw|mercedes|audi|porsche|ferrari|lamborghini|tesla|mustang|m4\b|m3\b|amg)\b/.test(lower))
+    return "automotive";
+
+  if (/\b(real\s+estate|realtor|propert(?:y|ies)|villas?\b|apartments?\b|penthouse|listing|brokerage|mansions?)\b/.test(lower))
+    return "real_estate";
+
+  if (/\b(restaurants?|cafes?|bistros?|bakery|dining|bars?\b|cocktails?|menu\b|culinary|chef|steakhouses?|pizzerias?)\b/.test(lower))
+    return "restaurant_hospitality";
+
+  if (/\b(luxury\s+fashion|haute\s+couture|timepieces?|watches?\b|jewel(?:ry|lery)|apparel\s+brand)\b/.test(lower))
+    return "luxury_fashion";
+
+  if (/\b(healthcare|medical|clinics?|doctors?|dental|dentists?|hospitals?|pharmacy|telehealth)\b/.test(lower))
+    return "healthcare_medical";
+
+  if (/\b(education|academy|schools?|university|courses?|e-learning|bootcamp|tutors?)\b/.test(lower))
+    return "education";
+
+  if (/\b(finance|fintech|banking|banks?\b|investments?|wealth|crypto|trading|insurance)\b/.test(lower))
+    return "finance_fintech";
+
+  if (/\b(entertainment|music|bands?\b|record\s+labels?|movies?|films?|cinemas?|podcasts?|gaming|game\s+studios?)\b/.test(lower))
+    return "entertainment_media";
+
+  if (/\b(travel|tourism|tours?\b|resorts?|hotels?|vacations?|destinations?|safari)\b/.test(lower))
+    return "travel_tourism";
+
   if (/\b(saas|app\b|platform|workspace|productivity|tool|software)\b/.test(lower) &&
       !/\blanding\b/.test(lower))
     return "saas_app";
@@ -203,6 +259,55 @@ export function selectDesignDirection(productType: ProductType, task: string): D
   const lower = task.toLowerCase();
 
   switch (productType) {
+    case "automotive":
+      if (/\b(tech|cyber|electric|ev|futur|neon)\b/.test(lower))
+        return "tech_cyberpunk";
+      if (/\b(bold|race|track|vibrant|sport|red|orange)\b/.test(lower))
+        return "bold_vibrant";
+      return "luxury_brand"; // Automotive default is high-end luxury brand
+
+    case "real_estate":
+      if (/\b(luxury|estate|villa|penthouse|mansion|exclusive)\b/.test(lower))
+        return "editorial_luxury";
+      if (/\b(clean|white|minimal)\b/.test(lower))
+        return "minimal_clean";
+      return "editorial_luxury";
+
+    case "restaurant_hospitality":
+      if (/\b(luxury|fine\s+dining|michelin|upscale)\b/.test(lower))
+        return "luxury_brand";
+      return "warm_organic";
+
+    case "luxury_fashion":
+      return "luxury_brand";
+
+    case "healthcare_medical":
+      if (/\b(clean|minimal|modern)\b/.test(lower))
+        return "minimal_clean";
+      return "professional_corporate";
+
+    case "education":
+      if (/\b(playful|kids|fun|children)\b/.test(lower))
+        return "playful_colorful";
+      if (/\b(modern|tech|bootcamp|code|coding|online)\b/.test(lower))
+        return "modern_saas_light";
+      return "professional_corporate";
+
+    case "finance_fintech":
+      if (/\b(crypto|web3|dark|trading)\b/.test(lower))
+        return "dark_saas";
+      return "professional_corporate";
+
+    case "entertainment_media":
+      if (/\b(cyber|futur|neon|synth)\b/.test(lower))
+        return "neon_futuristic";
+      return "bold_vibrant";
+
+    case "travel_tourism":
+      if (/\b(luxury|exclusive|resort)\b/.test(lower))
+        return "editorial_luxury";
+      return "warm_organic";
+
     case "portfolio":
       if (/\b(creative\s+agency|agency|design\s+studio|studio)\b/.test(lower))
         return "creative_agency";
@@ -778,6 +883,25 @@ export function buildTypography(direction: DesignDirection): DesignTypography {
 
 export function buildSpacing(productType: ProductType): DesignSpacing {
   switch (productType) {
+    case "automotive":
+    case "luxury_fashion":
+      return { heroVertical: "6rem", sectionVertical: "5.5rem", cardPadding: "2.25rem" };
+
+    case "real_estate":
+    case "travel_tourism":
+      return { heroVertical: "5.5rem", sectionVertical: "4.5rem", cardPadding: "2rem" };
+
+    case "restaurant_hospitality":
+      return { heroVertical: "5rem", sectionVertical: "4.5rem", cardPadding: "2rem" };
+
+    case "healthcare_medical":
+    case "finance_fintech":
+    case "education":
+      return { heroVertical: "4rem", sectionVertical: "3.5rem", cardPadding: "1.75rem" };
+
+    case "entertainment_media":
+      return { heroVertical: "5.5rem", sectionVertical: "4.5rem", cardPadding: "2rem" };
+
     case "portfolio":
     case "blog":
       return { heroVertical: "6rem", sectionVertical: "5rem", cardPadding: "2.5rem" };
@@ -806,6 +930,24 @@ export function buildSpacing(productType: ProductType): DesignSpacing {
 
 function buildExpectedSections(productType: ProductType): string[] {
   switch (productType) {
+    case "automotive":
+      return ["Navigation", "Vehicle Hero", "Key Specifications", "Exterior & Interior", "Vehicle Gallery", "Test Drive Enquiry", "Footer"];
+    case "real_estate":
+      return ["Navigation", "Property Hero", "Featured Properties", "Property Details", "Amenities & Floor Plan", "Agent Contact", "Footer"];
+    case "restaurant_hospitality":
+      return ["Navigation", "Atmosphere Hero", "Curated Menu", "Chef's Story", "Dining Gallery", "Reservation Form", "Hours & Location", "Footer"];
+    case "luxury_fashion":
+      return ["Navigation", "Editorial Hero", "Collection Showcase", "Craftsmanship", "Product Spotlight", "Client Services", "Footer"];
+    case "healthcare_medical":
+      return ["Navigation", "Medical Hero", "Care Services", "Doctor Profiles", "Patient Reviews", "Book Appointment", "Footer"];
+    case "education":
+      return ["Navigation", "Academy Hero", "Curriculum", "Instructor Profiles", "Student Outcomes", "Enrollment CTA", "Footer"];
+    case "finance_fintech":
+      return ["Navigation", "Fintech Hero", "Financial Solutions", "Security Standards", "Rate Calculator", "Open Account Form", "Footer"];
+    case "entertainment_media":
+      return ["Navigation", "Media Hero", "Featured Releases", "Event Schedule", "Media Gallery", "VIP Tickets", "Footer"];
+    case "travel_tourism":
+      return ["Navigation", "Destination Hero", "Featured Itineraries", "Experience Highlights", "Guest Reviews", "Booking Enquiry", "Footer"];
     case "landing_page": return ["Navigation", "Hero", "Features", "Call to Action", "Footer"];
     case "portfolio":    return ["Navigation", "About", "Projects", "Skills", "Contact"];
     case "dashboard":    return ["Sidebar", "Stats", "Data Table", "Charts"];
@@ -815,6 +957,49 @@ function buildExpectedSections(productType: ProductType): string[] {
     case "saas_app":     return ["Navigation", "Hero", "Features", "Pricing", "Footer"];
     case "documentation":return ["Sidebar Navigation", "Content", "Code Examples"];
     default:             return ["Navigation", "Hero", "Content", "Footer"];
+  }
+}
+
+export function buildRequiredVisualAssets(productType: ProductType, task: string): RequiredVisualAsset[] {
+  const lower = task.toLowerCase();
+
+  switch (productType) {
+    case "automotive": {
+      const isBmw = /bmw|m4|m3/.test(lower);
+      const isPorsche = /porsche|911/.test(lower);
+      const brand = isBmw ? "BMW M4" : isPorsche ? "Porsche 911" : "sports car";
+      return [
+        { slot: "hero", description: `Full-width dramatic exterior ${brand} hero photography`, query: `${brand} exterior`, aspectRatio: "16:9" },
+        { slot: "feature", description: `${brand} front fascia aerodynamic styling and headlights`, query: `${brand} front`, aspectRatio: "4:3" },
+        { slot: "detail", description: `${brand} cockpit sport seats, steering wheel and digital display`, query: `${brand} interior`, aspectRatio: "4:3" },
+        { slot: "gallery", description: `${brand} rear diffuser, wheels and quad exhaust`, query: `${brand} rear`, aspectRatio: "4:3" },
+      ];
+    }
+    case "real_estate":
+      return [
+        { slot: "hero", description: "Architectural luxury villa or penthouse exterior with pool", query: "luxury villa modern architecture", aspectRatio: "16:9" },
+        { slot: "feature", description: "Spacious contemporary open-plan living room", query: "contemporary luxury living room", aspectRatio: "4:3" },
+        { slot: "detail", description: "Custom gourmet kitchen and island", query: "designer kitchen luxury", aspectRatio: "4:3" },
+      ];
+    case "restaurant_hospitality":
+      return [
+        { slot: "hero", description: "Sophisticated fine dining restaurant ambiance", query: "fine dining restaurant interior", aspectRatio: "16:9" },
+        { slot: "feature", description: "Master culinary plated dish with artistic presentation", query: "gourmet plated dish", aspectRatio: "1:1" },
+        { slot: "detail", description: "Executive chef preparing artisanal culinary creations", query: "chef cooking restaurant kitchen", aspectRatio: "4:3" },
+      ];
+    case "luxury_fashion":
+      return [
+        { slot: "hero", description: "Haute horlogerie or luxury fashion editorial hero showcase", query: "luxury timepiece watch", aspectRatio: "16:9" },
+        { slot: "detail", description: "Macro craftsmanship detail of mechanical movement or materials", query: "luxury watch dial detail", aspectRatio: "1:1" },
+      ];
+    case "portfolio":
+      return [
+        { slot: "hero", description: "Creative workspace setup and design studio showcase", query: "minimal designer workspace", aspectRatio: "16:9" },
+      ];
+    default:
+      return [
+        { slot: "hero", description: "High-performance modern workspace and digital environment", query: "modern tech workspace", aspectRatio: "16:9" },
+      ];
   }
 }
 
@@ -861,6 +1046,8 @@ export function generateDesignSpec(task: string): DesignSpec {
     neon_futuristic: "Neon Futuristic — near-black, Orbitron font, purple/pink neon glow effects",
   };
 
+  const visualAssets = buildRequiredVisualAssets(productType, task);
+
   return {
     productType,
     direction,
@@ -875,6 +1062,8 @@ export function generateDesignSpec(task: string): DesignSpec {
     principlesVersion: WEBSITE_50_PRINCIPLES_VERSION,
     qualityChecklist: buildQualityChecklist(productType, task),
     principlesEvaluations: evaluatePrinciplesApplicability(task, productType).evaluations,
+    industry: productType,
+    visualAssets,
   };
 }
 
@@ -892,6 +1081,12 @@ export function formatDesignSpecForPrompt(spec: DesignSpec): string {
    <link rel="preconnect" href="https://fonts.googleapis.com">
    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
    <link href="${ty.googleFontsUrl}" rel="stylesheet>`
+    : "";
+
+  const assetsSection = spec.visualAssets && spec.visualAssets.length > 0
+    ? `\n**Required Real Photography Assets (MANDATORY — DO NOT USE ABSTRACT SVG SHAPES FOR REAL OBJECTS):**\n` +
+      spec.visualAssets.map((a, i) => `  ${i + 1}. [${a.slot.toUpperCase()}] ${a.description} (Recommended query: "${a.query}", aspect-ratio: ${a.aspectRatio})`).join("\n") +
+      `\n  * Real Photography Rule: For vehicles, properties, culinary dishes, and luxury items, use genuine photographic assets. Call search_images to find authentic media or download them directly into public/images/.`
     : "";
 
   return `
@@ -941,6 +1136,7 @@ export function formatDesignSpecForPrompt(spec: DesignSpec): string {
 **Animations:** ${spec.useAnimations ? "Enabled — add entrance/hover transitions. ALWAYS include:\n  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }" : "Disabled"}
 
 ${googleFontsSection}
+${assetsSection}
 `.trim();
 }
 

@@ -485,7 +485,276 @@ body {
 
     // 5. src/App.jsx — token-aware starter shell
     const heroSizeCss = rty?.heroSize ?? "2.5rem";
-    const appJsx = `import React from 'react';
+    const isAutomotive = designSpec?.productType === "automotive" || /automotive|car\b|bmw|porsche|audi|vehicle|dealership|m4\b/i.test(projectName);
+    const appJsx = isAutomotive
+      ? `import React, { useState } from 'react';
+
+export default function App() {
+  const [formSubmitted, setFormSubmitted] = useState(false);
+  const [formData, setFormData] = useState({ name: '', email: '', notes: '' });
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (formData.name && formData.email) {
+      setFormSubmitted(true);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
+      {/* Navbar */}
+      <nav style={{
+        background: 'var(--bg-surface)',
+        borderBottom: '1px solid var(--border-subtle)',
+        position: 'sticky',
+        top: 0,
+        zIndex: 100,
+        backdropFilter: 'blur(16px)',
+      }}>
+        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.5rem', maxWidth: '1200px', margin: '0 auto' }}>
+          <span style={{ fontWeight: 800, fontSize: '1.25rem', color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+            <span style={{ color: 'var(--accent-primary)', marginRight: '6px' }}>///</span>\${title}
+          </span>
+          <div style={{ display: 'flex', gap: '2rem' }}>
+            {['Specifications', 'Design', 'Cockpit', 'Gallery', 'Enquire'].map(link => (
+              <a key={link} href={\`#\${link.toLowerCase()}\`} style={{ color: 'var(--text-secondary)', textDecoration: 'none', fontSize: '0.95rem', fontWeight: 500, transition: 'color 0.2s' }}
+                onMouseOver={e => e.target.style.color = 'var(--text-primary)'}
+                onMouseOut={e => e.target.style.color = 'var(--text-secondary)'}
+              >{link}</a>
+            ))}
+          </div>
+          <a href="#enquire" style={{
+            background: 'var(--accent-primary)',
+            color: '#fff',
+            textDecoration: 'none',
+            borderRadius: 'var(--radius-sm)',
+            padding: '0.55rem 1.35rem',
+            fontWeight: 700,
+            fontSize: '0.9rem',
+          }}>Book Test Drive</a>
+        </div>
+      </nav>
+
+      {/* Hero Section with Verified Vehicle Photography */}
+      <header style={{
+        minHeight: '85vh',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center',
+        textAlign: 'center',
+        position: 'relative',
+        padding: '6rem 1.5rem 3.5rem',
+        overflow: 'hidden',
+      }}>
+        <div style={{
+          position: 'absolute',
+          inset: 0,
+          backgroundImage: 'linear-gradient(180deg, rgba(10,10,10,0.3) 0%, rgba(10,10,10,0.85) 100%), url(https://images.unsplash.com/photo-1555215695-3004980ad54e?auto=format&fit=crop&w=1920&q=85)',
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          zIndex: 0,
+        }} />
+        <div style={{ position: 'relative', zIndex: 1, maxWidth: '900px', margin: '0 auto' }}>
+          <div style={{
+            display: 'inline-block',
+            background: 'rgba(255,255,255,0.12)',
+            border: '1px solid rgba(255,255,255,0.25)',
+            borderRadius: '100px',
+            padding: '0.35rem 1rem',
+            fontSize: '0.85rem',
+            fontWeight: 700,
+            marginBottom: '1.5rem',
+            color: '#ffffff',
+            backdropFilter: 'blur(8px)',
+          }}>⚡ M POWER • THE ULTIMATE DRIVING MACHINE</div>
+          <h1 style={{
+            fontSize: \`clamp(2.25rem, 5vw, \${heroSizeCss})\`,
+            margin: '0 0 1.25rem 0',
+            fontWeight: 900,
+            lineHeight: 1.1,
+            letterSpacing: '-0.03em',
+            color: '#ffffff',
+          }}>\${title}</h1>
+          <p style={{ fontSize: '1.2rem', margin: '0 0 2.5rem 0', opacity: 0.9, lineHeight: 1.6, color: '#f8fafc', maxWidth: '720px', margin: '0 auto 2.5rem' }}>
+            503 Horsepower. 0-60 in 3.4 seconds. Pure TwinPower Turbo adrenaline engineered for road and track dominance.
+          </p>
+          <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+            <a href="#enquire" style={{
+              background: '#ffffff',
+              color: '#0a0a0a',
+              textDecoration: 'none',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.9rem 2.25rem',
+              fontWeight: 800,
+              fontSize: '1rem',
+            }}>Schedule Test Drive →</a>
+            <a href="#specifications" style={{
+              background: 'rgba(255,255,255,0.12)',
+              color: '#ffffff',
+              textDecoration: 'none',
+              border: '1px solid rgba(255,255,255,0.3)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.9rem 2.25rem',
+              fontWeight: 600,
+              fontSize: '1rem',
+              backdropFilter: 'blur(8px)',
+            }}>Explore Specifications</a>
+          </div>
+        </div>
+
+        {/* Specs Bar */}
+        <div style={{
+          position: 'relative',
+          zIndex: 1,
+          maxWidth: '1000px',
+          width: '100%',
+          margin: '3.5rem auto 0',
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+          gap: '1.5rem',
+          background: 'rgba(18, 18, 22, 0.85)',
+          backdropFilter: 'blur(16px)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: 'var(--radius-md)',
+          padding: '1.75rem 2rem',
+          boxShadow: '0 16px 32px rgba(0,0,0,0.5)',
+        }}>
+          {[
+            { val: '503 HP', label: 'Max Output' },
+            { val: '3.4s', label: '0-60 MPH' },
+            { val: '479 lb-ft', label: 'Peak Torque' },
+            { val: '180 MPH', label: 'Top Track Speed' },
+          ].map(s => (
+            <div key={s.label} style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '2rem', fontWeight: 800, color: '#ffffff', letterSpacing: '-0.02em' }}>{s.val}</div>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--accent-primary)', textTransform: 'uppercase', marginTop: '0.35rem' }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+      </header>
+
+      {/* Specifications Bento Grid */}
+      <section id="specifications" style={{ padding: '5rem 1.5rem', background: 'var(--bg-surface)' }}>
+        <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', marginBottom: '3rem' }}>
+            <h2 style={{ fontSize: '2.5rem', fontWeight: 800, margin: '0 0 0.5rem', color: 'var(--text-primary)' }}>Precision Engineering</h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem', margin: 0 }}>Born on the Nürburgring Nordschleife. Calibrated for unapologetic motorsport performance.</p>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
+            {[
+              { badge: 'Powertrain', title: '3.0L M TwinPower Turbo Inline-6', desc: 'Bi-turbo powerplant with forged lightweight crankshaft, 3D-printed cylinder head core, and race-derived cooling system.' },
+              { badge: 'Transmission', title: '8-Speed M Steptronic', desc: 'Instantaneous gear shifts with Drivelogic manual paddle controls and track launch control.' },
+              { badge: 'Drivetrain', title: 'M xDrive AWD with 2WD Mode', desc: 'Intelligent rear-biased torque vectoring with switchable pure rear-wheel drive mode.' },
+              { badge: 'Chassis', title: 'Adaptive M Suspension', desc: 'Electronically controlled dampers adjusting in milliseconds across Comfort, Sport, and Sport+ modes.' },
+            ].map(b => (
+              <div key={b.title} style={{
+                background: 'var(--bg-card)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-md)',
+                padding: '2rem',
+                boxShadow: 'var(--shadow-card)',
+              }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--accent-primary)', textTransform: 'uppercase' }}>{b.badge}</span>
+                <h3 style={{ fontSize: '1.35rem', fontWeight: 700, margin: '0.5rem 0', color: 'var(--text-primary)' }}>{b.title}</h3>
+                <p style={{ color: 'var(--text-secondary)', lineHeight: 1.6, margin: 0 }}>{b.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Exterior & Cockpit Real Photography Spotlights */}
+      <section id="design" style={{ padding: '5rem 1.5rem' }}>
+        <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '4rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '3rem', alignItems: 'center' }}>
+            <img src="https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=1200&q=85" alt="BMW M4 aerodynamic front fascia and M carbon exterior elements" style={{ width: '100%', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)', boxShadow: 'var(--shadow-card)' }} />
+            <div>
+              <div style={{ color: 'var(--accent-primary)', fontWeight: 700, fontSize: '0.85rem', textTransform: 'uppercase' }}>Aerodynamics</div>
+              <h2 style={{ fontSize: '2.25rem', fontWeight: 800, margin: '0.5rem 0 1rem' }}>Sculpted for Downforce &amp; Cooling</h2>
+              <p style={{ color: 'var(--text-secondary)', lineHeight: 1.7, fontSize: '1.05rem' }}>
+                Every intake, vent, and sculpted carbon line serves a functional aerodynamic purpose. The frameless vertical kidney grille feeds maximum airflow to high-capacity radiators, while integrated air curtains minimize turbulence.
+              </p>
+            </div>
+          </div>
+
+          <div id="cockpit" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '3rem', alignItems: 'center' }}>
+            <div>
+              <div style={{ color: 'var(--accent-primary)', fontWeight: 700, fontSize: '0.85rem', textTransform: 'uppercase' }}>Cockpit &amp; Craft</div>
+              <h2 style={{ fontSize: '2.25rem', fontWeight: 800, margin: '0.5rem 0 1rem' }}>Driver-Centric Motorsport Luxury</h2>
+              <p style={{ color: 'var(--text-secondary)', lineHeight: 1.7, fontSize: '1.05rem' }}>
+                Slide into track-ready M Carbon bucket seats upholstered in premium Merino leather. The monolithic curved display delivers real-time telemetry, G-force metering, and configurable M Drive shortcuts.
+              </p>
+            </div>
+            <img src="https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1200&q=85" alt="BMW M cockpit with sport seats and curved display" style={{ width: '100%', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)', boxShadow: 'var(--shadow-card)' }} />
+          </div>
+        </div>
+      </section>
+
+      {/* Vehicle Gallery Grid */}
+      <section id="gallery" style={{ padding: '5rem 1.5rem', background: 'var(--bg-surface)' }}>
+        <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', marginBottom: '3rem' }}>
+            <h2 style={{ fontSize: '2.5rem', fontWeight: 800, margin: '0 0 0.5rem' }}>Vehicle Showcase Gallery</h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem' }}>Examine the vehicle from every angle in high-definition photography.</p>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
+            {[
+              { src: 'https://images.unsplash.com/photo-1555215695-3004980ad54e?auto=format&fit=crop&w=1200&q=85', label: 'Front Dynamic Stance' },
+              { src: 'https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=1200&q=85', label: 'M Grille & Aerodynamics' },
+              { src: 'https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1200&q=85', label: 'Interior Cockpit & Leather' },
+              { src: 'https://images.unsplash.com/photo-1552519507-da3b142c6e3d?auto=format&fit=crop&w=1200&q=85', label: 'Rear Diffuser & Exhaust' },
+            ].map(g => (
+              <div key={g.label} style={{ borderRadius: 'var(--radius-md)', overflow: 'hidden', border: '1px solid var(--border-subtle)', background: 'var(--bg-card)' }}>
+                <img src={g.src} alt={g.label} style={{ width: '100%', height: '240px', objectFit: 'cover', display: 'block' }} />
+                <div style={{ padding: '0.85rem 1rem', fontSize: '0.95rem', fontWeight: 600, textAlign: 'center' }}>{g.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Test Drive Form */}
+      <section id="enquire" style={{ padding: '5rem 1.5rem' }}>
+        <div style={{ maxWidth: '640px', margin: '0 auto', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: '2.5rem', boxShadow: 'var(--shadow-card)' }}>
+          <div style={{ color: 'var(--accent-primary)', fontWeight: 700, fontSize: '0.85rem', textTransform: 'uppercase' }}>VIP Concierge</div>
+          <h2 style={{ fontSize: '2rem', fontWeight: 800, margin: '0.5rem 0 0.5rem' }}>Schedule Your Private Demonstration</h2>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem' }}>Connect with a Certified Client Advisor for an exclusive road or track test drive.</p>
+          {formSubmitted ? (
+            <div style={{ padding: '1rem', background: 'rgba(34, 197, 94, 0.1)', border: '1px solid rgba(34, 197, 94, 0.3)', color: '#4ade80', borderRadius: 'var(--radius-sm)', textAlign: 'center', fontWeight: 600 }}>
+              Thank you, {formData.name}! Your private M demonstration request has been received. A client advisor will contact you shortly.
+            </div>
+          ) : (
+            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Full Name</label>
+                <input type="text" required placeholder="Johnathan Vance" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} style={{ width: '100%', padding: '0.75rem 1rem', borderRadius: 'var(--radius-sm)', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Email Address</label>
+                <input type="email" required placeholder="vance@example.com" value={formData.email} onChange={e => setFormData({ ...formData, email: e.target.value })} style={{ width: '100%', padding: '0.75rem 1rem', borderRadius: 'var(--radius-sm)', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Driving Preferences &amp; Preferred Date</label>
+                <textarea rows={3} placeholder="Tell us about your driving preferences, preferred dates, or trade-in inquiries..." value={formData.notes} onChange={e => setFormData({ ...formData, notes: e.target.value })} style={{ width: '100%', padding: '0.75rem 1rem', borderRadius: 'var(--radius-sm)', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+              </div>
+              <button type="submit" id="submit-btn" style={{ background: 'var(--gradient-accent)', color: '#ffffff', border: 'none', borderRadius: 'var(--radius-sm)', padding: '1rem', fontWeight: 700, fontSize: '1rem', cursor: 'pointer' }}>Submit Test Drive Request</button>
+            </form>
+          )}
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer style={{ background: 'var(--bg-surface)', borderTop: '1px solid var(--border-subtle)', padding: '2.5rem 1.5rem', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+        <p style={{ margin: '0 0 0.5rem', fontWeight: 700, color: 'var(--text-primary)' }}><span style={{ color: 'var(--accent-primary)' }}>///</span> \${title}</p>
+        <p style={{ margin: '0 0 0.5rem' }}>© {new Date().getFullYear()} \${title}. High-performance automotive digital prototype.</p>
+        <p style={{ margin: 0, opacity: 0.7, fontSize: '0.75rem' }}>Photography via Wikimedia Commons and verified licensed automotive media.</p>
+      </footer>
+    </div>
+  );
+}
+`
+      : `import React from 'react';
 
 export default function App() {
   return (
@@ -741,6 +1010,7 @@ export async function scaffoldStaticProject(
     filesCreated.push("package.json");
 
     const isEcommerce = designSpec?.productType === "ecommerce" || /ecommerce|store|shop|catalog|cart/i.test(projectName);
+    const isAutomotive = designSpec?.productType === "automotive" || /automotive|car\b|bmw|porsche|audi|vehicle|dealership|m4\b/i.test(projectName);
     const ty = designSpec?.typography;
     const googleFontsHtml = ty?.googleFontsUrl
       ? `<link rel="preconnect" href="https://fonts.googleapis.com">\n  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n  <link href="${ty.googleFontsUrl}" rel="stylesheet">\n  `
@@ -969,6 +1239,210 @@ export async function scaffoldStaticProject(
   <footer class="footer">
     <div class="footer-container">
       <p>&copy; ${new Date().getFullYear()} ${title}. Verified responsive e-commerce storefront prototype.</p>
+    </div>
+  </footer>
+
+  <script src="script.js" defer></script>
+</body>
+</html>`
+      : isAutomotive
+      ? `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} | High-Performance Automotive</title>
+  ${googleFontsHtml}<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="navbar">
+    <div class="nav-container">
+      <a href="#" class="brand-logo" aria-label="${title} Home">
+        <span class="logo-accent">///</span> ${title}
+      </a>
+      <nav class="nav-links" aria-label="Main Navigation">
+        <ul class="nav-menu">
+          <li><a href="#specifications" class="nav-link">Specifications</a></li>
+          <li><a href="#design" class="nav-link">Design &amp; Aerodynamics</a></li>
+          <li><a href="#cockpit" class="nav-link">Cockpit</a></li>
+          <li><a href="#gallery" class="nav-link">Gallery</a></li>
+          <li><a href="#contact" class="nav-link">Enquire</a></li>
+        </ul>
+        <a href="#contact" class="btn btn-primary btn-sm">Book Test Drive</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="vehicle-hero">
+      <div class="vehicle-hero-bg" style="background-image: linear-gradient(180deg, rgba(10,10,10,0.3) 0%, rgba(10,10,10,0.85) 100%), url('https://images.unsplash.com/photo-1555215695-3004980ad54e?auto=format&fit=crop&w=1920&q=85');"></div>
+      <div class="vehicle-hero-content">
+        <div class="hero-badge">⚡ M POWER &bull; THE ULTIMATE DRIVING MACHINE</div>
+        <h1 class="hero-title">${title}</h1>
+        <p class="hero-subtitle">503 Horsepower. 0-60 in 3.4 seconds. Pure TwinPower Turbo adrenaline engineered for road and track dominance.</p>
+        <div class="hero-actions">
+          <a href="#contact" class="btn btn-primary">Schedule Test Drive</a>
+          <a href="#specifications" class="btn btn-secondary">Explore Specifications</a>
+        </div>
+      </div>
+
+      <div class="specs-bar" role="region" aria-label="Vehicle Performance Highlights">
+        <div class="spec-stat">
+          <span class="stat-value">503 HP</span>
+          <span class="stat-label">Max Output</span>
+        </div>
+        <div class="spec-stat">
+          <span class="stat-value">3.4s</span>
+          <span class="stat-label">0-60 MPH</span>
+        </div>
+        <div class="spec-stat">
+          <span class="stat-value">479 lb-ft</span>
+          <span class="stat-label">Peak Torque</span>
+        </div>
+        <div class="spec-stat">
+          <span class="stat-value">180 MPH</span>
+          <span class="stat-label">Top Track Speed</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="specifications" class="section specifications-section">
+      <div class="container">
+        <div class="section-header">
+          <h2>Precision Engineering</h2>
+          <p>Born on the Nürburgring Nordschleife. Calibrated for unapologetic motorsport performance.</p>
+        </div>
+        <div class="bento-specs-grid">
+          <div class="bento-card bento-wide">
+            <span class="bento-badge">Powertrain</span>
+            <h3>3.0-Liter M TwinPower Turbo Inline-6</h3>
+            <p>High-revving bi-turbo powerplant featuring forged lightweight crankshaft, 3D-printed cylinder head core, and race-derived cooling system.</p>
+          </div>
+          <div class="bento-card">
+            <span class="bento-badge">Transmission</span>
+            <h3>8-Speed M Steptronic</h3>
+            <p>Instantaneous gear shifts with Drivelogic manual paddle controls and launch control.</p>
+          </div>
+          <div class="bento-card">
+            <span class="bento-badge">Drivetrain</span>
+            <h3>M xDrive AWD with 2WD Mode</h3>
+            <p>Intelligent rear-biased torque vectoring with switchable pure rear-wheel drive mode.</p>
+          </div>
+          <div class="bento-card">
+            <span class="bento-badge">Chassis</span>
+            <h3>Adaptive M Suspension</h3>
+            <p>Electronically controlled dampers adjusting in milliseconds between Comfort, Sport, and Sport+ modes.</p>
+          </div>
+          <div class="bento-card bento-wide">
+            <span class="bento-badge">Braking</span>
+            <h3>M Carbon Ceramic Brakes</h3>
+            <p>Fade-resistant 400mm front discs with 6-piston gold calipers delivering immense track stopping power.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="design" class="section design-section">
+      <div class="container">
+        <div class="feature-split">
+          <div class="feature-image-wrapper">
+            <img src="https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=1200&q=85" alt="Aerodynamic front fascia and carbon exterior elements" class="feature-image" loading="lazy" width="1200" height="800">
+          </div>
+          <div class="feature-text">
+            <div class="section-tag">Aerodynamics</div>
+            <h2>Sculpted for Downforce &amp; Cooling</h2>
+            <p>Every intake, vent, and sculpted carbon line serves a functional aerodynamic purpose. The frameless vertical kidney grille feeds maximum airflow to high-capacity radiators, while integrated air curtains minimize turbulence.</p>
+            <ul class="feature-bullets">
+              <li>✓ Carbon Fiber Reinforced Plastic (CFRP) Roof lowers center of gravity</li>
+              <li>✓ Aerodynamic dual-stalk M wing mirrors reduce high-speed drag</li>
+              <li>✓ Sculpted rear lip spoiler generates functional downforce</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="cockpit" class="section cockpit-section">
+      <div class="container">
+        <div class="feature-split feature-reverse">
+          <div class="feature-image-wrapper">
+            <img src="https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1200&q=85" alt="Cockpit with sport seats and curved display" class="feature-image" loading="lazy" width="1200" height="800">
+          </div>
+          <div class="feature-text">
+            <div class="section-tag">Cockpit &amp; Craft</div>
+            <h2>Driver-Centric Motorsport Luxury</h2>
+            <p>Slide into track-ready M Carbon bucket seats upholstered in premium Merino leather. The monolithic curved display delivers real-time telemetry, G-force metering, and configurable M Drive shortcuts.</p>
+            <ul class="feature-bullets">
+              <li>✓ M Leather Steering Wheel with programmable red M1/M2 buttons</li>
+              <li>✓ Curved Display with M-specific heads-up display telemetry</li>
+              <li>✓ Premium surround audio system with precision spatial tuning</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="gallery" class="section gallery-section">
+      <div class="container">
+        <div class="section-header">
+          <h2>Vehicle Showcase Gallery</h2>
+          <p>Examine the vehicle from every angle in high-definition photography.</p>
+        </div>
+        <div class="vehicle-gallery-grid">
+          <figure class="gallery-item">
+            <img src="https://images.unsplash.com/photo-1555215695-3004980ad54e?auto=format&fit=crop&w=1200&q=85" alt="Vehicle front three-quarter dynamic stance" loading="lazy" width="1200" height="800">
+            <figcaption>Front Dynamic Stance</figcaption>
+          </figure>
+          <figure class="gallery-item">
+            <img src="https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=1200&q=85" alt="Grille and aerodynamic front detailing" loading="lazy" width="1200" height="800">
+            <figcaption>M Grille &amp; Aerodynamics</figcaption>
+          </figure>
+          <figure class="gallery-item">
+            <img src="https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1200&q=85" alt="Interior cockpit and driver controls" loading="lazy" width="1200" height="800">
+            <figcaption>Interior Cockpit &amp; Leather</figcaption>
+          </figure>
+          <figure class="gallery-item">
+            <img src="https://images.unsplash.com/photo-1552519507-da3b142c6e3d?auto=format&fit=crop&w=1200&q=85" alt="Rear track angle and quad exhaust" loading="lazy" width="1200" height="800">
+            <figcaption>Rear Diffuser &amp; Quad Exhaust</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="contact" class="section contact-section">
+      <div class="container">
+        <div class="contact-card">
+          <div class="section-tag">VIP Concierge</div>
+          <h2>Schedule Your Private M Demonstration</h2>
+          <p>Connect with a Certified Client Advisor for an exclusive track or road demonstration.</p>
+          <form id="contact-form" class="contact-form" novalidate>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="name">Full Name</label>
+                <input type="text" id="name" name="name" placeholder="Johnathan Vance" required>
+              </div>
+              <div class="form-group">
+                <label for="email">Email Address</label>
+                <input type="email" id="email" name="email" placeholder="vance@example.com" required>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="message">Concierge Notes &amp; Preferred Date</label>
+              <textarea id="message" name="message" rows="3" placeholder="Tell us about your driving preferences, preferred dates, or trade-in inquiries..." required></textarea>
+            </div>
+            <button type="submit" id="submit-btn" class="btn btn-primary btn-block">Submit Test Drive Request</button>
+            <div id="form-feedback" class="form-feedback" role="alert" style="display:none;"></div>
+          </form>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-content">
+      <div class="footer-brand"><span class="logo-accent">///</span> ${title}</div>
+      <p class="footer-copy">&copy; ${new Date().getFullYear()} ${title}. Verified responsive high-performance automotive website prototype.</p>
+      <p class="footer-attribution">Photography source: Verified high-resolution automotive media via Wikimedia Commons &amp; Unsplash licensed photography.</p>
     </div>
   </footer>
 
@@ -2282,6 +2756,175 @@ nav li {
   border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
+/* Automotive & High-Performance Styles */
+.logo-accent {
+  color: var(--accent-primary);
+  font-weight: 800;
+  letter-spacing: -2px;
+  margin-right: 4px;
+}
+.vehicle-hero {
+  position: relative;
+  min-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 6rem 1.5rem 3.5rem;
+  overflow: hidden;
+}
+.vehicle-hero-bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  z-index: 0;
+}
+.vehicle-hero-content {
+  position: relative;
+  z-index: 1;
+  max-width: 900px;
+  margin: 0 auto;
+}
+.specs-bar {
+  position: relative;
+  z-index: 1;
+  max-width: 1000px;
+  width: 100%;
+  margin: 3.5rem auto 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.5rem;
+  background: rgba(18, 18, 22, 0.85);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 1.75rem 2rem;
+  box-shadow: 0 16px 32px rgba(0,0,0,0.4);
+}
+.spec-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+.stat-value {
+  font-size: 2rem;
+  font-weight: 800;
+  color: #ffffff;
+  letter-spacing: -0.02em;
+}
+.stat-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 0.35rem;
+}
+.bento-specs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin-top: 2rem;
+}
+.bento-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 2rem;
+  box-shadow: var(--shadow-card);
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+.bento-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--accent-primary);
+}
+.bento-wide {
+  grid-column: 1 / -1;
+}
+.bento-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--accent-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+}
+.feature-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3.5rem;
+  align-items: center;
+  padding: 4rem 0;
+}
+.feature-reverse {
+  direction: rtl;
+}
+.feature-reverse > * {
+  direction: ltr;
+}
+.feature-image-wrapper {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-card);
+}
+.feature-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.feature-bullets {
+  list-style: none !important;
+  margin: 1.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  color: var(--text-secondary);
+}
+.vehicle-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin-top: 2rem;
+}
+.gallery-item {
+  margin: 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+  transition: transform 0.2s ease;
+}
+.gallery-item:hover {
+  transform: scale(1.02);
+}
+.gallery-item img {
+  width: 100%;
+  height: 240px;
+  object-fit: cover;
+  display: block;
+}
+.gallery-item figcaption {
+  padding: 0.85rem 1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+}
+.footer-attribution {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  margin-top: 0.5rem;
+}
+
 /* Footer */
 .footer {
   margin-top: auto;
@@ -2294,6 +2937,19 @@ nav li {
 
 /* Mobile Responsiveness */
 @media (max-width: 768px) {
+  .specs-bar {
+    grid-template-columns: repeat(2, 1fr);
+    padding: 1.25rem;
+    margin-top: 2rem;
+  }
+  .feature-split {
+    grid-template-columns: 1fr;
+    gap: 2rem;
+  }
+  .vehicle-hero {
+    min-height: auto;
+    padding: 5rem 1rem 3rem;
+  }
   .hero-title {
     font-size: calc(${heroFontSize} * 0.72);
   }

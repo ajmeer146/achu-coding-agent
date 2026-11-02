@@ -16,6 +16,7 @@ import { createFile } from "./tools/create-file.js";
 import { runCommand } from "./tools/terminal.js";
 import { isUITask, generateDesignSpec, formatDesignSpecForPrompt, type DesignSpec } from "./tools/design-planner.js";
 import { getDesignReferenceForDirection, formatDesignReference } from "./quality/design-references.js";
+import { searchImages, downloadAndValidateImage } from "./tools/image-intelligence.js";
 import {
   buildWebsiteQualityGuidance,
   evaluateWebsiteQuality,
@@ -250,6 +251,8 @@ const AGENT_TOOLS: Array<{ type: "function"; function: { name: string; descripti
   { type: "function", function: { name: "browser_verify", description: "Verify the running application in the browser. Checks expected text, headings, sections, buttons, inputs, dropdowns, links, routes, and click/form interactions. Provide optional baseUrl and a targets array for specific checks.", parameters: { type: "object", properties: { baseUrl: { type: "string", description: "Base URL of the running application (optional, auto-detected if app is running)." }, targets: { type: "array", description: "Verification targets. Use type=interaction (click) with expectedTextAfter/expectedUrlAfter/expectedSelectorAfter to prove a control changes state. Use type=form with inputValue and expectedTextAfter to submit a form. Use type=select with a selector to verify a dropdown. Use type=section with text/selector to verify a section exists.", items: { type: "object", properties: { type: { type: "string", enum: ["text", "heading", "section", "button", "input", "select", "link", "route", "interaction", "form"] }, text: { type: "string" }, url: { type: "string" }, selector: { type: "string", description: "CSS selector for the element (e.g. #email or an attribute selector)." }, inputType: { type: "string", description: "Semantic input type for an input target (email, password, text, submit)." }, placeholder: { type: "string" }, name: { type: "string" }, label: { type: "string" }, required: { type: "boolean" }, action: { type: "string", enum: ["click", "type", "submit"], description: "Interaction action for an interaction target." }, inputValue: { type: "string", description: "Value to type for a form target." }, expectedTextAfter: { type: "string", description: "Text expected in the page after the action." }, expectedUrlAfter: { type: "string", description: "URL fragment expected after the action." }, expectedSelectorAfter: { type: "string", description: "Element selector expected to appear after the action." } }, required: ["type"] }, additionalProperties: false } }, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "take_screenshot", description: "Captures a PNG screenshot of the current browser page for human review. Returns only the image size; the agent cannot visually interpret screenshot pixels. Use inspect_visual_quality for measurable layout checks.", parameters: { type: "object", properties: { viewport: { type: "string", enum: ["desktop", "mobile"], description: "Optional viewport to capture: 'desktop' (1280x800) or 'mobile' (375x667)." } }, required: [], additionalProperties: false } } },
   { type: "function", function: { name: "inspect_visual_quality", description: "Runs measurable layout checks (horizontal overflow, clipped interactive elements, navigation overlap, text overflow, small touch targets) at desktop and mobile viewports. Use after browser_verify to find real layout defects. Does not interpret screenshot pixels.", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } } },
+  { type: "function", function: { name: "search_images", description: "Search for genuine, high-resolution, CC-licensed photography (automotive, real estate, restaurants, fashion, luxury items, tech, landmarks) from Wikimedia Commons and verified photo repositories. Returns genuine image URLs, titles, dimensions, and attribution.", parameters: { type: "object", properties: { query: { type: "string", description: "Search query describing the real-world subject, product, vehicle, or scene (e.g. 'BMW M4 black exterior', 'Modern luxury villa pool', 'Gourmet plated dish')." }, count: { type: "number", description: "Number of images to return (1-10, default 4)." } }, required: ["query"], additionalProperties: false } } },
+  { type: "function", function: { name: "download_image", description: "Download a verified image URL and save it into the workspace (e.g. 'public/images/hero.jpg' or 'assets/car.jpg'). Validates image bytes and returns the saved file path.", parameters: { type: "object", properties: { url: { type: "string", description: "Direct URL of the image to download." }, path: { type: "string", description: "Relative destination path in workspace (e.g. 'public/images/bmw-m4-hero.jpg')." } }, required: ["url", "path"], additionalProperties: false } } },
 ];
 
 function truncate(value: string, max = MAX_OUTPUT): string {
@@ -3144,7 +3147,15 @@ const schemas = {
   take_screenshot: z.object({
     viewport: z.enum(["desktop", "mobile"]).optional()
   }),
-  inspect_visual_quality: z.object({})
+  inspect_visual_quality: z.object({}),
+  search_images: z.object({
+    query: z.string(),
+    count: z.number().int().min(1).max(10).optional(),
+  }),
+  download_image: z.object({
+    url: z.string(),
+    path: z.string(),
+  }),
 };
 
 export async function runDeterministicUIChecks(workspace: Workspace, appUrl?: string | null): Promise<{
@@ -4151,6 +4162,34 @@ async function executeToolCore(workspace: Workspace, toolCall: ToolCall, state: 
         const report = await runVisualQualityChecks(state.browserSession, baseUrl);
         if (!report) return `Tool error: Visual quality checks could not be completed at ${baseUrl}.`;
         return `Measurable visual quality report for ${baseUrl}:\n${formatVisualQualityReport(report)}`;
+      }
+      case "search_images": {
+        const query = args.query;
+        const count = typeof args.count === "number" ? Math.min(10, Math.max(1, args.count)) : 4;
+        console.log(chalk.cyan(`Searching real images for '${query}' (limit ${count})...`));
+        const images = await searchImages(query, count);
+        if (images.length === 0) {
+          return `No images found for query '${query}'. Try alternative descriptive terms.`;
+        }
+        return `Found ${images.length} verified images for '${query}':\n` +
+          images.map((img, i) => `${i + 1}. [${img.source.toUpperCase()}] "${img.title}"\n   Direct URL: ${img.url}\n   Thumbnail: ${img.thumbnailUrl}\n   License: ${img.license || 'Public / CC'}\n   Creator: ${img.creator || 'Verified'}\n   Alt Text: ${img.altText}`).join("\n\n");
+      }
+      case "download_image": {
+        const imageUrl = args.url;
+        const targetPath = args.path;
+        console.log(chalk.cyan(`Downloading image from '${imageUrl}' to '${targetPath}'...`));
+        const fullDest = path.resolve(workspace.root, targetPath);
+        if (!fullDest.startsWith(workspace.root)) {
+          return `Tool error: Path '${targetPath}' escapes workspace root.`;
+        }
+        const dlRes = await downloadAndValidateImage(imageUrl, fullDest);
+        if (!dlRes.success) {
+          return `Tool error: Failed to download image: ${dlRes.error}`;
+        }
+        state.completedTasks.add(`create_file:${targetPath}`);
+        await state.snapshotManager.captureBefore(targetPath, "create");
+        await state.snapshotManager.captureAfter(targetPath);
+        return `Successfully downloaded image (${dlRes.bytes} bytes) to '${targetPath}'.`;
       }
       default: return `Unknown tool: ${toolCall.function.name}`;
     }
