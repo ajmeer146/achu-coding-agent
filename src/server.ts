@@ -67,6 +67,9 @@ function initFileLogging(): void {
     }
     const logFilePath = path.join(logDir, "agent.log");
     const logStream = fs.createWriteStream(logFilePath, { flags: "a" });
+    logStream.on("error", (err) => {
+      // Safely ignore EBUSY / file lock errors on Windows
+    });
     const originalLog = console.log;
     const originalError = console.error;
     const originalWarn = console.warn;
@@ -215,16 +218,70 @@ app.use((req, res, next) => {
   if (origin) {
     res.header("Access-Control-Allow-Origin", origin);
   }
-  // When no Origin header: do NOT echo Access-Control-Allow-Origin: * — keeps credentials out of cross-site responses.
-  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-achu-companion-token");
+
+  // Echo requested headers or supply comprehensive list for Chromium Private Network Access preflights
+  const reqHeaders = req.headers["access-control-request-headers"];
+  const allowHeaders = reqHeaders
+    ? `${reqHeaders}, x-achu-companion-token, Origin, X-Requested-With, Content-Type, Accept, Authorization, Access-Control-Request-Private-Network`
+    : "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-achu-companion-token, Access-Control-Request-Private-Network, Access-Control-Request-Headers, Access-Control-Request-Method";
+
+  res.header("Access-Control-Allow-Headers", allowHeaders);
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Private-Network", "true");
   res.header("Access-Control-Allow-Credentials", "true");
+  res.header("Access-Control-Max-Age", "86400");
+
   if (req.method === "OPTIONS") {
-    res.sendStatus(200);
+    res.sendStatus(204);
     return;
   }
   next();
+});
+
+// Root & Connect Dashboard endpoints for loopback pairing
+app.get("/", (_req, res) => {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Achu Local Agent v${AGENT_PACKAGE_VERSION}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0b0f19; color: #f8fafc; margin: 0; padding: 2rem; display: flex; justify-content: center; align-items: center; min-height: 100vh; box-sizing: border-box; }
+    .card { background: #131b2e; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 1rem; padding: 2.5rem; max-width: 520px; width: 100%; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
+    .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); margin-bottom: 1rem; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.5rem; color: #fff; }
+    p { margin: 0 0 1.5rem; color: #94a3b8; font-size: 0.95rem; line-height: 1.5; }
+    .btn { display: inline-block; width: 100%; box-sizing: border-box; padding: 0.85rem; border-radius: 0.5rem; font-weight: 700; text-align: center; text-decoration: none; cursor: pointer; transition: all 0.2s; font-size: 0.95rem; }
+    .btn-primary { background: linear-gradient(135deg, #0284c7 0%, #2563eb 100%); color: #fff; border: none; margin-bottom: 0.75rem; }
+    .token-box { background: #090d16; border: 1px solid rgba(255,255,255,0.08); border-radius: 0.5rem; padding: 0.75rem 1rem; display: flex; justify-content: space-between; align-items: center; font-family: monospace; font-size: 0.85rem; color: #cbd5e1; margin-bottom: 1.5rem; }
+    .hint { font-size: 0.8rem; color: #64748b; margin-top: 1.25rem; line-height: 1.4; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge"><span class="dot"></span> Online &amp; Listening on Port 3001</div>
+    <h1>Achu Local Agent v${AGENT_PACKAGE_VERSION}</h1>
+    <p>Your local companion service is running on your PC. Click below to launch Work with Achu with auto-pairing enabled.</p>
+    <a href="https://www.workswithachu.me/workspace/coding-agent?token=${COMPANION_TOKEN}&paired=true" class="btn btn-primary">Open Work with Achu &amp; Auto-Connect &rarr;</a>
+    <div style="font-size: 0.85rem; color: #94a3b8; margin: 1.5rem 0 0.5rem; font-weight: 600;">Pairing Token:</div>
+    <div class="token-box">
+      <span>${COMPANION_TOKEN.slice(0, 8)}••••••••••••••••</span>
+      <button onclick="navigator.clipboard.writeText('${COMPANION_TOKEN}'); this.textContent='Copied!';" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #fff; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 0.75rem;">Copy Token</button>
+    </div>
+    <div class="hint">
+      <strong>Browser note:</strong> If Chrome or Edge shows "Local Agent Not Connected", click the 🔒 / 🎛️ Tune icon in the address bar on workswithachu.me and set <em>"Apps on device"</em> (or <em>"Local network access"</em>) to <strong>Allow</strong>.
+    </div>
+  </div>
+</body>
+</html>`;
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(html);
+});
+
+app.get("/connect", (_req, res) => {
+  res.redirect(`https://www.workswithachu.me/workspace/coding-agent?token=${COMPANION_TOKEN}&paired=true`);
 });
 
 // Explicit health check endpoints for connection handshakes
@@ -234,6 +291,7 @@ app.get("/health", (_req, res) => {
     service: "achu-coding-agent",
     version: AGENT_PACKAGE_VERSION,
     companionMode: "local",
+    pnaReady: true,
     timestamp: Date.now(),
     uptime: process.uptime(),
   });
@@ -245,6 +303,7 @@ app.get("/api/health", (_req, res) => {
     service: "achu-coding-agent",
     version: AGENT_PACKAGE_VERSION,
     companionMode: "local",
+    pnaReady: true,
     timestamp: Date.now(),
     uptime: process.uptime(),
   });
@@ -296,7 +355,7 @@ app.get("/api/companion/token", (req, res) => {
     return;
   }
   const origin = req.headers.origin;
-  if (!isKnownBrowserOrigin(origin)) {
+  if (origin && !isAllowedOrigin(origin)) {
     res.status(403).json({ ok: false, error: "Companion token requires a trusted browser origin" });
     return;
   }
@@ -1557,7 +1616,6 @@ async function runAgentWithWorkspace(
     path.resolve(__dirname, "..", "cli.mjs"),
     path.resolve(process.cwd(), "dist", "cli.js"),
     path.resolve(process.cwd(), "cli.mjs"),
-    "C:\\Users\\Achu146\\achu-coding-agent\\dist\\cli.js",
   ];
   const cliPath = candidateCliPaths.find((p) => fs.existsSync(p));
 
@@ -1590,11 +1648,16 @@ async function runAgentWithWorkspace(
   console.log(`[run_task] env.ACHU_SESSION_ID: ${sessionId}`);
   console.log(`[run_task] env.ACHU_TASK_ID: ${taskId}`);
 
+  const appNodeModules = path.join(mainProjectDir, "node_modules");
+  const existingNodePath = process.env.NODE_PATH || "";
+  const combinedNodePath = existingNodePath ? `${appNodeModules}${path.delimiter}${existingNodePath}` : appNodeModules;
+
   // Pass session info to CLI via env
   const child = spawn(nodeExec, spawnArgs, {
     cwd: mainProjectDir,
     env: { 
       ...process.env, 
+      NODE_PATH: combinedNodePath,
       WORKSPACE_ROOT: workspaceRoot,
       ACHU_SESSION_ID: sessionId,
       ACHU_TASK_ID: taskId,

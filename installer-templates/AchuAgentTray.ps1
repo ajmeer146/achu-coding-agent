@@ -31,13 +31,17 @@ function Start-AgentServer {
     if (Test-AgentHealth) { return }
     $existing = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*server.mjs*" }
     if ($existing) {
-        for ($i = 0; $i -lt 6; $i++) {
+        for ($i = 0; $i -lt 8; $i++) {
             Start-Sleep -Milliseconds 500
             if (Test-AgentHealth) { return }
         }
     }
     if (-not (Test-AgentHealth)) {
-        Start-Process -FilePath $nodeExe -ArgumentList @($serverMjs) -WorkingDirectory $appDir -WindowStyle Hidden -RedirectStandardOutput $logFile -RedirectStandardError $logFile
+        Start-Process -FilePath $nodeExe -ArgumentList @($serverMjs) -WorkingDirectory $appDir -WindowStyle Hidden
+        for ($i = 0; $i -lt 10; $i++) {
+            Start-Sleep -Milliseconds 500
+            if (Test-AgentHealth) { return }
+        }
     }
 }
 
@@ -65,6 +69,11 @@ $sep1 = $contextMenu.Items.Add("-")
 $openSiteItem = $contextMenu.Items.Add("Open Work with Achu Website")
 $openSiteItem.Add_Click({
     Start-Process "https://www.workswithachu.me/workspace/coding-agent"
+})
+
+$openDashboardItem = $contextMenu.Items.Add("Open Local Dashboard (http://127.0.0.1:3001)")
+$openDashboardItem.Add_Click({
+    Start-Process "http://127.0.0.1:3001"
 })
 
 $startItem = $contextMenu.Items.Add("Start Agent")

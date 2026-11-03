@@ -8,6 +8,7 @@ export const DeploymentTaskPayloadSchema = z.object({
   userId: z.string().min(1),
   userEmail: z.string().email(),
   framework: z.string().default("static"),
+  taskId: z.string().optional(),
   files: z.array(
     z.object({
       path: z.string(),
@@ -65,6 +66,8 @@ export const websiteDeploymentTask = schemaTask({
     metadata.set("authConfigured", true);
 
     try {
+      // Never transfer complete project artifacts through a serverless orchestration callback.
+      // The Next.js server retrieves verified artifacts directly from persistent database storage.
       const res = await fetch(`${webPlatformUrl}/api/deployments/internal-execute`, {
         method: "POST",
         headers: {
@@ -78,7 +81,11 @@ export const websiteDeploymentTask = schemaTask({
           userId: payload.userId,
           userEmail: payload.userEmail,
           framework: payload.framework,
-          files: payload.files,
+          taskId: payload.taskId,
+          // Only send files if explicitly small (< 20KB) for backwards compatibility or lightweight tests
+          files: (payload.files && payload.files.length <= 5 && JSON.stringify(payload.files).length < 20_000)
+            ? payload.files
+            : undefined,
         }),
       });
 
